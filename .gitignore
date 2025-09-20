@@ -1,9 +1,6 @@
-# Node dependencies
-node_modules/
+# Node dependencies (tracked intentionally)
 
-# Build output
-dist/
-build/
+# Build output (tracked intentionally)
 
 # Logs and debugging
 *.log
