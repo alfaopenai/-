@@ -1,0 +1,55 @@
+﻿<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>אלפא פוקר - מחשבון הסתברויות טקסס הולדם</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <main class="app">
+        <header class="hero">
+            <h1>אלפא פוקר</h1>
+            <p class="tagline">בחרו קלפים לשחקנים ולוח, וקבלו את הסתברויות הניצחון לכל שחקן.</p>
+        </header>
+
+        <section class="controls">
+            <div class="player-count">
+                <button id="add-player" type="button" aria-label="הוספת שחקן">+</button>
+                <span id="player-count-label">2 שחקנים</span>
+                <button id="remove-player" type="button" aria-label="הסרת שחקן">-</button>
+            </div>
+            <div class="actions">
+                <button id="deal-random" type="button">חלקה אקראית</button>
+                <button id="clear-all" type="button">נקה קלפים</button>
+                <button id="calculate" type="button" class="primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
+                <button id="reset" type="button">אפס הכל</button>
+            </div>
+        </section>
+
+        <section class="table-wrapper">
+            <div class="felt">
+                <div class="table-surface">
+                    <div id="table" class="table"></div>
+                    <div class="board-area">
+                        <h2>קלפים משותפים</h2>
+                        <div id="board-cards" class="board-cards"></div>
+                    </div>
+                </div>
+                <div class="deck-area">
+                    <div class="deck-info">
+                        <h2>חפיסה</h2>
+                        <p>בחרו קלף מהחפיסה ואז הקליקו על המיקום הרצוי על השולחן.</p>
+                    </div>
+                    <div id="deck" class="deck-strip" dir="ltr"></div>
+                    <section id="errors" class="messages" aria-live="polite"></section>
+                </div>
+            </div>
+        </section>
+
+        <section id="results" class="results" aria-live="polite"></section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

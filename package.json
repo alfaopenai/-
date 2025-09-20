@@ -1,0 +1,39 @@
+{
+  "name": "alpha-poker",
+  "version": "0.1.0",
+  "description": "אפליקציית מחשבון הסתברויות לטקסס הולדם",
+  "main": "main.js",
+  "author": "Alpha Poker Team",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.alpha.poker",
+    "productName": "אלפא פוקר",
+    "files": [
+      "**/*",
+      "!node_modules/.cache"
+    ],
+    "directories": {
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "7zip-bin": "^5.2.0",
+    "electron": "^30.0.6",
+    "electron-builder": "^24.6.4"
+  }
+}
