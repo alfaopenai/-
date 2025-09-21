@@ -9,6 +9,11 @@
 <body>
     <main class="app">
         <header class="hero">
+            <div class="mode-toggle">
+                <button id="mode-toggle" type="button" class="mode-toggle-button" aria-pressed="false">
+                    עבור לסולבר GTO
+                </button>
+            </div>
             <h1>אלפא פוקר</h1>
             <p class="tagline">בחרו קלפים לשחקנים ולוח, וקבלו את הסתברויות הניצחון לכל שחקן.</p>
         </header>
@@ -24,6 +29,50 @@
                 <button id="clear-all" type="button">נקה קלפים</button>
                 <button id="calculate" type="button" class="primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
                 <button id="reset" type="button">אפס הכל</button>
+            </div>
+        </section>
+
+        <section id="solver-controls" class="solver-controls" hidden aria-hidden="true">
+            <div class="solver-header">
+                <h2>סולבר GTO</h2>
+                <p>השתמש בממשק לבחירת תרחיש הירו והזנת פרמטרים טקטיים כדי לחשב תגובת שיווי משקל.</p>
+            </div>
+            <div class="solver-grid">
+                <label class="solver-field">
+                    <span>גודל קופה נוכחי (BB)</span>
+                    <input id="solver-pot-size" type="number" min="0" step="0.5" value="10" />
+                </label>
+                <label class="solver-field">
+                    <span>סטאק אפקטיבי (BB)</span>
+                    <input id="solver-effective-stack" type="number" min="0" step="0.5" value="100" />
+                </label>
+                <label class="solver-field">
+                    <span>אחוז הימור בסיסי</span>
+                    <input id="solver-bet-size" type="number" min="5" max="300" step="5" value="75" />
+                </label>
+                <label class="solver-field">
+                    <span>פרופיל יריב</span>
+                    <select id="solver-opponent-profile">
+                        <option value="balanced">מאוזן ניטרלי</option>
+                        <option value="tight">טייט-פאסיבי</option>
+                        <option value="loose">לוס-פאסיבי</option>
+                        <option value="aggressive">לוס-אגרסיבי</option>
+                    </select>
+                </label>
+                <label class="solver-field">
+                    <span>מספר חזרות סימולציה</span>
+                    <input id="solver-iterations" type="number" min="1000" step="1000" value="20000" />
+                </label>
+            </div>
+            <div class="solver-actions">
+                <button id="solver-run" type="button" class="primary">חשב אסטרטגיה</button>
+                <button id="solver-reset" type="button">איפוס פרמטרים</button>
+            </div>
+        </section>
+
+        <section id="solver-results" class="solver-results" hidden aria-hidden="true" aria-live="polite">
+            <div class="solver-placeholder">
+                <p>בחרו קלפים וגדירו פרמטרים כדי להפעיל את הסולבר.</p>
             </div>
         </section>
 
@@ -53,3 +102,8 @@
     <script src="app.js"></script>
 </body>
 </html>
+
+
+
+
+

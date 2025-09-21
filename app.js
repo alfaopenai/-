@@ -14,8 +14,32 @@
     const PREFLOP_SIMULATIONS = 40000; // Increased accuracy for Monte Carlo
     const PROBABILITY_UPDATE_DELAY = 0; // Immediate updates
     const HIGHLIGHT_EPSILON = 1e-9;
+    const WIN_LABEL = "\u05e0\u05d9\u05e6\u05d7\u05d5\u05df";
+    const TIE_LABEL = "\u05ea\u05d9\u05e7\u05d5";
+
+    const DEFAULT_SOLVER_SETTINGS = Object.freeze({
+        potSize: 10,
+        effectiveStack: 100,
+        betSizePercent: 75,
+        opponentProfile: "balanced",
+        iterations: 20000
+    });
+
+    const SOLVER_PROFILES = new Set(["balanced", "tight", "loose", "aggressive"]);
+
+    const SOLVER_MESSAGES = Object.freeze({
+        default: "\u05d1\u05d7\u05e8\u05d5 \u05e7\u05dc\u05e4\u05d9\u05dd \u05d5\u05d2\u05d3\u05d9\u05e8\u05d5 \u05e4\u05e8\u05de\u05d8\u05e8\u05d9\u05dd \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d0\u05ea \u05d4\u05e1\u05d5\u05dc\u05d1\u05e8.",
+        heroCardsRequired: "\u05d4\u05e7\u05e6\u05d4 \u05dc\u05e9\u05d7\u05e7\u05df 1 \u05e9\u05e0\u05d9 \u05e7\u05dc\u05e4\u05d9\u05dd \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d0\u05ea \u05d4\u05e1\u05d5\u05dc\u05d1\u05e8.",
+        boardTooLong: "\u05de\u05e1\u05e4\u05e8 \u05e7\u05dc\u05e4\u05d9 \u05d4\u05e7\u05d4\u05d9\u05dc\u05d4 \u05d7\u05d5\u05e8\u05d2 \u05de\u05d4\u05de\u05d5\u05ea\u05e8.",
+        insufficientDeck: "\u05dc\u05d0 \u05e0\u05d5\u05ea\u05e8\u05d5 \u05de\u05e1\u05e4\u05d9\u05e7 \u05e7\u05dc\u05e4\u05d9\u05dd \u05dc\u05d1\u05e0\u05d9\u05d9\u05ea \u05d8\u05d5\u05d5\u05d7 \u05d9\u05e8\u05d9\u05d1.",
+        rangeUnavailable: "\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d2\u05d1\u05e9 \u05d8\u05d5\u05d5\u05d7 \u05d9\u05e8\u05d9\u05d1 \u05e2\u05d1\u05d5\u05e8 \u05e4\u05e8\u05de\u05d8\u05e8\u05d9\u05dd \u05d0\u05dc\u05d5.",
+        simulationFailed: "\u05d4\u05e1\u05d9\u05de\u05d5\u05dc\u05e6\u05d9\u05d4 \u05dc\u05d0 \u05d4\u05e6\u05dc\u05d9\u05d7\u05d4 \u05dc\u05e8\u05d5\u05e5. \u05e0\u05e1\u05d4 \u05dc\u05d4\u05e4\u05d7\u05d9\u05ea \u05d0\u05ea \u05de\u05e1\u05e4\u05e8 \u05d4\u05e9\u05d7\u05e7\u05e0\u05d9\u05dd \u05d0\u05d5 \u05dc\u05d0\u05e4\u05e1 \u05d0\u05ea \u05d4\u05d9\u05d3.",
+        betParametersMissing: "\u05e7\u05d1\u05e2\u05d5 \u05d2\u05d5\u05d3\u05dc \u05e7\u05d5\u05e4\u05d4 \u05d5\u05e1\u05d8\u05d0\u05e7 \u05d0\u05e4\u05e7\u05d8\u05d9\u05d1\u05d9 \u05d7\u05d9\u05d5\u05d1\u05d9 \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d4\u05d9\u05de\u05d5\u05e8 GTO.",
+        villainMustFold: "\u05d4\u05d9\u05e8\u05d9\u05d1 \u05e6\u05e8\u05d9\u05da \u05dc\u05e7\u05e4\u05dc \u05d0\u05ea \u05d4\u05d8\u05d5\u05d5\u05d7 \u05d4\u05de\u05dc\u05d0 \u05de\u05d5\u05dc \u05d4\u05d4\u05d9\u05de\u05d5\u05e8 \u05d4\u05de\u05d5\u05e6\u05e2."
+    });
 
     let probabilityUpdateTimer = null;
+    let solverUpdateTimer = null;
 
     const suits = [
         { id: "S", symbol: "\u2660", name: "\u05e2\u05dc\u05d4", color: "black" },
@@ -53,7 +77,9 @@
         seats: [],
         probabilityDisplays: [],
         isAutoAdvancePaused: false,
-        deferProbabilityUpdate: false
+        deferProbabilityUpdate: false,
+        mode: "equity",
+        solverSettings: { ...DEFAULT_SOLVER_SETTINGS }
     };
 
     const elements = {
@@ -68,7 +94,18 @@
         calculate: document.getElementById("calculate"),
         reset: document.getElementById("reset"),
         errors: document.getElementById("errors"),
-        results: document.getElementById("results")
+        results: document.getElementById("results"),
+        controls: document.querySelector(".controls"),
+        modeToggle: document.getElementById("mode-toggle"),
+        solverControls: document.getElementById("solver-controls"),
+        solverResults: document.getElementById("solver-results"),
+        solverPotSize: document.getElementById("solver-pot-size"),
+        solverEffectiveStack: document.getElementById("solver-effective-stack"),
+        solverBetSize: document.getElementById("solver-bet-size"),
+        solverOpponentProfile: document.getElementById("solver-opponent-profile"),
+        solverIterations: document.getElementById("solver-iterations"),
+        solverRun: document.getElementById("solver-run"),
+        solverReset: document.getElementById("solver-reset")
     };
 
     document.addEventListener("DOMContentLoaded", init);
@@ -86,6 +123,10 @@
         updateSeatStates();
         updatePlayerCountLabel();
         bindControls();
+        bindModeControls();
+        bindSolverControls();
+        syncSolverInputs();
+        updateModeUI();
         ensureActiveSlot();
         scheduleImmediateProbabilityUpdate();
     }
@@ -96,11 +137,13 @@
 
         suits.forEach((suit) => {
             ranks.forEach((rank) => {
+                const suitIndex = getSuitIndex(suit.id);
                 const card = {
                     id: `${rank.id}${suit.id}`,
                     rank,
                     suit,
-                    rankValue: rankValue.get(rank.id)
+                    rankValue: rankValue.get(rank.id),
+                    suitIndex
                 };
                 state.deck.push(card);
                 state.cardById.set(card.id, card);
@@ -179,7 +222,16 @@
 
         const probability = document.createElement("div");
         probability.className = "seat-probability";
-        probability.textContent = PROBABILITY_PLACEHOLDER;
+
+        const tieLine = document.createElement("div");
+        tieLine.className = "probability-line probability-tie";
+        tieLine.textContent = `${TIE_LABEL}: ${PROBABILITY_PLACEHOLDER}`;
+
+        const winLine = document.createElement("div");
+        winLine.className = "probability-line probability-win";
+        winLine.textContent = `${WIN_LABEL}: ${PROBABILITY_PLACEHOLDER}`;
+
+        probability.append(tieLine, winLine);
 
         const label = document.createElement("div");
         label.className = "seat-label";
@@ -200,7 +252,11 @@
         }
 
         seat.append(probability, label, cardsRow);
-        state.probabilityDisplays[index] = probability;
+        state.probabilityDisplays[index] = {
+            container: probability,
+            tie: tieLine,
+            win: winLine
+        };
         return seat;
     }
 
@@ -320,6 +376,9 @@
         }
 
         scheduleImmediateProbabilityUpdate();
+        if (!state.deferProbabilityUpdate && state.mode === "equity") {
+            updateWinProbabilities();
+        }
     }
 
     function clearSlot(slot, options = {}) {
@@ -362,6 +421,9 @@
 
         if (!suppressUpdate) {
             scheduleImmediateProbabilityUpdate();
+            if (!state.deferProbabilityUpdate && state.mode === "equity") {
+                updateWinProbabilities();
+            }
             if (!keepFocus) {
                 ensureActiveSlot(slot.dataset.slotType);
             }
@@ -510,8 +572,8 @@
         for (let i = next; i < state.probabilityDisplays.length; i += 1) {
             const display = state.probabilityDisplays[i];
             if (display) {
-                display.textContent = "";
-                display.classList.remove("is-leading");
+                updateProbabilityLabel(i, { win: PROBABILITY_PLACEHOLDER, tie: PROBABILITY_PLACEHOLDER });
+                display.container.classList.remove("is-leading");
             }
         }
 
@@ -660,6 +722,10 @@
     }
 
     function scheduleProbabilityUpdate() {
+        if (state.mode !== "equity") {
+            scheduleSolverUpdate();
+            return;
+        }
         if (state.deferProbabilityUpdate) {
             return;
         }
@@ -675,6 +741,10 @@
 
     // Add immediate update for fast response
     function scheduleImmediateProbabilityUpdate() {
+        if (state.mode !== "equity") {
+            scheduleSolverUpdate({ immediate: true });
+            return;
+        }
         if (state.deferProbabilityUpdate) {
             return;
         }
@@ -682,10 +752,16 @@
             const timerHost = typeof window !== "undefined" ? window : globalThis;
             timerHost.clearTimeout(probabilityUpdateTimer);
         }
-        // Use requestAnimationFrame for fastest visual update
-        requestAnimationFrame(() => {
+        const rafHost = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+            ? window
+            : null;
+        if (rafHost) {
+            rafHost.requestAnimationFrame(() => {
+                updateWinProbabilities();
+            });
+        } else {
             updateWinProbabilities();
-        });
+        }
     }
 
     function cancelScheduledProbabilityUpdate() {
@@ -694,197 +770,544 @@
             timerHost.clearTimeout(probabilityUpdateTimer);
             probabilityUpdateTimer = null;
         }
+        cancelScheduledSolverUpdate();
     }
 
+
     function updateWinProbabilities(options = {}) {
-        const { userInitiated = false } = options;
-        const players = collectPlayersData();
-        if (!players.length) {
-            clearProbabilityHighlights();
+        if (state.mode !== "equity") {
             return;
         }
 
-        const boardCards = collectBoardCards();
-        const hasAssignments = state.cardAssignments.size > 0;
-        const showMessages = userInitiated || hasAssignments;
+        const { userInitiated = false } = options;
 
-        for (let i = state.playersCount; i < state.probabilityDisplays.length; i += 1) {
-            const display = state.probabilityDisplays[i];
-            if (display) {
-                display.textContent = "";
-                display.classList.remove("is-leading");
+        const players = collectPlayersData();
+        const boardCards = collectBoardCards();
+
+        const usedCardIds = new Set();
+        players.forEach((player) => {
+            player.cards.forEach((card) => {
+                usedCardIds.add(card.id);
+            });
+        });
+        boardCards.forEach((card) => {
+            usedCardIds.add(card.id);
+        });
+
+        const remainingCards = [];
+        state.deck.forEach((card) => {
+            if (!usedCardIds.has(card.id)) {
+                remainingCards.push(card);
             }
-        }
+        });
+
+        const { shares, winCounts, tieCounts, simulations } = calculateWinShares(players, boardCards, remainingCards);
 
         clearProbabilityHighlights();
 
-        for (let i = 0; i < players.length; i += 1) {
-            updateProbabilityLabel(players[i].index, PROBABILITY_PLACEHOLDER);
-        }
-
-        const incompletePlayers = players.filter((player) => player.cards.length !== 2);
-        if (incompletePlayers.length) {
-            if (showMessages) {
-                showError("\u05d9\u05e9 \u05dc\u05d4\u05e9\u05dc\u05d9\u05dd \u05e9\u05e0\u05d9 \u05e7\u05dc\u05e4\u05d9\u05dd \u05dc\u05db\u05dc \u05e9\u05d7\u05e7\u05df \u05e4\u05e2\u05d9\u05dc.");
-            } else {
-                showError("");
-            }
-            if (elements.results) {
-                elements.results.innerHTML = "";
-            }
-            return;
-        }
-
-        const boardLength = boardCards.length;
-        if (boardLength !== 0 && boardLength !== 3 && boardLength !== 4 && boardLength !== 5) {
-            if (showMessages) {
-                showError("\u05d1\u05d7\u05e8\u05d5 0, 3, 4 \u05d0\u05d5 5 \u05e7\u05dc\u05e4\u05d9\u05dd \u05de\u05e9\u05d5\u05ea\u05e4\u05d9\u05dd \u05dc\u05d7\u05d9\u05e9\u05d5\u05d1.");
-            } else {
-                showError("");
-            }
-            if (elements.results) {
-                elements.results.innerHTML = "";
-            }
-            return;
-        }
-
-        const remainingCards = state.deck.filter((card) => !state.cardAssignments.has(card.id));
-        const { shares, simulations } = calculateWinShares(players, boardCards, remainingCards);
-
         if (!simulations) {
+            players.forEach((_, index) => {
+                updateProbabilityLabel(index, { win: PROBABILITY_PLACEHOLDER, tie: PROBABILITY_PLACEHOLDER });
+            });
             if (elements.results) {
                 elements.results.innerHTML = "";
+            }
+            if (userInitiated) {
+                showError("\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d7\u05e9\u05d1 \u05d0\u05d7\u05d5\u05d6\u05d9\u05dd \u05e2\u05d1\u05d5\u05e8 \u05d4\u05d4\u05e8\u05db\u05d1 \u05d4\u05e0\u05d5\u05db\u05d7\u05d9. \u05d5\u05d3\u05d0\u05d5 \u05e9\u05d9\u05e9 \u05de\u05e1\u05e4\u05d9\u05e7 \u05e7\u05dc\u05e4\u05d9\u05dd \u05e4\u05e0\u05d5\u05d9\u05d9\u05dd.");
             }
             return;
         }
 
         showError("");
 
-        let maxShare = 0;
-        shares.forEach((value) => {
-            if (value > maxShare) {
-                maxShare = value;
+        const inverseSimulations = 1 / simulations;
+
+        const probabilityData = players.map((_, index) => ({
+            shareRatio: shares[index] * inverseSimulations,
+            winRatio: winCounts[index] * inverseSimulations,
+            tieRatio: tieCounts[index] * inverseSimulations
+        }));
+
+        let bestShare = 0;
+        probabilityData.forEach(({ shareRatio }) => {
+            if (shareRatio > bestShare) {
+                bestShare = shareRatio;
             }
         });
 
-        for (let i = 0; i < players.length; i += 1) {
-            const probability = Math.max(0, shares[i] / simulations);
-            updateProbabilityLabel(players[i].index, formatProbability(probability));
-            const shouldHighlight = maxShare > 0 && Math.abs(shares[i] - maxShare) <= HIGHLIGHT_EPSILON;
-            setProbabilityHighlight(players[i].index, shouldHighlight);
-        }
+        probabilityData.forEach(({ winRatio, tieRatio }, index) => {
+            updateProbabilityLabel(index, {
+                win: formatProbability(winRatio),
+                tie: formatProbability(tieRatio)
+            });
+        });
 
-        if (boardLength === 5) {
-            if (elements.results) {
-                elements.results.innerHTML = "";
+        probabilityData.forEach(({ shareRatio }, index) => {
+            if (shareRatio >= bestShare - HIGHLIGHT_EPSILON) {
+                setProbabilityHighlight(index, true);
             }
-            renderFinalResults(players, boardCards);
-        } else if (elements.results) {
+        });
+
+        const isBoardComplete = boardCards.length === 5;
+        const allPlayersComplete = players.every((player) => player.cards.length === 2);
+
+        if (elements.results) {
             elements.results.innerHTML = "";
+        }
+        if (isBoardComplete && allPlayersComplete) {
+            renderFinalResults(players, boardCards);
         }
     }
 
     // Cache for board evaluations to avoid recomputation
     const evaluationCache = new Map();
+    const handScoreLengthByCategory = Object.freeze({
+        8: 2,
+        7: 3,
+        6: 3,
+        5: 6,
+        4: 2,
+        3: 4,
+        2: 4,
+        1: 5,
+        0: 6
+    });
+
+    const handScoreScratch = (() => ({
+        rankCounts: new Uint8Array(13),
+        suitCounts: new Uint8Array(4),
+        ranks: new Uint8Array(5)
+    }))();
+
+    const bestHandScoreScratch = (() => ({
+        combo: new Array(5)
+    }))();
+
+    const scoreOnlyPoolScratch = (() => ({
+        pool: new Array(7)
+    }))();
+
+    const bestHandSelectionScratch = (() => ({
+        pool: new Array(7),
+        indices: new Uint8Array(5)
+    }))();
+
+    function encodeHandScore(category, v1 = 0, v2 = 0, v3 = 0, v4 = 0, v5 = 0) {
+        return (category << 20) | (v1 << 16) | (v2 << 12) | (v3 << 8) | (v4 << 4) | v5;
+    }
+
+    function decodeHandScore(encoded) {
+        if (typeof encoded !== 'number' || encoded < 0) {
+            return [];
+        }
+        const category = (encoded >>> 20) & 0xF;
+        const length = handScoreLengthByCategory[category] ?? 6;
+        const values = new Array(length);
+        values[0] = category;
+        if (length > 1) values[1] = (encoded >>> 16) & 0xF;
+        if (length > 2) values[2] = (encoded >>> 12) & 0xF;
+        if (length > 3) values[3] = (encoded >>> 8) & 0xF;
+        if (length > 4) values[4] = (encoded >>> 4) & 0xF;
+        if (length > 5) values[5] = encoded & 0xF;
+        return values;
+    }
+
+    function sortRanksDescending(buffer) {
+        for (let i = 1; i < buffer.length; i += 1) {
+            const value = buffer[i];
+            let j = i - 1;
+            while (j >= 0 && buffer[j] < value) {
+                buffer[j + 1] = buffer[j];
+                j -= 1;
+            }
+            buffer[j + 1] = value;
+        }
+    }
+
+    function detectStraightFromSorted(buffer, rankCounts) {
+        let consecutive = 1;
+        for (let i = 1; i < buffer.length; i += 1) {
+            const current = buffer[i];
+            const previous = buffer[i - 1];
+            if (current === previous - 1) {
+                consecutive += 1;
+                if (consecutive >= 5) {
+                    return buffer[i - 4];
+                }
+            } else if (current !== previous) {
+                consecutive = 1;
+            }
+        }
+
+        if (rankCounts[12] && rankCounts[3] && rankCounts[2] && rankCounts[1] && rankCounts[0]) {
+            return 3;
+        }
+
+        return -1;
+    }
+
+    function computeHandScore(cards, scratch = handScoreScratch) {
+        const { rankCounts, suitCounts, ranks } = scratch;
+        rankCounts.fill(0);
+        suitCounts.fill(0);
+
+        for (let i = 0; i < 5; i += 1) {
+            const card = cards[i];
+            if (!card) {
+                return -1;
+            }
+            const rank = card.rankValue;
+            let suitIndex = card.suitIndex;
+            if (suitIndex === undefined) {
+                suitIndex = getSuitIndex(card.suit.id);
+                card.suitIndex = suitIndex;
+            }
+            rankCounts[rank] += 1;
+            suitCounts[suitIndex] += 1;
+            ranks[i] = rank;
+        }
+
+        sortRanksDescending(ranks);
+
+        const isFlush = suitCounts[0] === 5 || suitCounts[1] === 5 || suitCounts[2] === 5 || suitCounts[3] === 5;
+        const straightHigh = detectStraightFromSorted(ranks, rankCounts);
+        const isStraight = straightHigh !== -1;
+
+        let fourKind = -1;
+        let threeKind = -1;
+        let pairOne = -1;
+        let pairTwo = -1;
+        const singles = [];
+
+        for (let rank = 12; rank >= 0; rank -= 1) {
+            const count = rankCounts[rank];
+            if (count === 4) {
+                fourKind = rank;
+            } else if (count === 3) {
+                if (threeKind === -1) {
+                    threeKind = rank;
+                }
+            } else if (count === 2) {
+                if (pairOne === -1) {
+                    pairOne = rank;
+                } else {
+                    pairTwo = rank;
+                }
+            } else if (count === 1) {
+                singles.push(rank);
+            }
+        }
+
+        if (isStraight && isFlush) {
+            return encodeHandScore(8, straightHigh);
+        }
+
+        if (fourKind !== -1) {
+            const kicker = singles.length ? singles[0] : 0;
+            return encodeHandScore(7, fourKind, kicker);
+        }
+
+        if (threeKind !== -1 && (pairOne !== -1 || pairTwo !== -1)) {
+            const pairRank = pairOne !== -1 ? pairOne : pairTwo;
+            return encodeHandScore(6, threeKind, pairRank);
+        }
+
+        if (isFlush) {
+            return encodeHandScore(5, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4]);
+        }
+
+        if (isStraight) {
+            return encodeHandScore(4, straightHigh);
+        }
+
+        if (threeKind !== -1) {
+            const kickerOne = singles[0] ?? 0;
+            const kickerTwo = singles[1] ?? 0;
+            return encodeHandScore(3, threeKind, kickerOne, kickerTwo);
+        }
+
+        if (pairOne !== -1 && pairTwo !== -1) {
+            const kicker = singles[0] ?? 0;
+            return encodeHandScore(2, pairOne, pairTwo, kicker);
+        }
+
+        if (pairOne !== -1) {
+            const kickerOne = singles[0] ?? 0;
+            const kickerTwo = singles[1] ?? 0;
+            const kickerThree = singles[2] ?? 0;
+            return encodeHandScore(1, pairOne, kickerOne, kickerTwo, kickerThree);
+        }
+
+        return encodeHandScore(0, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4]);
+    }
+
+    function fillCardPool(holeCards, boardCards, pool) {
+        let length = 0;
+        if (holeCards) {
+            for (let i = 0; i < holeCards.length; i += 1) {
+                const card = holeCards[i];
+                if (card) {
+                    pool[length++] = card;
+                }
+            }
+        }
+        if (boardCards) {
+            for (let i = 0; i < boardCards.length; i += 1) {
+                const card = boardCards[i];
+                if (card) {
+                    pool[length++] = card;
+                }
+            }
+        }
+        return length;
+    }
+
+    function bestHandScoreFromPool(pool, poolLength, scratch = bestHandScoreScratch, outIndices) {
+        if (poolLength < 5) {
+            return -1;
+        }
+
+        const combo = scratch.combo;
+        let bestScore = -1;
+
+        for (let a = 0; a < poolLength - 4; a += 1) {
+            combo[0] = pool[a];
+            for (let b = a + 1; b < poolLength - 3; b += 1) {
+                combo[1] = pool[b];
+                for (let c = b + 1; c < poolLength - 2; c += 1) {
+                    combo[2] = pool[c];
+                    for (let d = c + 1; d < poolLength - 1; d += 1) {
+                        combo[3] = pool[d];
+                        for (let e = d + 1; e < poolLength; e += 1) {
+                            combo[4] = pool[e];
+                            const score = computeHandScore(combo);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                if (outIndices) {
+                                    outIndices[0] = a;
+                                    outIndices[1] = b;
+                                    outIndices[2] = c;
+                                    outIndices[3] = d;
+                                    outIndices[4] = e;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestScore;
+    }
+
+    function bestScoreForCards(holeCards, boardCards) {
+        const pool = scoreOnlyPoolScratch.pool;
+        const poolLength = fillCardPool(holeCards, boardCards, pool);
+        return bestHandScoreFromPool(pool, poolLength);
+    }
 
     function calculateWinShares(players, boardCards, remainingCards) {
         const drawsNeeded = 5 - boardCards.length;
         const shares = new Array(players.length).fill(0);
+        const winCounts = new Array(players.length).fill(0);
+        const tieCounts = new Array(players.length).fill(0);
         let simulations = 0;
 
         if (drawsNeeded < 0) {
-            return { shares, simulations };
+            return { shares, winCounts, tieCounts, simulations };
         }
 
-        // Create cache key for this specific scenario
-        const cacheKey = players.map(p => p.cards.map(c => c.id).sort().join('')).join('|') +
-                        '|' + boardCards.map(c => c.id).join('');
+        const missingHoleCounts = players.map((player) => Math.max(0, 2 - player.cards.length));
+        const totalMissingHoleCards = missingHoleCounts.reduce((total, value) => total + value, 0);
 
-        const evaluateBoard = (board) => {
-            // Check cache first
-            const boardKey = board.map(c => c.id).sort().join('');
-            let cachedResult = evaluationCache.get(boardKey);
+        if (remainingCards.length < drawsNeeded + totalMissingHoleCards) {
+            return { shares, winCounts, tieCounts, simulations: 0 };
+        }
 
-            if (!cachedResult) {
-                let bestScore = null;
-                let winners = [];
+        if (totalMissingHoleCards === 0) {
+            const playerKey = players
+                .map((player) => player.cards.map((card) => card.id).sort().join(""))
+                .join("|");
 
-                for (let i = 0; i < players.length; i++) {
-                    const evaluation = bestHandForPlayer(players[i].cards, board);
-                    if (bestScore === null) {
-                        bestScore = evaluation.score;
-                        winners = [i];
-                        continue;
+            const evaluateBoard = (board) => {
+                const boardKey = board.map((card) => card.id).sort().join("");
+                const cacheKey = playerKey + '|' + boardKey;
+                let cachedResult = evaluationCache.get(cacheKey);
+
+                if (!cachedResult) {
+                    let bestScore = -1;
+                    const winners = [];
+
+                    for (let i = 0; i < players.length; i += 1) {
+                        const score = bestScoreForCards(players[i].cards, board);
+
+                        if (score > bestScore) {
+                            bestScore = score;
+                            winners.length = 0;
+                            winners.push(i);
+                        } else if (score === bestScore) {
+                            winners.push(i);
+                        }
                     }
-                    const comparison = compareScoresFast(evaluation.score, bestScore);
-                    if (comparison > 0) {
-                        bestScore = evaluation.score;
-                        winners = [i];
-                    } else if (comparison === 0) {
-                        winners.push(i);
+
+                    cachedResult = { winners, bestScore };
+
+                    if (evaluationCache.size < 10000) {
+                        evaluationCache.set(cacheKey, cachedResult);
                     }
                 }
 
-                cachedResult = { winners, bestScore };
+                const winnerCount = cachedResult.winners.length;
 
-                // Limit cache size to prevent memory issues
-                if (evaluationCache.size < 10000) {
-                    evaluationCache.set(boardKey, cachedResult);
+                if (winnerCount === 1) {
+                    winCounts[cachedResult.winners[0]] += 1;
+                } else if (winnerCount > 1) {
+                    cachedResult.winners.forEach((index) => {
+                        tieCounts[index] += 1;
+                    });
+                }
+
+                const share = winnerCount ? 1 / winnerCount : 0;
+                cachedResult.winners.forEach((index) => {
+                    shares[index] += share;
+                });
+
+                simulations += 1;
+            };
+
+            if (drawsNeeded === 0) {
+                evaluateBoard(boardCards);
+                return { shares, winCounts, tieCounts, simulations };
+            }
+
+            if (remainingCards.length < drawsNeeded) {
+                return { shares, winCounts, tieCounts, simulations: 0 };
+            }
+
+            const totalCombos = combinationCount(remainingCards.length, drawsNeeded);
+            const boardBuffer = [...boardCards];
+
+            if (totalCombos && totalCombos <= ENUMERATION_LIMIT) {
+                forEachCombinationFast(remainingCards, drawsNeeded, (combo) => {
+                    boardBuffer.length = boardCards.length;
+                    boardBuffer.push(...combo);
+                    evaluateBoard(boardBuffer);
+                });
+            } else {
+                const drawBuffer = new Array(drawsNeeded);
+                const remainingLength = remainingCards.length;
+                const tempIndices = new Uint8Array(remainingLength);
+
+                for (let i = 0; i < remainingLength; i += 1) {
+                    tempIndices[i] = i;
+                }
+
+                for (let iter = 0; iter < PREFLOP_SIMULATIONS; iter += 1) {
+                    for (let i = 0; i < drawsNeeded; i += 1) {
+                        const j = i + Math.floor(Math.random() * (remainingLength - i));
+                        const temp = tempIndices[i];
+                        tempIndices[i] = tempIndices[j];
+                        tempIndices[j] = temp;
+                        drawBuffer[i] = remainingCards[tempIndices[i]];
+                    }
+
+                    boardBuffer.length = boardCards.length;
+                    boardBuffer.push(...drawBuffer);
+                    evaluateBoard(boardBuffer);
                 }
             }
 
-            const share = cachedResult.winners.length ? 1 / cachedResult.winners.length : 0;
-            cachedResult.winners.forEach((index) => {
+            return { shares, winCounts, tieCounts, simulations };
+        }
+
+        const cardsNeededPerSimulation = totalMissingHoleCards + drawsNeeded;
+        const remainingLength = remainingCards.length;
+        const tempIndices = new Uint16Array(remainingLength);
+
+        for (let i = 0; i < remainingLength; i += 1) {
+            tempIndices[i] = i;
+        }
+
+        const drawBuffer = new Array(cardsNeededPerSimulation);
+        const playerHands = players.map(() => new Array(2));
+        const boardBaseLength = boardCards.length;
+        const boardBuffer = new Array(boardBaseLength + drawsNeeded);
+
+        for (let i = 0; i < boardBaseLength; i += 1) {
+            boardBuffer[i] = boardCards[i];
+        }
+
+        const iterations = PREFLOP_SIMULATIONS;
+
+        for (let iter = 0; iter < iterations; iter += 1) {
+            for (let i = 0; i < cardsNeededPerSimulation; i += 1) {
+                const j = i + Math.floor(Math.random() * (remainingLength - i));
+                const temp = tempIndices[i];
+                tempIndices[i] = tempIndices[j];
+                tempIndices[j] = temp;
+                drawBuffer[i] = remainingCards[tempIndices[i]];
+            }
+
+            let drawIndex = 0;
+
+            for (let p = 0; p < players.length; p += 1) {
+                const baseCards = players[p].cards;
+                const missing = missingHoleCounts[p];
+                const handBuffer = playerHands[p];
+                const baseLength = baseCards.length;
+
+                handBuffer.length = baseLength + missing;
+
+                for (let b = 0; b < baseLength; b += 1) {
+                    handBuffer[b] = baseCards[b];
+                }
+
+                for (let m = 0; m < missing; m += 1) {
+                    handBuffer[baseLength + m] = drawBuffer[drawIndex++];
+                }
+            }
+
+            boardBuffer.length = boardBaseLength + drawsNeeded;
+
+            for (let b = 0; b < drawsNeeded; b += 1) {
+                boardBuffer[boardBaseLength + b] = drawBuffer[drawIndex++];
+            }
+
+            let bestScore = -1;
+            const winners = [];
+
+            for (let p = 0; p < players.length; p += 1) {
+                const score = bestScoreForCards(playerHands[p], boardBuffer);
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    winners.length = 0;
+                    winners.push(p);
+                } else if (score === bestScore) {
+                    winners.push(p);
+                }
+            }
+
+            const winnerCount = winners.length;
+
+            if (winnerCount === 1) {
+                winCounts[winners[0]] += 1;
+            } else if (winnerCount > 1) {
+                winners.forEach((index) => {
+                    tieCounts[index] += 1;
+                });
+            }
+
+            const share = winnerCount ? 1 / winnerCount : 0;
+            winners.forEach((index) => {
                 shares[index] += share;
             });
-            simulations++;
-        };
 
-        if (drawsNeeded === 0) {
-            evaluateBoard(boardCards);
-            return { shares, simulations };
+            simulations += 1;
         }
 
-        if (remainingCards.length < drawsNeeded) {
-            return { shares, simulations: 0 };
-        }
-
-        const totalCombos = combinationCount(remainingCards.length, drawsNeeded);
-        const boardBuffer = [...boardCards];
-
-        if (totalCombos && totalCombos <= ENUMERATION_LIMIT) {
-            // Use optimized combination generation
-            forEachCombinationFast(remainingCards, drawsNeeded, (combo) => {
-                boardBuffer.length = boardCards.length;
-                boardBuffer.push(...combo);
-                evaluateBoard(boardBuffer);
-            });
-        } else {
-            // Optimized Monte Carlo with reduced array operations
-            const drawBuffer = new Array(drawsNeeded);
-            const remainingLength = remainingCards.length;
-
-            // Pre-allocate arrays for better performance
-            const tempIndices = new Uint8Array(remainingLength);
-            for (let i = 0; i < remainingLength; i++) tempIndices[i] = i;
-
-            for (let iter = 0; iter < PREFLOP_SIMULATIONS; iter++) {
-                // Ultra-fast Fisher-Yates sampling
-                for (let i = 0; i < drawsNeeded; i++) {
-                    const j = i + Math.floor(Math.random() * (remainingLength - i));
-                    [tempIndices[i], tempIndices[j]] = [tempIndices[j], tempIndices[i]];
-                    drawBuffer[i] = remainingCards[tempIndices[i]];
-                }
-
-                boardBuffer.length = boardCards.length;
-                boardBuffer.push(...drawBuffer);
-                evaluateBoard(boardBuffer);
-            }
-        }
-
-        return { shares, simulations };
+        return { shares, winCounts, tieCounts, simulations };
     }
-
     // Optimized combination generator that avoids recursive calls
     function forEachCombinationFast(pool, choose, callback) {
         if (choose === 0) {
@@ -975,23 +1398,31 @@
         }
     }
 
-    function updateProbabilityLabel(index, text) {
+    function updateProbabilityLabel(index, values) {
         const display = state.probabilityDisplays[index];
-        if (display) {
-            display.textContent = text;
+        if (!display) {
+            return;
+        }
+        const tieText = values && typeof values.tie !== "undefined" ? values.tie : PROBABILITY_PLACEHOLDER;
+        const winText = values && typeof values.win !== "undefined" ? values.win : PROBABILITY_PLACEHOLDER;
+        if (display.tie) {
+            display.tie.textContent = `${TIE_LABEL}: ${tieText}`;
+        }
+        if (display.win) {
+            display.win.textContent = `${WIN_LABEL}: ${winText}`;
         }
     }
 
     function setProbabilityHighlight(index, isActive) {
         const display = state.probabilityDisplays[index];
-        if (display) {
-            display.classList.toggle("is-leading", Boolean(isActive));
+        if (display && display.container) {
+            display.container.classList.toggle("is-leading", Boolean(isActive));
         }
     }
 
     function clearProbabilityHighlights() {
         state.probabilityDisplays.forEach((display) => {
-            display?.classList.remove("is-leading");
+            display?.container?.classList.remove("is-leading");
         });
     }
 
@@ -1068,29 +1499,34 @@
     }
 
     function bestHandForPlayer(holeCards, boardCards) {
-        const allCards = [...holeCards, ...boardCards];
-        let bestScore = null;
-        let bestHand = null;
+        const selectionScratch = bestHandSelectionScratch;
+        const pool = selectionScratch.pool;
+        const poolLength = fillCardPool(holeCards, boardCards, pool);
 
-        // Fast combination generation using indices
-        const n = allCards.length;
-        for (let a = 0; a < n - 4; a++) {
-            for (let b = a + 1; b < n - 3; b++) {
-                for (let c = b + 1; c < n - 2; c++) {
-                    for (let d = c + 1; d < n - 1; d++) {
-                        for (let e = d + 1; e < n; e++) {
-                            const combo = [allCards[a], allCards[b], allCards[c], allCards[d], allCards[e]];
-                            const evaluation = evaluateFiveCardsFast(combo);
-                            if (!bestScore || compareScoresFast(evaluation.score, bestScore) > 0) {
-                                bestScore = evaluation.score;
-                                bestHand = evaluation;
-                            }
-                        }
-                    }
-                }
-            }
+        if (poolLength < 5) {
+            return null;
         }
-        return bestHand;
+
+        const indices = selectionScratch.indices;
+        const bestScore = bestHandScoreFromPool(pool, poolLength, bestHandScoreScratch, indices);
+
+        if (bestScore < 0) {
+            return null;
+        }
+
+        const bestCards = [
+            pool[indices[0]],
+            pool[indices[1]],
+            pool[indices[2]],
+            pool[indices[3]],
+            pool[indices[4]]
+        ];
+
+        const evaluation = evaluateFiveCards(bestCards);
+        evaluation.score = decodeHandScore(bestScore);
+        evaluation.scoreValue = bestScore;
+        evaluation.cards = bestCards;
+        return evaluation;
     }
 
     // Optimized fast evaluation that avoids object creation
@@ -1102,13 +1538,18 @@
         // Count ranks and suits, store values
         for (let i = 0; i < 5; i++) {
             const card = cards[i];
-            rankCounts[card.rankValue]++;
-            suitCounts[getSuitIndex(card.suit.id)]++;
+            rankCounts[card.rankValue] += 1;
+            let suitIndex = card.suitIndex;
+            if (suitIndex === undefined) {
+                suitIndex = getSuitIndex(card.suit.id);
+                card.suitIndex = suitIndex;
+            }
+            suitCounts[suitIndex] += 1;
             values[i] = card.rankValue;
         }
 
         // Sort values descending for easier processing
-        values.sort((a, b) => b - a);
+        sortRanksDescending(values);
 
         const isFlush = suitCounts[0] === 5 || suitCounts[1] === 5 || suitCounts[2] === 5 || suitCounts[3] === 5;
         const straightHigh = detectStraightFast(values);
@@ -1189,12 +1630,28 @@
     }
 
     function compareScoresFast(a, b) {
-        const len = Math.min(a.length, b.length);
-        for (let i = 0; i < len; i++) {
-            if (a[i] > b[i]) return 1;
-            if (a[i] < b[i]) return -1;
+        const aIsNumber = typeof a === 'number';
+        const bIsNumber = typeof b === 'number';
+
+        if (aIsNumber && bIsNumber) {
+            if (a === b) {
+                return 0;
+            }
+            return a > b ? 1 : -1;
         }
-        return a.length - b.length;
+
+        const left = aIsNumber ? decodeHandScore(a) : a;
+        const right = bIsNumber ? decodeHandScore(b) : b;
+        const len = Math.min(left.length, right.length);
+        for (let i = 0; i < len; i += 1) {
+            if (left[i] > right[i]) {
+                return 1;
+            }
+            if (left[i] < right[i]) {
+                return -1;
+            }
+        }
+        return left.length - right.length;
     }
 
     function evaluateFiveCards(cards) {
@@ -1398,6 +1855,656 @@
         }
     }
 
+    function setMode(nextMode) {
+        const normalized = nextMode === "solver" ? "solver" : "equity";
+        if (state.mode === normalized) {
+            return;
+        }
+        if (normalized === "solver") {
+            cancelScheduledProbabilityUpdate();
+            state.mode = "solver";
+            if (state.playersCount !== MIN_PLAYERS) {
+                setPlayersCount(MIN_PLAYERS);
+            }
+            updateModeUI();
+            scheduleSolverUpdate({ immediate: true });
+        } else {
+            cancelScheduledSolverUpdate();
+            state.mode = "equity";
+            updateModeUI();
+            scheduleImmediateProbabilityUpdate();
+        }
+    }
+
+    function bindModeControls() {
+        if (!elements.modeToggle) {
+            return;
+        }
+        elements.modeToggle.addEventListener("click", () => {
+            setMode(state.mode === "equity" ? "solver" : "equity");
+        });
+    }
+
+    function bindSolverControls() {
+        if (!elements.solverControls) {
+            return;
+        }
+
+        const attachNumberHandler = (input, key, options = {}) => {
+            if (!input) {
+                return;
+            }
+            const { min = -Infinity, max = Infinity, step = 1 } = options;
+            input.addEventListener("change", () => {
+                const raw = Number.parseFloat(input.value);
+                if (!Number.isFinite(raw)) {
+                    input.value = state.solverSettings[key];
+                    return;
+                }
+                let clamped = Math.max(min, Math.min(max, raw));
+                if (key === "iterations") {
+                    clamped = Math.round(clamped / step) * step;
+                }
+                input.value = clamped;
+                updateSolverSetting(key, clamped);
+            });
+        };
+
+        attachNumberHandler(elements.solverPotSize, "potSize", { min: 0, max: 10000, step: 0.5 });
+        attachNumberHandler(elements.solverEffectiveStack, "effectiveStack", { min: 0, max: 10000, step: 0.5 });
+        attachNumberHandler(elements.solverBetSize, "betSizePercent", { min: 1, max: 400, step: 1 });
+        attachNumberHandler(elements.solverIterations, "iterations", { min: 1000, max: 200000, step: 1000 });
+
+        if (elements.solverOpponentProfile) {
+            elements.solverOpponentProfile.addEventListener("change", () => {
+                updateSolverSetting("opponentProfile", elements.solverOpponentProfile.value);
+            });
+        }
+
+        elements.solverRun?.addEventListener("click", () => {
+            scheduleSolverUpdate({ immediate: true });
+        });
+
+        elements.solverReset?.addEventListener("click", () => {
+            resetSolverSettings();
+        });
+    }
+
+    function syncSolverInputs() {
+        if (elements.solverPotSize) {
+            elements.solverPotSize.value = state.solverSettings.potSize;
+        }
+        if (elements.solverEffectiveStack) {
+            elements.solverEffectiveStack.value = state.solverSettings.effectiveStack;
+        }
+        if (elements.solverBetSize) {
+            elements.solverBetSize.value = state.solverSettings.betSizePercent;
+        }
+        if (elements.solverOpponentProfile) {
+            elements.solverOpponentProfile.value = state.solverSettings.opponentProfile;
+        }
+        if (elements.solverIterations) {
+            elements.solverIterations.value = state.solverSettings.iterations;
+        }
+    }
+
+    function resetSolverSettings() {
+        state.solverSettings = { ...DEFAULT_SOLVER_SETTINGS };
+        syncSolverInputs();
+        scheduleSolverUpdate({ immediate: true });
+    }
+
+    function updateSolverSetting(key, value) {
+        if (!Object.prototype.hasOwnProperty.call(state.solverSettings, key)) {
+            return;
+        }
+        let normalized = value;
+        if (key === "opponentProfile") {
+            normalized = SOLVER_PROFILES.has(String(value)) ? String(value) : DEFAULT_SOLVER_SETTINGS.opponentProfile;
+        } else {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return;
+            }
+            switch (key) {
+                case "betSizePercent":
+                    normalized = Math.max(1, Math.min(400, numeric));
+                    break;
+                case "iterations":
+                    normalized = Math.max(1000, Math.round(numeric / 1000) * 1000);
+                    break;
+                default:
+                    normalized = Math.max(0, numeric);
+                    break;
+            }
+        }
+        if (state.solverSettings[key] === normalized) {
+            return;
+        }
+        state.solverSettings[key] = normalized;
+        syncSolverInputs();
+        scheduleSolverUpdate();
+    }
+
+    function updateModeUI() {
+        const isSolver = state.mode === "solver";
+        if (elements.modeToggle) {
+            elements.modeToggle.setAttribute("aria-pressed", isSolver ? "true" : "false");
+            elements.modeToggle.textContent = isSolver ? "\u05d7\u05d6\u05e8\u05d4 \u05dc\u05de\u05d7\u05e9\u05d1\u05d5\u05df \u05d4\u05e1\u05ea\u05d1\u05e8\u05d5\u05d9\u05d5\u05ea" : "\u05e2\u05d1\u05d5\u05e8 \u05dc\u05e1\u05d5\u05dc\u05d1\u05e8 GTO";
+        }
+        if (elements.controls) {
+            elements.controls.classList.toggle("is-solver-mode", isSolver);
+        }
+        if (elements.addPlayer) {
+            elements.addPlayer.disabled = isSolver;
+        }
+        if (elements.removePlayer) {
+            elements.removePlayer.disabled = isSolver;
+        }
+        if (elements.solverControls) {
+            elements.solverControls.hidden = !isSolver;
+            elements.solverControls.setAttribute("aria-hidden", isSolver ? "false" : "true");
+        }
+        if (elements.solverResults) {
+            elements.solverResults.hidden = !isSolver;
+            elements.solverResults.setAttribute("aria-hidden", isSolver ? "false" : "true");
+            if (isSolver && !elements.solverResults.classList.contains("has-data")) {
+                renderSolverPlaceholder();
+            }
+        }
+        if (elements.results) {
+            elements.results.hidden = isSolver;
+            elements.results.setAttribute("aria-hidden", isSolver ? "true" : "false");
+        }
+    }
+
+    function scheduleSolverUpdate(options = {}) {
+        if (state.mode !== "solver") {
+            return;
+        }
+        const { immediate = false, delay = PROBABILITY_UPDATE_DELAY } = options;
+        const timerHost = typeof window !== "undefined" ? window : globalThis;
+        if (solverUpdateTimer !== null) {
+            timerHost.clearTimeout(solverUpdateTimer);
+            solverUpdateTimer = null;
+        }
+        if (immediate) {
+            if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() => {
+                    updateSolverRecommendations();
+                });
+            } else {
+                updateSolverRecommendations();
+            }
+            return;
+        }
+        solverUpdateTimer = timerHost.setTimeout(() => {
+            solverUpdateTimer = null;
+            updateSolverRecommendations();
+        }, delay);
+    }
+
+    function cancelScheduledSolverUpdate() {
+        if (solverUpdateTimer !== null) {
+            const timerHost = typeof window !== "undefined" ? window : globalThis;
+            timerHost.clearTimeout(solverUpdateTimer);
+            solverUpdateTimer = null;
+        }
+    }
+
+    function updateSolverRecommendations() {
+        if (state.mode !== "solver") {
+            return;
+        }
+        if (!elements.solverResults) {
+            return;
+        }
+        const players = collectPlayersData();
+        const hero = players[0];
+        if (!hero || hero.cards.length !== 2) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.heroCardsRequired);
+            return;
+        }
+        const boardCards = collectBoardCards();
+        if (boardCards.length > 5) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.boardTooLong);
+            return;
+        }
+        const assignedIds = new Set();
+        hero.cards.forEach((card) => assignedIds.add(card.id));
+        boardCards.forEach((card) => assignedIds.add(card.id));
+        state.cardAssignments.forEach((slot, cardId) => {
+            assignedIds.add(cardId);
+        });
+        const availableForVillain = [];
+        state.deck.forEach((card) => {
+            if (!assignedIds.has(card.id)) {
+                availableForVillain.push(card);
+            }
+        });
+        if (availableForVillain.length < 2) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.insufficientDeck);
+            return;
+        }
+        const profile = SOLVER_PROFILES.has(state.solverSettings.opponentProfile)
+            ? state.solverSettings.opponentProfile
+            : DEFAULT_SOLVER_SETTINGS.opponentProfile;
+        const villainRange = buildVillainRange(availableForVillain, profile);
+        if (!villainRange.combos.length || villainRange.totalWeight <= 0) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.rangeUnavailable);
+            return;
+        }
+        const iterations = Math.max(villainRange.combos.length, Math.max(1000, Number(state.solverSettings.iterations) || 1000));
+        const simulation = simulateRangeMatchup(hero.cards, boardCards, villainRange, iterations);
+        if (!simulation.samples) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.simulationFailed);
+            return;
+        }
+        const heroEquity = (simulation.heroWins + simulation.heroTies * 0.5) / simulation.samples;
+        const potSize = Math.max(0, Number(state.solverSettings.potSize) || 0);
+        const effectiveStack = Math.max(0, Number(state.solverSettings.effectiveStack) || 0);
+        const betPercent = Math.max(1, Number(state.solverSettings.betSizePercent) || 0) / 100;
+        const proposedBet = potSize > 0 ? potSize * betPercent : betPercent;
+        const betAmount = Math.min(effectiveStack, proposedBet);
+        if (betAmount <= 0) {
+            renderSolverPlaceholder(SOLVER_MESSAGES.betParametersMissing);
+            return;
+        }
+        const totalWeight = villainRange.totalWeight;
+        const callThreshold = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 1;
+        const mdf = betAmount > 0 ? potSize / ((potSize + betAmount) || 1) : 0;
+        const sortedCombos = villainRange.combos.slice().sort((a, b) => a.heroEquity - b.heroEquity);
+        const targetCallWeight = totalWeight * mdf;
+        let callWeight = 0;
+        let callEVSum = 0;
+        const callDetails = [];
+        for (let i = 0; i < sortedCombos.length && callWeight < targetCallWeight - 1e-7; i += 1) {
+            const combo = sortedCombos[i];
+            if (combo.weight <= 0) {
+                continue;
+            }
+            const remaining = targetCallWeight - callWeight;
+            const usedWeight = Math.min(combo.weight, remaining);
+            if (usedWeight <= 0) {
+                continue;
+            }
+            const portion = usedWeight / combo.weight;
+            callWeight += usedWeight;
+            const heroEq = clampProbability(combo.heroEquity);
+            const callEV = heroEq * (potSize + betAmount) - (1 - heroEq) * betAmount;
+            callEVSum += usedWeight * callEV;
+            if (callDetails.length < 8) {
+                callDetails.push({
+                    cards: combo.cards,
+                    heroEquity: heroEq,
+                    villainEquity: clampProbability(1 - heroEq),
+                    portion: portion,
+                    weightShare: combo.weight / totalWeight
+                });
+            }
+        }
+        const callFrequency = totalWeight > 0 ? callWeight / totalWeight : 0;
+        const foldFrequency = Math.max(0, 1 - callFrequency);
+        const foldEV = foldFrequency * potSize;
+        const callEV = totalWeight > 0 ? callEVSum / totalWeight : 0;
+        const evBet = foldEV + callEV;
+        const evCheck = heroEquity * potSize;
+        const betAdvantage = evBet - evCheck;
+        const optimalBluffRatio = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 0;
+        let valueWeight = 0;
+        let bluffWeight = 0;
+        villainRange.combos.forEach((combo) => {
+            if (combo.weight <= 0) {
+                return;
+            }
+            if (combo.heroEquity >= callThreshold) {
+                valueWeight += combo.weight;
+            } else {
+                bluffWeight += combo.weight;
+            }
+        });
+        const bluffCapacity = valueWeight * optimalBluffRatio;
+        const bluffCoverage = bluffCapacity > 0 ? Math.max(0, Math.min(1.5, bluffWeight / bluffCapacity)) : 0;
+        const confidence = Math.max(0.1, Math.min(0.99, Math.sqrt(simulation.samples) / Math.sqrt(iterations * 1.5)));
+        const rawRecommendation = describeHeroAction(heroEquity, callThreshold, betAdvantage);
+        const recommendation = betAmount > 0
+            ? {
+                label: `${rawRecommendation.label} ${betAmount.toFixed(2)} BB (${formatSolverPercent(betPercent)})`,
+                detail: rawRecommendation.detail
+            }
+            : rawRecommendation;
+        renderSolverResults({
+            heroCards: hero.cards,
+            boardCards,
+            heroEquity,
+            evBet,
+            evCheck,
+            betAdvantage,
+            betAmount,
+            betPercent,
+            potSize,
+            effectiveStack,
+            callThreshold,
+            mdf,
+            callFrequency,
+            foldFrequency,
+            optimalBluffRatio,
+            bluffCoverage,
+            valueWeight,
+            bluffWeight,
+            callDetails,
+            iterations: simulation.samples,
+            combosCount: villainRange.combos.length,
+            confidence,
+            profile,
+            boardStage: boardCards.length,
+            recommendation
+        });
+    }
+
+    function renderSolverPlaceholder(message = SOLVER_MESSAGES.default) {
+        if (!elements.solverResults) {
+            return;
+        }
+        elements.solverResults.classList.remove("has-data");
+        elements.solverResults.innerHTML = '';
+        const wrapper = document.createElement("div");
+        wrapper.className = "solver-placeholder";
+        const paragraph = document.createElement("p");
+        paragraph.textContent = message;
+        wrapper.appendChild(paragraph);
+        elements.solverResults.appendChild(wrapper);
+    }
+
+    function renderSolverResults(data) {
+        if (!elements.solverResults) {
+            return;
+        }
+        elements.solverResults.innerHTML = '';
+        elements.solverResults.classList.add("has-data");
+
+        const summary = document.createElement("section");
+        summary.className = "solver-summary";
+        summary.innerHTML = `
+            <div class="solver-chip">
+                <span class="solver-chip-label">\u05d4\u05d9\u05d3 \u05e9\u05dc\u05da</span>
+                <span class="solver-chip-value">${formatCardList(data.heroCards)}</span>
+            </div>
+            <div class="solver-chip">
+                <span class="solver-chip-label">\u05e7\u05dc\u05e4\u05d9 \u05e7\u05d4\u05d9\u05dc\u05d4</span>
+                <span class="solver-chip-value">${formatCardList(data.boardCards)}</span>
+            </div>
+            <div class="solver-chip emphasis">
+                <span class="solver-chip-label">\u05d4\u05de\u05dc\u05e6\u05ea GTO</span>
+                <span class="solver-chip-value">${data.recommendation.label}</span>
+                <span class="solver-chip-hint">${data.recommendation.detail}</span>
+            </div>
+            <div class="solver-chip">
+                <span class="solver-chip-label">\u05d4\u05e9\u05d5\u05d5\u05d0\u05ea EV</span>
+                <span class="solver-chip-value">${formatSolverEV(data.evBet)} \u05de\u05d5\u05dc ${formatSolverEV(data.evCheck)}</span>
+                <span class="solver-chip-hint">\u0394 ${formatSolverEV(data.betAdvantage)}</span>
+            </div>
+        `;
+
+        const metrics = document.createElement("section");
+        metrics.className = "solver-metrics";
+        metrics.appendChild(createMetricRow("\u05d4\u05e1\u05ea\u05d1\u05e8\u05d5\u05ea \u05d6\u05db\u05d9\u05d9\u05d4 \u05de\u05d5\u05dc \u05d4\u05d8\u05d5\u05d5\u05d7", formatSolverPercent(data.heroEquity)));
+        metrics.appendChild(createMetricRow("\u05e1\u05e3 \u05e7\u05e8\u05d9\u05d0\u05d4 (Pot Odds)", formatSolverPercent(data.callThreshold)));
+        metrics.appendChild(createMetricRow("MDF \u05e0\u05d3\u05e8\u05e9", formatSolverPercent(data.mdf)));
+        metrics.appendChild(createMetricRow("\u05ea\u05d3\u05d9\u05e8\u05d5\u05ea \u05e7\u05e8\u05d9\u05d0\u05d4 \u05de\u05e9\u05d5\u05e2\u05e8\u05ea", formatSolverPercent(data.callFrequency)));
+        metrics.appendChild(createMetricRow("\u05d4\u05e6\u05e2\u05ea \u05d2\u05d5\u05d3\u05dc \u05d4\u05d9\u05de\u05d5\u05e8", `${formatSolverEV(data.betAmount)} (${formatSolverPercent(data.betPercent)})`));
+        metrics.appendChild(createMetricRow("\u05db\u05d9\u05e1\u05d5\u05d9 \u05d1\u05dc\u05d5\u05e4\u05d9\u05dd \u05dc\u05e2\u05d5\u05de\u05ea \u05e2\u05e8\u05da", `${formatSolverPercent(data.bluffCoverage)} / ${formatSolverPercent(data.optimalBluffRatio)}`, "Actual / Optimal"));
+        metrics.appendChild(createMetricRow("\u05e8\u05de\u05ea \u05d1\u05d9\u05d8\u05d7\u05d5\u05df", formatSolverPercent(data.confidence)));
+        metrics.appendChild(createMetricRow("\u05de\u05d5\u05e4\u05e2\u05d9\u05dd \u05de\u05d3\u05d5\u05de\u05d9\u05dd", data.iterations.toLocaleString("he-IL")));
+
+        const defense = document.createElement("section");
+        defense.className = "solver-defense";
+        const defenseTitle = document.createElement("h3");
+        defenseTitle.textContent = "\u05d8\u05d5\u05d5\u05d7 \u05d4\u05d2\u05e0\u05d4 \u05d9\u05e8\u05d9\u05d1 (MDF)";
+        defense.appendChild(defenseTitle);
+        const defenseList = document.createElement("ul");
+        defenseList.className = "solver-defense-list";
+        data.callDetails.forEach((item) => {
+            const li = document.createElement("li");
+            li.className = "solver-defense-item";
+            li.innerHTML = `
+                <span class="combo">${formatCardList(item.cards)}</span>
+                <span class="equity">${formatSolverPercent(item.villainEquity)}</span>
+                <span class="portion">${formatSolverPercent(item.portion)}</span>
+            `;
+            defenseList.appendChild(li);
+        });
+        if (!data.callDetails.length) {
+            const li = document.createElement("li");
+            li.className = "solver-defense-item muted";
+            li.textContent = SOLVER_MESSAGES.villainMustFold;
+            defenseList.appendChild(li);
+        }
+        defense.appendChild(defenseList);
+
+        elements.solverResults.append(summary, metrics, defense);
+    }
+
+    function createMetricRow(label, value, hint) {
+        const row = document.createElement("div");
+        row.className = "solver-metric";
+        const labelEl = document.createElement("span");
+        labelEl.className = "solver-metric-label";
+        labelEl.textContent = label;
+        row.appendChild(labelEl);
+        const valueEl = document.createElement("span");
+        valueEl.className = "solver-metric-value";
+        valueEl.textContent = value;
+        row.appendChild(valueEl);
+        if (hint) {
+            const hintEl = document.createElement("span");
+            hintEl.className = "solver-metric-hint";
+            hintEl.textContent = hint;
+            row.appendChild(hintEl);
+        }
+        return row;
+    }
+
+    function buildVillainRange(cards, profile) {
+        const combos = [];
+        let totalWeight = 0;
+        for (let i = 0; i < cards.length - 1; i += 1) {
+            for (let j = i + 1; j < cards.length; j += 1) {
+                const cardA = cards[i];
+                const cardB = cards[j];
+                const weight = computeComboWeight(cardA, cardB, profile);
+                if (weight <= 0) {
+                    continue;
+                }
+                totalWeight += weight;
+                combos.push({
+                    cards: [cardA, cardB],
+                    weight,
+                    cumulative: totalWeight,
+                    heroWins: 0,
+                    heroTies: 0,
+                    samples: 0,
+                    heroEquity: 0
+                });
+            }
+        }
+        return { combos, totalWeight };
+    }
+
+    function computeComboWeight(cardA, cardB, profile) {
+        const high = Math.max(cardA.rankValue, cardB.rankValue);
+        const low = Math.min(cardA.rankValue, cardB.rankValue);
+        const gap = Math.abs(cardA.rankValue - cardB.rankValue) - 1;
+        const pair = cardA.rankValue === cardB.rankValue;
+        const suited = cardA.suit.id === cardB.suit.id;
+        const connected = Math.abs(cardA.rankValue - cardB.rankValue) === 1;
+        switch (profile) {
+            case "tight":
+                return 0.3 + (high + low) / 20 + (pair ? 1.1 : 0) + (suited ? 0.2 : 0);
+            case "loose":
+                return 0.8 + (14 - Math.max(0, gap)) / 18 + (suited ? 0.5 : 0) + (pair ? 0.7 : 0);
+            case "aggressive":
+                return 0.9 + (connected ? 0.7 : 0) + (suited ? 0.5 : 0) + (pair ? 0.9 : 0) + (gap <= 2 ? 0.3 : 0);
+            default:
+                return 1 + (pair ? 0.6 : 0) + (suited ? 0.25 : 0) + Math.max(0, high - 7) / 12;
+        }
+    }
+
+    function pickWeightedCombo(combos, totalWeight, target) {
+        if (!combos.length) {
+            return null;
+        }
+        if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+            return combos[0];
+        }
+        let low = 0;
+        let high = combos.length - 1;
+        while (low <= high) {
+            const mid = low + Math.floor((high - low) / 2);
+            const current = combos[mid];
+            if (target <= current.cumulative) {
+                if (mid === 0 || target > combos[mid - 1].cumulative) {
+                    return current;
+                }
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+        return combos[combos.length - 1];
+    }
+
+    function simulateRangeMatchup(heroCards, boardCards, villainRange, iterations) {
+        const heroIds = new Set(heroCards.map((card) => card.id));
+        const boardIds = new Set(boardCards.map((card) => card.id));
+        const basePool = [];
+        state.deck.forEach((card) => {
+            if (!heroIds.has(card.id) && !boardIds.has(card.id)) {
+                basePool.push(card);
+            }
+        });
+        const drawsNeeded = Math.max(0, 5 - boardCards.length);
+        const boardBaseLength = boardCards.length;
+        const boardBuffer = new Array(boardBaseLength + drawsNeeded);
+        for (let i = 0; i < boardBaseLength; i += 1) {
+            boardBuffer[i] = boardCards[i];
+        }
+        const scratchPool = new Array(basePool.length);
+        let heroWins = 0;
+        let heroTies = 0;
+        let samples = 0;
+        villainRange.combos.forEach((combo) => {
+            combo.heroWins = 0;
+            combo.heroTies = 0;
+            combo.samples = 0;
+        });
+        const combos = villainRange.combos;
+        const totalWeight = villainRange.totalWeight;
+        const totalIterations = Math.max(iterations, combos.length);
+        const ensured = Math.min(combos.length, totalIterations);
+        for (let i = 0; i < ensured; i += 1) {
+            simulateCombo(combos[i]);
+        }
+        for (let iter = ensured; iter < totalIterations; iter += 1) {
+            const r = Math.random() * totalWeight;
+            const combo = pickWeightedCombo(combos, totalWeight, r);
+            if (combo) {
+                simulateCombo(combo);
+            }
+        }
+        combos.forEach((combo) => {
+            if (combo.samples > 0) {
+                combo.heroEquity = (combo.heroWins + combo.heroTies * 0.5) / combo.samples;
+            } else {
+                combo.heroEquity = samples > 0 ? (heroWins + heroTies * 0.5) / samples : 0.5;
+            }
+        });
+        return { heroWins, heroTies, samples, drawsNeeded, boardLength: boardBaseLength };
+
+        function simulateCombo(combo) {
+            const poolSize = populateScratch(combo);
+            if (poolSize < drawsNeeded) {
+                return;
+            }
+            if (drawsNeeded > 0) {
+                for (let d = 0; d < drawsNeeded; d += 1) {
+                    const j = d + Math.floor(Math.random() * (poolSize - d));
+                    const temp = scratchPool[d];
+                    scratchPool[d] = scratchPool[j];
+                    scratchPool[j] = temp;
+                    boardBuffer[boardBaseLength + d] = scratchPool[d];
+                }
+                boardBuffer.length = boardBaseLength + drawsNeeded;
+            } else {
+                boardBuffer.length = boardBaseLength;
+            }
+            const heroScore = bestScoreForCards(heroCards, boardBuffer);
+            const villainScore = bestScoreForCards(combo.cards, boardBuffer);
+            const cmp = heroScore === villainScore ? 0 : (heroScore > villainScore ? 1 : -1);
+            samples += 1;
+            combo.samples += 1;
+            if (cmp > 0) {
+                heroWins += 1;
+                combo.heroWins += 1;
+            } else if (cmp === 0) {
+                heroTies += 1;
+                combo.heroTies += 1;
+            }
+        }
+
+        function populateScratch(combo) {
+            const firstId = combo.cards[0].id;
+            const secondId = combo.cards[1].id;
+            let length = 0;
+            for (let i = 0; i < basePool.length; i += 1) {
+                const card = basePool[i];
+                if (card.id === firstId || card.id === secondId) {
+                    continue;
+                }
+                scratchPool[length] = card;
+                length += 1;
+            }
+            return length;
+        }
+    }
+
+        function describeHeroAction(heroEquity, callThreshold, advantage) {
+        const delta = advantage;
+        let label;
+        let detail;
+        if (delta > 0.02) {
+            label = "\u05d4\u05d9\u05de\u05d5\u05e8";
+            detail = heroEquity >= callThreshold + 0.05 ? "\u05d4\u05d9\u05de\u05d5\u05e8 \u05e2\u05e8\u05da \u05d8\u05d4\u05d5\u05e8" : "\u05d4\u05d9\u05de\u05d5\u05e8 \u05de\u05e9\u05d5\u05dc\u05d1 / \u05d7\u05e6\u05d9 \u05e2\u05e8\u05da";
+        } else if (delta < -0.02) {
+            label = "\u05d1\u05d3\u05d9\u05e7\u05d4";
+            detail = heroEquity <= callThreshold - 0.05 ? "\u05e6'\u05e7 \u05dc\u05e9\u05de\u05d9\u05e8\u05ea \u05d8\u05d5\u05d5\u05d7" : "\u05e6'\u05e7-\u05d1\u05e7 \u05de\u05d0\u05d5\u05d6\u05df";
+        } else {
+            label = "\u05d0\u05d9\u05d6\u05d5\u05df";
+            detail = "\u05de\u05d9\u05e7\u05e1 \u05e9\u05d5\u05d5\u05d4 \u05d1\u05d9\u05df \u05e6'\u05e7 \u05dc\u05d4\u05d9\u05de\u05d5\u05e8";
+        }
+        return { label, detail };
+    }
+
+    function formatSolverPercent(value, decimals = 1) {
+        const ratio = clampProbability(value);
+        return `${(ratio * 100).toFixed(decimals)}%`;
+    }
+
+    function formatSolverEV(value) {
+        if (!Number.isFinite(value)) {
+            return "0 BB";
+        }
+        const rounded = Math.abs(value) < 0.005 ? 0 : value;
+        return `${rounded >= 0 ? "+" : ""}${rounded.toFixed(2)} BB`;
+    }
+
+    function clampProbability(value) {
+        if (!Number.isFinite(value)) {
+            return 0;
+        }
+        return Math.max(0, Math.min(1, value));
+    }
+
     function formatCard(card) {
         if (!card) {
             return "-";
@@ -1416,3 +2523,12 @@
         return id ? state.cardById.get(id) : null;
     }
 })();
+
+
+
+
+
+
+
+
+
