@@ -79,6 +79,7 @@
         isAutoAdvancePaused: false,
         deferProbabilityUpdate: false,
         mode: "equity",
+        isSolverPanelOpen: false,
         solverSettings: { ...DEFAULT_SOLVER_SETTINGS }
     };
 
@@ -105,7 +106,8 @@
         solverOpponentProfile: document.getElementById("solver-opponent-profile"),
         solverIterations: document.getElementById("solver-iterations"),
         solverRun: document.getElementById("solver-run"),
-        solverReset: document.getElementById("solver-reset")
+        solverReset: document.getElementById("solver-reset"),
+        solverSettingsToggle: document.getElementById("solver-settings-toggle")
     };
 
     document.addEventListener("DOMContentLoaded", init);
@@ -125,6 +127,7 @@
         bindControls();
         bindModeControls();
         bindSolverControls();
+        bindSolverPanelToggle();
         syncSolverInputs();
         updateModeUI();
         ensureActiveSlot();
@@ -1930,6 +1933,75 @@
         });
     }
 
+    function bindSolverPanelToggle() {
+        if (!elements.solverSettingsToggle || !elements.solverControls) {
+            return;
+        }
+
+        elements.solverSettingsToggle.addEventListener("click", () => {
+            setSolverPanelOpen(!state.isSolverPanelOpen);
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!state.isSolverPanelOpen || state.mode !== "solver") {
+                return;
+            }
+            const target = event.target;
+            if (!target || !(target instanceof Node)) {
+                return;
+            }
+            if (elements.solverControls.contains(target) || elements.solverSettingsToggle.contains(target)) {
+                return;
+            }
+            setSolverPanelOpen(false);
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (!state.isSolverPanelOpen || state.mode !== "solver") {
+                return;
+            }
+            if (event.key === "Escape" || event.key === "Esc") {
+                setSolverPanelOpen(false);
+                if (typeof elements.solverSettingsToggle.focus === "function") {
+                    elements.solverSettingsToggle.focus();
+                }
+            }
+        });
+    }
+
+    function setSolverPanelOpen(open) {
+        if (!elements.solverControls || !elements.solverSettingsToggle) {
+            state.isSolverPanelOpen = false;
+            return;
+        }
+
+        const shouldOpen = Boolean(open) && state.mode === "solver" && !elements.solverControls.hidden;
+        state.isSolverPanelOpen = shouldOpen;
+
+        elements.solverControls.classList.toggle("is-open", shouldOpen);
+        elements.solverControls.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+
+        if (typeof elements.solverControls.toggleAttribute === "function") {
+            elements.solverControls.toggleAttribute("inert", !shouldOpen);
+        } else if (!shouldOpen) {
+            elements.solverControls.setAttribute("inert", "");
+        } else {
+            elements.solverControls.removeAttribute("inert");
+        }
+
+        elements.solverSettingsToggle.classList.toggle("is-active", shouldOpen);
+        elements.solverSettingsToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+
+        if (shouldOpen) {
+            const focusTarget = elements.solverControls.querySelector("input, select");
+            if (focusTarget && typeof focusTarget.focus === "function") {
+                setTimeout(() => {
+                    focusTarget.focus({ preventScroll: true });
+                }, 0);
+            }
+        }
+    }
+
     function syncSolverInputs() {
         if (elements.solverPotSize) {
             elements.solverPotSize.value = state.solverSettings.potSize;
@@ -2001,9 +2073,17 @@
         if (elements.removePlayer) {
             elements.removePlayer.disabled = isSolver;
         }
+        if (elements.solverSettingsToggle) {
+            elements.solverSettingsToggle.hidden = !isSolver;
+            elements.solverSettingsToggle.setAttribute("aria-hidden", isSolver ? "false" : "true");
+        }
         if (elements.solverControls) {
             elements.solverControls.hidden = !isSolver;
-            elements.solverControls.setAttribute("aria-hidden", isSolver ? "false" : "true");
+        }
+        if (isSolver) {
+            setSolverPanelOpen(state.isSolverPanelOpen);
+        } else {
+            setSolverPanelOpen(false);
         }
         if (elements.solverResults) {
             elements.solverResults.hidden = !isSolver;
@@ -2111,68 +2191,222 @@
             return;
         }
         const totalWeight = villainRange.totalWeight;
-        const callThreshold = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 1;
-        const mdf = betAmount > 0 ? potSize / ((potSize + betAmount) || 1) : 0;
-        const sortedCombos = villainRange.combos.slice().sort((a, b) => a.heroEquity - b.heroEquity);
-        const targetCallWeight = totalWeight * mdf;
-        let callWeight = 0;
-        let callEVSum = 0;
-        const callDetails = [];
-        for (let i = 0; i < sortedCombos.length && callWeight < targetCallWeight - 1e-7; i += 1) {
-            const combo = sortedCombos[i];
-            if (combo.weight <= 0) {
-                continue;
-            }
-            const remaining = targetCallWeight - callWeight;
-            const usedWeight = Math.min(combo.weight, remaining);
-            if (usedWeight <= 0) {
-                continue;
-            }
-            const portion = usedWeight / combo.weight;
-            callWeight += usedWeight;
-            const heroEq = clampProbability(combo.heroEquity);
-            const callEV = heroEq * (potSize + betAmount) - (1 - heroEq) * betAmount;
-            callEVSum += usedWeight * callEV;
-            if (callDetails.length < 8) {
-                callDetails.push({
-                    cards: combo.cards,
-                    heroEquity: heroEq,
-                    villainEquity: clampProbability(1 - heroEq),
-                    portion: portion,
-                    weightShare: combo.weight / totalWeight
+        const solverNamespace = typeof window !== "undefined" ? window.AlphaPoker : globalThis.AlphaPoker;
+        const solverRegistry = solverNamespace && solverNamespace.Solvers && typeof solverNamespace.Solvers.solveAll === "function"
+            ? solverNamespace.Solvers
+            : null;
+        let solverOutput = null;
+        let integrationSummaries = [];
+        if (solverRegistry) {
+            try {
+                const aggregated = solverRegistry.solveAll({
+                    hero: { cards: hero.cards, equity: heroEquity },
+                    board: boardCards,
+                    villainRange,
+                    potSize,
+                    betSize: betAmount,
+                    stackSize: effectiveStack,
+                    iterations,
+                    simulation,
+                    metadata: { profile, boardStage: boardCards.length }
                 });
+                if (aggregated && aggregated.primary && aggregated.primary.summary) {
+                    solverOutput = aggregated.primary.summary;
+                }
+                if (aggregated && Array.isArray(aggregated.results)) {
+                    integrationSummaries = aggregated.results
+                        .map((entry) => ({
+                            id: entry.id,
+                            label: entry.label,
+                            ok: entry.ok,
+                            origin: entry.origin || "",
+                            version: entry.version || "",
+                            priority: entry.priority || 0,
+                            summary: entry.summary || null,
+                            detail: entry.detail || null,
+                            diagnostics: entry.diagnostics || null,
+                            error: entry.error ? String(entry.error) : null
+                        }))
+                        .sort((a, b) => b.priority - a.priority);
+                }
+            } catch (error) {
+                console.warn("[AlphaPoker] Solver registry failure", error);
             }
         }
-        const callFrequency = totalWeight > 0 ? callWeight / totalWeight : 0;
-        const foldFrequency = Math.max(0, 1 - callFrequency);
-        const foldEV = foldFrequency * potSize;
-        const callEV = totalWeight > 0 ? callEVSum / totalWeight : 0;
-        const evBet = foldEV + callEV;
-        const evCheck = heroEquity * potSize;
+        if (!solverOutput && solverNamespace && solverNamespace.SingleStreetCFR && typeof solverNamespace.SingleStreetCFR.solve === "function") {
+            try {
+                solverOutput = solverNamespace.SingleStreetCFR.solve({
+                    combos: villainRange.combos,
+                    totalWeight,
+                    potSize,
+                    betSize: betAmount,
+                    stackSize: effectiveStack,
+                    iterations
+                });
+                if (solverOutput && integrationSummaries.length === 0) {
+                    integrationSummaries.push({
+                        id: "singleStreetCfr",
+                        label: "Single Street CFR",
+                        ok: true,
+                        origin: "AlphaPoker core",
+                        version: "legacy",
+                        priority: 0,
+                        summary: solverOutput,
+                        detail: null,
+                        diagnostics: { iterations },
+                        error: null
+                    });
+                }
+            } catch (error) {
+                console.warn("[AlphaPoker] CFR solver failure", error);
+            }
+        }
+        if (!solverOutput) {
+            const callThreshold = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 1;
+            const mdf = betAmount > 0 ? potSize / ((potSize + betAmount) || 1) : 0;
+            const sortedCombos = villainRange.combos.slice().sort((a, b) => a.heroEquity - b.heroEquity);
+            const targetCallWeight = totalWeight * mdf;
+            let callWeight = 0;
+            let callEVSum = 0;
+            const callDetails = [];
+            for (let i = 0; i < sortedCombos.length && callWeight < targetCallWeight - 1e-7; i += 1) {
+                const combo = sortedCombos[i];
+                if (combo.weight <= 0) {
+                    continue;
+                }
+                const remaining = targetCallWeight - callWeight;
+                const usedWeight = Math.min(combo.weight, remaining);
+                if (usedWeight <= 0) {
+                    continue;
+                }
+                const portion = usedWeight / combo.weight;
+                callWeight += usedWeight;
+                const heroEq = clampProbability(combo.heroEquity);
+                const callEV = heroEq * (potSize + betAmount) - (1 - heroEq) * betAmount;
+                callEVSum += usedWeight * callEV;
+                if (callDetails.length < 8) {
+                    callDetails.push({
+                        cards: combo.cards,
+                        heroEquity: heroEq,
+                        villainEquity: clampProbability(1 - heroEq),
+                        portion,
+                        weightShare: combo.weight / totalWeight
+                    });
+                }
+            }
+            const callFrequency = totalWeight > 0 ? callWeight / totalWeight : 0;
+            const foldFrequency = Math.max(0, 1 - callFrequency);
+            const foldEV = foldFrequency * potSize;
+            const callEV = totalWeight > 0 ? callEVSum / totalWeight : 0;
+            const evBet = foldEV + callEV;
+            const evCheck = heroEquity * potSize;
+            const betAdvantage = evBet - evCheck;
+            const optimalBluffRatio = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 0;
+            let valueWeight = 0;
+            let bluffWeight = 0;
+            villainRange.combos.forEach((combo) => {
+                if (combo.weight <= 0) {
+                    return;
+                }
+                if (combo.heroEquity >= callThreshold) {
+                    valueWeight += combo.weight;
+                } else {
+                    bluffWeight += combo.weight;
+                }
+            });
+            const bluffCapacity = valueWeight * optimalBluffRatio;
+            const bluffCoverage = bluffCapacity > 0 ? Math.max(0, Math.min(1.5, bluffWeight / bluffCapacity)) : 0;
+            const confidence = Math.max(0.1, Math.min(0.99, Math.sqrt(simulation.samples) / Math.sqrt(iterations * 1.5)));
+            const rawRecommendation = describeHeroAction(heroEquity, callThreshold, betAdvantage);
+            const recommendation = betAmount > 0
+                ? {
+                    label: `${rawRecommendation.label} ${betAmount.toFixed(2)} BB (${formatSolverPercent(betPercent)})`,
+                    detail: rawRecommendation.detail
+                }
+                : rawRecommendation;
+            renderSolverResults({
+                heroCards: hero.cards,
+                boardCards,
+                heroEquity,
+                evBet,
+                evCheck,
+                betAdvantage,
+                betAmount,
+                betPercent,
+                potSize,
+                effectiveStack,
+                callThreshold,
+                mdf,
+                callFrequency,
+                foldFrequency,
+                optimalBluffRatio,
+                bluffCoverage,
+                valueWeight,
+                bluffWeight,
+                callDetails,
+                iterations: simulation.samples,
+                combosCount: villainRange.combos.length,
+                confidence,
+                profile,
+                boardStage: boardCards.length,
+                recommendation,
+                integrations: integrationSummaries
+            });
+            return;
+        }
+        const callFrequency = clampProbability(solverOutput.villainCallFrequency);
+        const foldFrequency = clampProbability(solverOutput.villainFoldFrequency);
+        const evBet = Number.isFinite(solverOutput.evBet) ? solverOutput.evBet : 0;
+        const evCheck = Number.isFinite(solverOutput.evCheck) ? solverOutput.evCheck : heroEquity * potSize;
         const betAdvantage = evBet - evCheck;
+        const callThreshold = clampProbability(solverOutput.callThreshold);
+        const mdf = callFrequency;
         const optimalBluffRatio = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 0;
-        let valueWeight = 0;
-        let bluffWeight = 0;
-        villainRange.combos.forEach((combo) => {
-            if (combo.weight <= 0) {
-                return;
-            }
-            if (combo.heroEquity >= callThreshold) {
-                valueWeight += combo.weight;
-            } else {
-                bluffWeight += combo.weight;
-            }
-        });
+        const valueWeight = Math.max(0, solverOutput.callWeight || 0);
+        const bluffWeight = Math.max(0, solverOutput.bluffWeight || 0);
         const bluffCapacity = valueWeight * optimalBluffRatio;
         const bluffCoverage = bluffCapacity > 0 ? Math.max(0, Math.min(1.5, bluffWeight / bluffCapacity)) : 0;
-        const confidence = Math.max(0.1, Math.min(0.99, Math.sqrt(simulation.samples) / Math.sqrt(iterations * 1.5)));
+        const baseConfidence = Math.max(0.1, Math.min(0.99, Math.sqrt(simulation.samples) / Math.sqrt(iterations * 1.5)));
+        const regretPenalty = Math.max(0, (solverOutput.avgRootRegret || 0) + (solverOutput.avgCallRegret || 0));
+        const regretScore = 1 / (1 + regretPenalty);
+        const confidence = Math.max(0.1, Math.min(0.99, baseConfidence * regretScore));
+        const heroBetFrequency = clampProbability(solverOutput.heroStrategy && typeof solverOutput.heroStrategy.bet === "number" ? solverOutput.heroStrategy.bet : 0.5);
+        const heroCheckFrequency = clampProbability(solverOutput.heroStrategy && typeof solverOutput.heroStrategy.check === "number"
+            ? solverOutput.heroStrategy.check
+            : (1 - heroBetFrequency));
+        const heroCallFrequency = clampProbability(solverOutput.heroCallStrategy && typeof solverOutput.heroCallStrategy.call === "number"
+            ? solverOutput.heroCallStrategy.call
+            : 1);
         const rawRecommendation = describeHeroAction(heroEquity, callThreshold, betAdvantage);
+        const mixDetail = `${formatSolverPercent(heroBetFrequency)} \u05d4\u05d9\u05de\u05d5\u05e8 / ${formatSolverPercent(heroCheckFrequency)} \u05e6'\u05e7`;
+        const responseDetail = `${formatSolverPercent(heroCallFrequency)} \u05e7\u05d5\u05dc \u05de\u05d5\u05dc \u05d4\u05d9\u05de\u05d5\u05e8`;
+        const recommendationDetail = `${rawRecommendation.detail} | ${mixDetail} | ${responseDetail}`;
         const recommendation = betAmount > 0
             ? {
                 label: `${rawRecommendation.label} ${betAmount.toFixed(2)} BB (${formatSolverPercent(betPercent)})`,
-                detail: rawRecommendation.detail
+                detail: recommendationDetail
             }
-            : rawRecommendation;
+            : { label: rawRecommendation.label, detail: recommendationDetail };
+        const callDetails = (Array.isArray(solverOutput.callDetails) ? solverOutput.callDetails : [])
+            .filter((item) => item && item.callProbability > 1e-3)
+            .slice(0, 8)
+            .map((item) => ({
+                cards: item.cards,
+                heroEquity: clampProbability(item.heroEquity),
+                villainEquity: clampProbability(1 - item.heroEquity),
+                portion: clampProbability(item.callProbability),
+                weightShare: item.weightShare
+            }));
+        if (!callDetails.length && Array.isArray(solverOutput.callDetails) && solverOutput.callDetails.length) {
+            const top = solverOutput.callDetails[0];
+            callDetails.push({
+                cards: top.cards,
+                heroEquity: clampProbability(top.heroEquity),
+                villainEquity: clampProbability(1 - top.heroEquity),
+                portion: clampProbability(top.callProbability),
+                weightShare: top.weightShare
+            });
+        }
         renderSolverResults({
             heroCards: hero.cards,
             boardCards,
@@ -2193,12 +2427,13 @@
             valueWeight,
             bluffWeight,
             callDetails,
-            iterations: simulation.samples,
+            iterations: Math.round(iterations + simulation.samples),
             combosCount: villainRange.combos.length,
             confidence,
             profile,
             boardStage: boardCards.length,
-            recommendation
+            recommendation,
+            integrations: integrationSummaries
         });
     }
 
@@ -2283,6 +2518,20 @@
         defense.appendChild(defenseList);
 
         elements.solverResults.append(summary, metrics, defense);
+        if (Array.isArray(data.integrations) && data.integrations.length) {
+            const integrationsSection = document.createElement("section");
+            integrationsSection.className = "solver-integrations";
+            const integrationsTitle = document.createElement("h3");
+            integrationsTitle.textContent = "\u05de\u05e0\u05d5\u05e2\u05d9 \u05e0\u05d9\u05ea\u05d5\u05d7 \u05e0\u05d5\u05e1\u05e4\u05d9\u05dd";
+            integrationsSection.appendChild(integrationsTitle);
+            const integrationsList = document.createElement("div");
+            integrationsList.className = "solver-integrations-list";
+            data.integrations.forEach((entry) => {
+                integrationsList.appendChild(renderIntegrationCard(entry));
+            });
+            integrationsSection.appendChild(integrationsList);
+            elements.solverResults.appendChild(integrationsSection);
+        }
     }
 
     function createMetricRow(label, value, hint) {
@@ -2303,6 +2552,121 @@
             row.appendChild(hintEl);
         }
         return row;
+    }
+
+    function renderIntegrationCard(entry) {
+        const card = document.createElement("article");
+        card.className = "solver-integration-card";
+        card.classList.add(entry && entry.ok ? "state-ok" : "state-error");
+
+        const header = document.createElement("header");
+        header.className = "solver-integration-header";
+        const title = document.createElement("span");
+        title.className = "solver-integration-title";
+        title.textContent = entry && entry.label ? entry.label : (entry && entry.id ? entry.id : "Solver");
+        header.appendChild(title);
+        if (entry && entry.version) {
+            const meta = document.createElement("span");
+            meta.className = "solver-integration-meta";
+            meta.textContent = `v${entry.version}`;
+            header.appendChild(meta);
+        }
+        if (entry && entry.origin) {
+            const origin = document.createElement("span");
+            origin.className = "solver-integration-origin";
+            origin.textContent = entry.origin;
+            header.appendChild(origin);
+        }
+        const status = document.createElement("span");
+        status.className = "solver-integration-status";
+        status.textContent = entry && entry.ok ? "\u05e4\u05e2\u05d9\u05dc" : "\u05e9\u05d2\u05d9\u05d0\u05d4";
+        header.appendChild(status);
+        card.appendChild(header);
+
+        const body = document.createElement("div");
+        body.className = "solver-integration-body";
+        let populated = false;
+        if (entry && entry.summary) {
+            const summary = entry.summary;
+            if (summary.heroStrategy) {
+                const betFreq = formatSolverPercent(summary.heroStrategy.bet || 0);
+                const checkFreq = formatSolverPercent(summary.heroStrategy.check || (1 - (summary.heroStrategy.bet || 0)));
+                appendIntegrationRow(body, "\u05de\u05d9\u05e7\u05e1 \u05d4\u05d9\u05de\u05d5\u05e8", `${betFreq} / ${checkFreq}`);
+                populated = true;
+            }
+            if (summary.heroCallStrategy) {
+                const foldFreq = formatSolverPercent(summary.heroCallStrategy.fold || 0);
+                const callFreq = formatSolverPercent(summary.heroCallStrategy.call || 0);
+                appendIntegrationRow(body, "\u05de\u05e2\u05e8\u05da \u05e0\u05d2\u05d3", `${callFreq} \u05e7\u05d5\u05dc / ${foldFreq} \u05e4\u05dc\u05d3`);
+                populated = true;
+            }
+            if (summary.villainCallFrequency !== undefined) {
+                appendIntegrationRow(body, "MDF \u05d9\u05e8\u05d9\u05d1", formatSolverPercent(summary.villainCallFrequency));
+                populated = true;
+            }
+            if (summary.villainBetAfterCheckFrequency !== undefined) {
+                appendIntegrationRow(body, "\u05d9\u05e8\u05d9\u05d1 \u05de\u05e0\u05d9\u05e1 \u05d0\u05d7\u05e8\u05d9 \u05e6\u05e7", formatSolverPercent(summary.villainBetAfterCheckFrequency));
+                populated = true;
+            }
+            if (Number.isFinite(summary.evBet) && Number.isFinite(summary.evCheck)) {
+                appendIntegrationRow(body, "EV", `${formatSolverEV(summary.evBet)} / ${formatSolverEV(summary.evCheck)}`);
+                populated = true;
+            }
+            if (summary.callThreshold !== undefined) {
+                appendIntegrationRow(body, "\u05e1\u05e3 \u05e7\u05e8\u05d9\u05d0\u05d4", formatSolverPercent(summary.callThreshold));
+                populated = true;
+            }
+        }
+        if (!populated && entry && entry.detail && entry.detail.metrics) {
+            const metrics = entry.detail.metrics;
+            appendIntegrationRow(body, "Equity \u05de\u05de\u05d5\u05e6\u05e2", formatSolverPercent(metrics.weightedEquity || 0));
+            appendIntegrationRow(body, "EV \u05d4\u05d9\u05de\u05d5\u05e8", formatSolverEV(metrics.weightedEvBet || 0));
+            appendIntegrationRow(body, "EV \u05e6\u05e7", formatSolverEV(metrics.weightedEvCheck || 0));
+            populated = true;
+        }
+        if (!populated && entry && entry.error) {
+            const error = document.createElement("p");
+            error.className = "solver-integration-error";
+            error.textContent = entry.error;
+            body.appendChild(error);
+            populated = true;
+        }
+        if (!populated) {
+            const placeholder = document.createElement("p");
+            placeholder.className = "solver-integration-empty";
+            placeholder.textContent = entry && entry.ok ? "\u05d0\u05d9\u05df \u05e1\u05d9\u05db\u05d5\u05dd \u05dc\u05d4\u05e6\u05d9\u05d2" : "\u05dc\u05d0 \u05d4\u05ea\u05e7\u05d1\u05dc \u05de\u05e1\u05e4\u05e8";
+            body.appendChild(placeholder);
+        }
+        if (entry && entry.diagnostics) {
+            const diagnostics = Object.entries(entry.diagnostics)
+                .filter(([, value]) => value !== null && value !== undefined)
+                .slice(0, 4);
+            if (diagnostics.length) {
+                const diagList = document.createElement("ul");
+                diagList.className = "solver-integration-diagnostics";
+                diagnostics.forEach(([key, value]) => {
+                    const item = document.createElement("li");
+                    item.textContent = `${key}: ${value}`;
+                    diagList.appendChild(item);
+                });
+                body.appendChild(diagList);
+            }
+        }
+        card.appendChild(body);
+        return card;
+    }
+
+    function appendIntegrationRow(container, label, value) {
+        const row = document.createElement("div");
+        row.className = "solver-integration-row";
+        const labelEl = document.createElement("span");
+        labelEl.className = "solver-integration-row-label";
+        labelEl.textContent = label;
+        const valueEl = document.createElement("span");
+        valueEl.className = "solver-integration-row-value";
+        valueEl.textContent = value;
+        row.append(labelEl, valueEl);
+        container.appendChild(row);
     }
 
     function buildVillainRange(cards, profile) {
@@ -2523,6 +2887,13 @@
         return id ? state.cardById.get(id) : null;
     }
 })();
+
+
+
+
+
+
+
 
 
 

@@ -3670,3 +3670,114 @@ button:not(.primary) {
 
 
 
+/* Solver controls floating panel */
+.solver-settings-toggle {
+    position: fixed;
+    top: 50%;
+    left: 24px;
+    right: auto;
+    z-index: 60;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 20px;
+    border-radius: 999px;
+    border: 1px solid rgba(12, 32, 52, 0.55);
+    background: linear-gradient(135deg, rgba(18, 40, 66, 0.95), rgba(7, 20, 34, 0.95));
+    color: #f6fbff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transform: translateY(-50%);
+    transition: background 0.2s ease, transform 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 18px 32px rgba(6, 18, 28, 0.35);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.solver-settings-toggle:hover {
+    background: linear-gradient(135deg, rgba(24, 54, 86, 0.96), rgba(10, 28, 46, 0.96));
+    border-color: rgba(16, 44, 70, 0.65);
+    box-shadow: 0 22px 36px rgba(6, 18, 28, 0.45);
+    transform: translateY(-50%);
+}
+
+.solver-settings-toggle:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 3px;
+}
+
+.solver-settings-toggle.is-active {
+    background: var(--accent);
+    color: #0f1420;
+    border-color: rgba(255, 255, 255, 0.45);
+    box-shadow: 0 12px 32px rgba(250, 120, 120, 0.25);
+    text-shadow: none;
+}
+
+.solver-settings-toggle[hidden] {
+    display: none !important;
+}
+
+.solver-controls {
+    position: fixed;
+    top: 50%;
+    left: 24px;
+    right: auto;
+    width: min(360px, calc(100vw - 48px));
+    max-height: calc(100vh - 220px);
+    overflow-y: auto;
+    background: linear-gradient(145deg, rgba(7, 20, 34, 0.96), rgba(18, 40, 66, 0.92));
+    border: 1px solid rgba(12, 32, 52, 0.6);
+    border-radius: 20px;
+    padding: 24px;
+    margin: 0;
+    box-shadow: 0 22px 40px rgba(6, 16, 28, 0.45);
+    backdrop-filter: blur(12px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(-32px, -50%);
+    transition: opacity 0.25s ease, transform 0.25s ease, visibility 0.25s ease;
+    z-index: 55;
+}
+
+.solver-controls.is-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translate(0, -50%);
+}
+
+@media (max-width: 900px) {
+    .solver-settings-toggle {
+        left: 20px;
+    }
+
+    .solver-controls {
+        left: 20px;
+        width: min(320px, calc(100vw - 40px));
+    }
+}
+
+@media (max-width: 640px) {
+    .solver-settings-toggle {
+        top: auto;
+        bottom: 24px;
+        left: 16px;
+        transform: none;
+    }
+
+    .solver-controls {
+        top: auto;
+        bottom: 90px;
+        left: 16px;
+        right: 16px;
+        width: auto;
+        max-height: calc(80vh - 90px);
+        transform: translateY(32px);
+    }
+
+    .solver-controls.is-open {
+        transform: translateY(0);
+    }
+}
