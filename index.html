@@ -1,108 +1,95 @@
 ﻿<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>אלפא פוקר - מחשבון הסתברויות טקסס הולדם</title>
-    <link rel="stylesheet" href="styles.css" />
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>אלפא פוקר - מחשבון הסתברויות פוקר מתקדם</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <main class="app">
-        <header class="hero">
-            <div class="mode-toggle">
-                <button id="mode-toggle" type="button" class="mode-toggle-button" aria-pressed="false">
-                    עבור לסולבר GTO
-                </button>
-            </div>
-            <h1>אלפא פוקר</h1>
-            <p class="tagline">בחרו קלפים לשחקנים ולוח, וקבלו את הסתברויות הניצחון לכל שחקן.</p>
-        </header>
-
-        <section class="controls">
-            <div class="player-count">
-                <button id="add-player" type="button" aria-label="הוספת שחקן">+</button>
-                <span id="player-count-label">2 שחקנים</span>
-                <button id="remove-player" type="button" aria-label="הסרת שחקן">-</button>
-            </div>
-            <div class="actions">
-                <button id="deal-random" type="button">חלקה אקראית</button>
-                <button id="clear-all" type="button">נקה קלפים</button>
-                <button id="calculate" type="button" class="primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
-                <button id="reset" type="button">אפס הכל</button>
-            </div>
-        </section>
-
-        <button id="solver-settings-toggle" type="button" class="solver-settings-toggle" aria-controls="solver-controls" aria-expanded="false" hidden aria-hidden="true">
-            הגדרות שולחן
-        </button>
-
-        <section id="solver-controls" class="solver-controls" hidden aria-hidden="true">
-            <div class="solver-header">
-                <h2>סולבר GTO</h2>
-                <p>השתמש בממשק לבחירת תרחיש הירו והזנת פרמטרים טקטיים כדי לחשב תגובת שיווי משקל.</p>
-            </div>
-            <div class="solver-grid">
-                <label class="solver-field">
-                    <span>גודל קופה נוכחי (BB)</span>
-                    <input id="solver-pot-size" type="number" min="0" step="0.5" value="10" />
-                </label>
-                <label class="solver-field">
-                    <span>סטאק אפקטיבי (BB)</span>
-                    <input id="solver-effective-stack" type="number" min="0" step="0.5" value="100" />
-                </label>
-                <label class="solver-field">
-                    <span>אחוז הימור בסיסי</span>
-                    <input id="solver-bet-size" type="number" min="5" max="300" step="5" value="75" />
-                </label>
-                <label class="solver-field">
-                    <span>פרופיל יריב</span>
-                    <select id="solver-opponent-profile">
-                        <option value="balanced">מאוזן ניטרלי</option>
-                        <option value="tight">טייט-פאסיבי</option>
-                        <option value="loose">לוס-פאסיבי</option>
-                        <option value="aggressive">לוס-אגרסיבי</option>
-                    </select>
-                </label>
-                <label class="solver-field">
-                    <span>מספר חזרות סימולציה</span>
-                    <input id="solver-iterations" type="number" min="1000" step="1000" value="20000" />
-                </label>
-            </div>
-            <div class="solver-actions">
-                <button id="solver-run" type="button" class="primary">חשב אסטרטגיה</button>
-                <button id="solver-reset" type="button">איפוס פרמטרים</button>
-            </div>
-        </section>
-
-        <section id="solver-results" class="solver-results" hidden aria-hidden="true" aria-live="polite">
-            <div class="solver-placeholder">
-                <p>בחרו קלפים וגדירו פרמטרים כדי להפעיל את הסולבר.</p>
-            </div>
-        </section>
-
-        <section class="table-wrapper">
-            <div class="felt">
-                <div class="table-surface">
-                    <div id="table" class="table"></div>
-                    <div class="board-area">
-                        <h2>קלפים משותפים</h2>
-                        <div id="board-cards" class="board-cards"></div>
+        <div class="app-shell">
+            <div class="app-main">
+                <header class="top-toolbar" role="banner">
+                    <div class="top-toolbar__controls" role="toolbar" aria-label="ניהול שולחן">
+                        <div class="top-toolbar__group" role="group" aria-label="שחקנים">
+                            <button id="add-player" type="button" class="toolbar-button" aria-label="הוסף שחקן">+</button>
+                            <span id="player-count-label" class="toolbar-counter" aria-live="polite">2 שחקנים</span>
+                            <button id="remove-player" type="button" class="toolbar-button" aria-label="הסר שחקן">-</button>
+                        </div>
+                        <div class="top-toolbar__group" role="group" aria-label="פקודות שולחן">
+                            <button id="deal-random" type="button" class="toolbar-chip" aria-label="חלוקה אקראית">חלוקה אקראית</button>
+                            <button id="clear-all" type="button" class="toolbar-chip" aria-label="נקה הכל">נקה הכל</button>
+                            <button id="calculate" type="button" class="toolbar-chip primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
+                            <button id="reset" type="button" class="toolbar-chip" aria-label="איפוס מהיר">איפוס מהיר</button>
+                        </div>
                     </div>
-                </div>
-                <div class="deck-area">
-                    <div class="deck-info">
-                        <h2>חפיסה</h2>
-                        <p>בחרו קלף מהחפיסה ואז הקליקו על המיקום הרצוי על השולחן.</p>
-                    </div>
-                    <div id="deck" class="deck-strip" dir="ltr"></div>
-                    <section id="errors" class="messages" aria-live="polite"></section>
-                </div>
-            </div>
-        </section>
+                </header>
 
-        <section id="results" class="results" aria-live="polite"></section>
-    </main>
+                <section id="calculator-view" class="view-panel view-panel--calculator" aria-hidden="false">
+                    <button id="solver-settings-toggle" type="button" class="solver-toggle solver-settings-toggle" aria-controls="solver-controls" aria-expanded="false" hidden aria-hidden="true">
+                        פתח מסך סולבר GTO
+                    </button>
 
+                    <section id="solver-controls" class="solver-panel solver-controls" hidden aria-hidden="true">
+                        <header class="solver-panel__header">
+                            <h2>סולבר GTO</h2>
+                            <p>הגדירו את פרטי הסיטואציה כדי לחשב קווי משחק מאוזנים לשולחן הנוכחי.</p>
+                        </header>
+                        <div class="solver-panel__grid">
+                            <label class="solver-field">
+                                <span>גודל קופה (BB)</span>
+                                <input id="solver-pot-size" type="number" min="0" step="0.5" value="10">
+                            </label>
+                            <label class="solver-field">
+                                <span>סטאק אפקטיבי (BB)</span>
+                                <input id="solver-effective-stack" type="number" min="0" step="0.5" value="100">
+                            </label>
+                            <label class="solver-field">
+                                <span>גודל הימור נוכחי (%)</span>
+                                <input id="solver-bet-size" type="number" min="5" max="300" step="5" value="75">
+                            </label>
+                            <label class="solver-field">
+                                <span>פרופיל יריב</span>
+                                <select id="solver-opponent-profile">
+                                    <option value="balanced">מאוזן</option>
+                                    <option value="tight">טייט</option>
+                                    <option value="loose">לוס</option>
+                                    <option value="aggressive">אגרסיבי</option>
+                                </select>
+                            </label>
+                            <label class="solver-field">
+                                <span>מספר איטרציות</span>
+                                <input id="solver-iterations" type="number" min="1000" step="1000" value="20000">
+                            </label>                        <div class="solver-panel__actions solver-actions">
+                            <button id="solver-run" type="button" class="primary">הרץ סימולציה</button>
+                            <button id="solver-reset" type="button" class="tertiary">איפוס פרמטרים</button>                    </section>
+
+                    <section id="solver-results" class="solver-results" hidden aria-hidden="true" aria-live="polite">
+                        <div class="solver-results__placeholder solver-placeholder">
+                            <p>בחרו קלפים והגדירו פרמטרים כדי להפעיל את הסולבר.</p>                    </section>
+
+                    <div class="calculator-layout">
+                        <section class="table-wrapper">
+                            <div class="felt">
+                                <div class="table-surface">
+
+                                    <div id="table" class="table">                                    <div class="board-area">
+                                        <h3>קלפי לוח</h3>
+                                        <div id="board-cards" class="board-cards">                                <aside class="deck-area">
+                                    <section id="errors" class="messages" aria-live="polite"></section>
+                                </aside>                        </section>
+
+                        <section id="results" class="results" aria-live="polite"></section>                </section>    </main>
+
+    <div id="deck-overlay" class="deck-overlay" hidden>
+        <div class="deck-overlay__inner">
+            <header class="deck-overlay__header">
+                <span class="deck-overlay__title">בחרו קלף</span>
+                <button id="deck-overlay-close" type="button" class="deck-overlay__close" aria-label="סגירת חפיסה">×</button>
+            </header>
+            <div id="deck" class="deck-strip" dir="ltr">        <div class="deck-overlay__arrow" aria-hidden="true">
     <script src="solver/index.js"></script>
     <script src="solver/strategy/singleStreetCfr.js"></script>
     <script src="solver/strategy/texasCfr.js"></script>
@@ -111,6 +98,15 @@
     <script src="app.js"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
 
 
 

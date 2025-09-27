@@ -79,14 +79,19 @@
         isAutoAdvancePaused: false,
         deferProbabilityUpdate: false,
         mode: "equity",
+        activeView: "equity",
+        isSettingsMenuOpen: false,
         isSolverPanelOpen: false,
-        solverSettings: { ...DEFAULT_SOLVER_SETTINGS }
+        solverSettings: { ...DEFAULT_SOLVER_SETTINGS },
+        resultsObserver: null
     };
 
     const elements = {
         table: document.getElementById("table"),
         board: document.getElementById("board-cards"),
         deck: document.getElementById("deck"),
+        deckOverlay: document.getElementById("deck-overlay"),
+        deckOverlayClose: document.getElementById("deck-overlay-close"),
         addPlayer: document.getElementById("add-player"),
         removePlayer: document.getElementById("remove-player"),
         playerCountLabel: document.getElementById("player-count-label"),
@@ -98,6 +103,8 @@
         results: document.getElementById("results"),
         controls: document.querySelector(".controls"),
         modeToggle: document.getElementById("mode-toggle"),
+        settingsToggle: document.getElementById("settings-menu-toggle"),
+        settingsMenu: document.getElementById("settings-menu"),
         solverControls: document.getElementById("solver-controls"),
         solverResults: document.getElementById("solver-results"),
         solverPotSize: document.getElementById("solver-pot-size"),
@@ -107,7 +114,12 @@
         solverIterations: document.getElementById("solver-iterations"),
         solverRun: document.getElementById("solver-run"),
         solverReset: document.getElementById("solver-reset"),
-        solverSettingsToggle: document.getElementById("solver-settings-toggle")
+        solverSettingsToggle: document.getElementById("solver-settings-toggle"),
+        appMenu: document.getElementById("app-menu"),
+        calculatorView: document.getElementById("calculator-view"),
+        statisticsView: document.getElementById("statistics-view"),
+        calculatorLayout: document.querySelector(".calculator-layout"),
+        menuButtons: []
     };
 
     document.addEventListener("DOMContentLoaded", init);
@@ -128,8 +140,14 @@
         bindModeControls();
         bindSolverControls();
         bindSolverPanelToggle();
+        bindMenuNavigation();
+        bindSettingsMenu();
+        bindDeckOverlay();
+        setupResultsLayoutObserver();
         syncSolverInputs();
         updateModeUI();
+        updateActiveView();
+        setTimeout(() => setActiveView("equity"), 0);
         ensureActiveSlot();
         scheduleImmediateProbabilityUpdate();
     }
@@ -440,8 +458,14 @@
         }
     }
 
+
     function setActiveSlot(slot) {
         if (state.activeSlot === slot) {
+            if (slot) {
+                positionDeckOverlay(slot);
+            } else {
+                closeDeckOverlay();
+            }
             return;
         }
 
@@ -453,10 +477,14 @@
 
         if (state.activeSlot) {
             state.activeSlot.classList.add("active");
+            openDeckOverlay(state.activeSlot);
+        } else {
+            closeDeckOverlay();
         }
     }
 
-    function advanceActiveSlot(fromSlot) {
+
+function advanceActiveSlot(fromSlot) {
         if (state.isAutoAdvancePaused) {
             return;
         }
@@ -1866,6 +1894,7 @@
         if (normalized === "solver") {
             cancelScheduledProbabilityUpdate();
             state.mode = "solver";
+            state.isSolverPanelOpen = true;
             if (state.playersCount !== MIN_PLAYERS) {
                 setPlayersCount(MIN_PLAYERS);
             }
@@ -1877,6 +1906,9 @@
             updateModeUI();
             scheduleImmediateProbabilityUpdate();
         }
+
+        state.activeView = "equity";
+        updateActiveView();
     }
 
     function bindModeControls() {
@@ -1884,10 +1916,249 @@
             return;
         }
         elements.modeToggle.addEventListener("click", () => {
-            setMode(state.mode === "equity" ? "solver" : "equity");
+            const targetView = state.mode === "equity" ? "solver" : "equity";
+            setActiveView(targetView);
         });
     }
 
+    function bindMenuNavigation() {
+        if (!elements.appMenu) {
+            return;
+        }
+
+        const buttons = Array.from(elements.appMenu.querySelectorAll('[data-menu-view]'));
+
+        if (!buttons.length) {
+            return;
+        }
+
+        elements.menuButtons = buttons;
+
+        buttons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const targetView = normalizeViewName(button.dataset.menuView);
+                setActiveView(targetView);
+            });
+        });
+    }
+
+    function bindSettingsMenu() {
+        if (!elements.settingsToggle || !elements.settingsMenu) {
+            return;
+        }
+
+        const menu = elements.settingsMenu;
+        const toggle = elements.settingsToggle;
+        const menuItems = Array.from(menu.querySelectorAll('.settings-menu__item'));
+
+        const handleItemClick = () => {
+            setSettingsMenuOpen(false);
+        };
+
+        menuItems.forEach((item) => {
+            item.addEventListener('click', handleItemClick);
+        });
+
+        toggle.addEventListener('click', (event) => {
+            event.stopPropagation();
+            setSettingsMenuOpen(!state.isSettingsMenuOpen);
+        });
+
+        menu.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+
+        document.addEventListener('click', (event) => {
+            if (!state.isSettingsMenuOpen) {
+                return;
+            }
+            const target = event.target;
+            if (!target || !(target instanceof Node)) {
+                setSettingsMenuOpen(false);
+                return;
+            }
+            if (target === toggle || menu.contains(target)) {
+                return;
+            }
+            setSettingsMenuOpen(false);
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (!state.isSettingsMenuOpen) {
+                return;
+            }
+            if (event.key === 'Escape' || event.key === 'Esc') {
+                setSettingsMenuOpen(false);
+                if (typeof toggle.focus === 'function') {
+                    toggle.focus();
+                }
+            }
+        });
+
+        setSettingsMenuOpen(false);
+    }
+
+    function setSettingsMenuOpen(open) {
+        state.isSettingsMenuOpen = Boolean(open);
+
+        if (!elements.settingsMenu || !elements.settingsToggle) {
+            return;
+        }
+
+        const shouldOpen = state.isSettingsMenuOpen;
+        elements.settingsMenu.classList.toggle('is-open', shouldOpen);
+        elements.settingsMenu.setAttribute('aria-hidden', shouldOpen ? 'false' : 'true');
+        elements.settingsToggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    }
+
+
+
+    function openDeckOverlay(slot) {
+        if (!elements.deckOverlay || !slot) {
+            return;
+        }
+
+        const overlay = elements.deckOverlay;
+        overlay.hidden = false;
+        overlay.classList.add("is-open");
+        positionDeckOverlay(slot);
+        requestAnimationFrame(() => {
+            if (!elements.deckOverlay || elements.deckOverlay.hidden || state.activeSlot !== slot) {
+                return;
+            }
+            positionDeckOverlay(slot);
+        });
+    }
+
+    function closeDeckOverlay() {
+        if (!elements.deckOverlay) {
+            return;
+        }
+
+        const overlay = elements.deckOverlay;
+        overlay.classList.remove("is-open");
+        overlay.removeAttribute("data-placement");
+        overlay.style.removeProperty("--deck-overlay-anchor");
+        overlay.style.left = "";
+        overlay.style.top = "";
+        overlay.hidden = true;
+    }
+
+    function positionDeckOverlay(slot) {
+        if (!elements.deckOverlay || !slot || elements.deckOverlay.hidden) {
+            return;
+        }
+
+        const overlay = elements.deckOverlay;
+        const rect = slot.getBoundingClientRect();
+        const overlayRect = overlay.getBoundingClientRect();
+        const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+        const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+        const padding = 16;
+
+        const overlayWidth = overlayRect.width || overlay.scrollWidth || 0;
+        const overlayHeight = overlayRect.height || overlay.scrollHeight || 0;
+
+        let left = window.scrollX + rect.left + (rect.width / 2) - overlayWidth / 2;
+        const minLeft = window.scrollX + padding;
+        const maxLeft = window.scrollX + viewportWidth - overlayWidth - padding;
+        if (minLeft <= maxLeft) {
+            if (left < minLeft) {
+                left = minLeft;
+            } else if (left > maxLeft) {
+                left = maxLeft;
+            }
+        } else {
+            left = window.scrollX + Math.max(rect.left, padding);
+        }
+
+        const anchorCenter = window.scrollX + rect.left + (rect.width / 2);
+        const rawAnchor = anchorCenter - left;
+        const constrainedAnchor = Math.max(24, Math.min(rawAnchor, overlayWidth - 24));
+        overlay.style.setProperty("--deck-overlay-anchor", `${constrainedAnchor}px`);
+
+        let top = window.scrollY + rect.bottom + 12;
+        let placement = "below";
+        const viewportBottom = window.scrollY + viewportHeight - padding;
+        if (top + overlayHeight > viewportBottom && rect.top > overlayHeight + padding) {
+            top = window.scrollY + rect.top - overlayHeight - 12;
+            placement = "above";
+        }
+
+        overlay.dataset.placement = placement;
+        overlay.style.left = `${left}px`;
+        overlay.style.top = `${top}px`;
+    }
+
+    function bindDeckOverlay() {
+        if (!elements.deckOverlay) {
+            return;
+        }
+
+        if (elements.deckOverlayClose) {
+            elements.deckOverlayClose.addEventListener("click", () => {
+                setActiveSlot(null);
+            });
+        }
+
+        const handleViewportChange = () => {
+            if (!state.activeSlot || elements.deckOverlay.hidden) {
+                return;
+            }
+            positionDeckOverlay(state.activeSlot);
+        };
+
+        window.addEventListener("resize", handleViewportChange, { passive: true });
+        window.addEventListener("scroll", handleViewportChange, { passive: true });
+
+        document.addEventListener("click", (event) => {
+            if (!state.activeSlot || elements.deckOverlay.hidden) {
+                return;
+            }
+            const target = event.target;
+            if (!target || !(target instanceof Node)) {
+                return;
+            }
+            if (state.activeSlot.contains(target) || elements.deckOverlay.contains(target)) {
+                return;
+            }
+            setActiveSlot(null);
+        });
+    }
+
+
+
+
+    function normalizeViewName() {
+        return "equity";
+    }
+
+    function setActiveView() {
+        if (state.activeView !== "equity") {
+            state.activeView = "equity";
+        }
+        updateActiveView();
+    }
+
+    function updateActiveView() {
+        if (Array.isArray(elements.menuButtons)) {
+            elements.menuButtons.forEach((button) => {
+                const isActive = normalizeViewName(button.dataset.menuView) === "equity";
+                button.classList.toggle("is-active", isActive);
+                button.setAttribute("aria-pressed", isActive ? "true" : "false");
+            });
+        }
+
+        if (elements.calculatorView) {
+            elements.calculatorView.hidden = false;
+            elements.calculatorView.setAttribute("aria-hidden", "false");
+        }
+
+        if (elements.statisticsView) {
+            elements.statisticsView.hidden = true;
+            elements.statisticsView.setAttribute("aria-hidden", "true");
+        }
+    }
     function bindSolverControls() {
         if (!elements.solverControls) {
             return;
@@ -2246,10 +2517,10 @@
                 if (solverOutput && integrationSummaries.length === 0) {
                     integrationSummaries.push({
                         id: "singleStreetCfr",
-                        label: "Single Street CFR",
+                        label: "CFR רחוב בודד",
                         ok: true,
-                        origin: "AlphaPoker core",
-                        version: "legacy",
+                        origin: "ליבת AlphaPoker",
+                        version: "ישן",
                         priority: 0,
                         summary: solverOutput,
                         detail: null,
@@ -2488,7 +2759,7 @@
         metrics.appendChild(createMetricRow("MDF \u05e0\u05d3\u05e8\u05e9", formatSolverPercent(data.mdf)));
         metrics.appendChild(createMetricRow("\u05ea\u05d3\u05d9\u05e8\u05d5\u05ea \u05e7\u05e8\u05d9\u05d0\u05d4 \u05de\u05e9\u05d5\u05e2\u05e8\u05ea", formatSolverPercent(data.callFrequency)));
         metrics.appendChild(createMetricRow("\u05d4\u05e6\u05e2\u05ea \u05d2\u05d5\u05d3\u05dc \u05d4\u05d9\u05de\u05d5\u05e8", `${formatSolverEV(data.betAmount)} (${formatSolverPercent(data.betPercent)})`));
-        metrics.appendChild(createMetricRow("\u05db\u05d9\u05e1\u05d5\u05d9 \u05d1\u05dc\u05d5\u05e4\u05d9\u05dd \u05dc\u05e2\u05d5\u05de\u05ea \u05e2\u05e8\u05da", `${formatSolverPercent(data.bluffCoverage)} / ${formatSolverPercent(data.optimalBluffRatio)}`, "Actual / Optimal"));
+        metrics.appendChild(createMetricRow("\u05db\u05d9\u05e1\u05d5\u05d9 \u05d1\u05dc\u05d5\u05e4\u05d9\u05dd \u05dc\u05e2\u05d5\u05de\u05ea \u05e2\u05e8\u05da", `${formatSolverPercent(data.bluffCoverage)} / ${formatSolverPercent(data.optimalBluffRatio)}`, "ביצוע בפועל / ערך אופטימלי"));
         metrics.appendChild(createMetricRow("\u05e8\u05de\u05ea \u05d1\u05d9\u05d8\u05d7\u05d5\u05df", formatSolverPercent(data.confidence)));
         metrics.appendChild(createMetricRow("\u05de\u05d5\u05e4\u05e2\u05d9\u05dd \u05de\u05d3\u05d5\u05de\u05d9\u05dd", data.iterations.toLocaleString("he-IL")));
 
@@ -2563,7 +2834,7 @@
         header.className = "solver-integration-header";
         const title = document.createElement("span");
         title.className = "solver-integration-title";
-        title.textContent = entry && entry.label ? entry.label : (entry && entry.id ? entry.id : "Solver");
+        title.textContent = entry && entry.label ? entry.label : (entry && entry.id ? entry.id : "סולבר");
         header.appendChild(title);
         if (entry && entry.version) {
             const meta = document.createElement("span");
@@ -2609,7 +2880,7 @@
                 populated = true;
             }
             if (Number.isFinite(summary.evBet) && Number.isFinite(summary.evCheck)) {
-                appendIntegrationRow(body, "EV", `${formatSolverEV(summary.evBet)} / ${formatSolverEV(summary.evCheck)}`);
+                appendIntegrationRow(body, "ערך צפוי (EV)", `${formatSolverEV(summary.evBet)} / ${formatSolverEV(summary.evCheck)}`);
                 populated = true;
             }
             if (summary.callThreshold !== undefined) {
@@ -2619,9 +2890,9 @@
         }
         if (!populated && entry && entry.detail && entry.detail.metrics) {
             const metrics = entry.detail.metrics;
-            appendIntegrationRow(body, "Equity \u05de\u05de\u05d5\u05e6\u05e2", formatSolverPercent(metrics.weightedEquity || 0));
-            appendIntegrationRow(body, "EV \u05d4\u05d9\u05de\u05d5\u05e8", formatSolverEV(metrics.weightedEvBet || 0));
-            appendIntegrationRow(body, "EV \u05e6\u05e7", formatSolverEV(metrics.weightedEvCheck || 0));
+            appendIntegrationRow(body, "אקוויטי ממוצע", formatSolverPercent(metrics.weightedEquity || 0));
+            appendIntegrationRow(body, "ערך צפוי של ההימור (EV)", formatSolverEV(metrics.weightedEvBet || 0));
+            appendIntegrationRow(body, "ערך צפוי לאחר צ׳ק (EV)", formatSolverEV(metrics.weightedEvCheck || 0));
             populated = true;
         }
         if (!populated && entry && entry.error) {
@@ -2883,10 +3154,57 @@
         return cards.map((card) => formatCard(card)).join(" ");
     }
 
+    function setupResultsLayoutObserver() {
+        if (!elements.results || !elements.calculatorLayout) {
+            return;
+        }
+
+        const applyLayoutState = () => {
+            const ariaHidden = elements.results.getAttribute("aria-hidden");
+            const isHidden = elements.results.hidden || ariaHidden === "true";
+            const hasContent = elements.results.childElementCount > 0;
+            elements.calculatorLayout.classList.toggle(
+                "calculator-layout--with-results",
+                !isHidden && hasContent
+            );
+        };
+
+        applyLayoutState();
+
+        if (state.resultsObserver) {
+            state.resultsObserver.disconnect();
+        }
+
+        state.resultsObserver = new MutationObserver(() => {
+            applyLayoutState();
+        });
+
+        state.resultsObserver.observe(elements.results, {
+            childList: true,
+            subtree: false,
+            attributes: true,
+            attributeFilter: ["hidden", "aria-hidden"]
+        });
+    }
+
     function getCardById(id) {
         return id ? state.cardById.get(id) : null;
     }
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
