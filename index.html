@@ -10,7 +10,8 @@
 <body>
     <main class="app">
         <div class="app-shell">
-            <div class="app-main">
+            <div class="app-main">
+
                 <header class="top-toolbar" role="banner">
                     <div class="top-toolbar__controls" role="toolbar" aria-label="ניהול שולחן">
                         <div class="top-toolbar__group" role="group" aria-label="שחקנים">
@@ -23,6 +24,33 @@
                             <button id="clear-all" type="button" class="toolbar-chip" aria-label="נקה הכל">נקה הכל</button>
                             <button id="calculate" type="button" class="toolbar-chip primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
                             <button id="reset" type="button" class="toolbar-chip" aria-label="איפוס מהיר">איפוס מהיר</button>
+                        </div>
+                    </div>
+                    <div class="top-toolbar__settings">
+                        <button id="settings-menu-toggle" type="button" class="settings-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="settings-menu" aria-label="הגדרות שולחן">
+                            <span class="settings-toggle__icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                                    <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.65l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.69 8.6a.5.5 0 0 0 .12.65l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.65l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.65l-2.03-1.58z" fill="currentColor"/>
+                                    <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" fill="currentColor"/>
+                                </svg>
+                            </span>
+                        </button>
+                        <div id="settings-menu" class="settings-menu" role="menu" aria-hidden="true">
+                            <div class="settings-menu__section">
+                                <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-auto-advance" aria-checked="true">
+                                    <span class="settings-menu__item-label">מעבר אוטומטי בין קלפים</span>
+                                    <span class="settings-menu__item-state" data-setting-indicator="auto-advance">פעיל</span>
+                                </button>
+                                <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-seat-probabilities" aria-checked="true">
+                                    <span class="settings-menu__item-label">הצג הסתברויות לכל שחקן</span>
+                                    <span class="settings-menu__item-state" data-setting-indicator="seat-probabilities">מוצג</span>
+                                </button>
+                            </div>
+                            <div class="settings-menu__section">
+                                <button type="button" class="settings-menu__item settings-menu__item--accent" role="menuitem" data-setting-action="reset-table">
+                                    <span class="settings-menu__item-label">איפוס שולחן</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </header>
@@ -75,22 +103,30 @@
                             <div class="felt">
                                 <div class="table-surface">
 
-                                    <div id="table" class="table">                                    <div class="board-area">
-                                        <h3>קלפי לוח</h3>
-                                        <div id="board-cards" class="board-cards">                                <aside class="deck-area">
+                                    <div id="table" class="table">
+
+                                    <div class="board-area">
+                                            <div id="board-cards" class="board-cards">
+
+                                <aside class="deck-area">
                                     <section id="errors" class="messages" aria-live="polite"></section>
                                 </aside>                        </section>
 
                         <section id="results" class="results" aria-live="polite"></section>                </section>    </main>
 
-    <div id="deck-overlay" class="deck-overlay" hidden>
+    <div id="deck-overlay" class="deck-overlay" hidden role="dialog" aria-modal="true" aria-label="בחירת קלף">
         <div class="deck-overlay__inner">
             <header class="deck-overlay__header">
                 <span class="deck-overlay__title">בחרו קלף</span>
                 <button id="deck-overlay-close" type="button" class="deck-overlay__close" aria-label="סגירת חפיסה">×</button>
             </header>
-            <div id="deck" class="deck-strip" dir="ltr">        <div class="deck-overlay__arrow" aria-hidden="true">
-    <script src="solver/index.js"></script>
+            <div class="deck-overlay__body">
+                <div id="deck" class="deck-strip" dir="ltr"></div>
+            </div>
+        </div>
+        <div class="deck-overlay__arrow" aria-hidden="true"></div>
+    </div>
+<script src="solver/index.js"></script>
     <script src="solver/strategy/singleStreetCfr.js"></script>
     <script src="solver/strategy/texasCfr.js"></script>
     <script src="solver/strategy/pycfrAdapter.js"></script>

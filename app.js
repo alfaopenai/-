@@ -77,6 +77,7 @@
         seats: [],
         probabilityDisplays: [],
         isAutoAdvancePaused: false,
+        showSeatProbabilities: true,
         deferProbabilityUpdate: false,
         mode: "equity",
         activeView: "equity",
@@ -92,6 +93,7 @@
         deck: document.getElementById("deck"),
         deckOverlay: document.getElementById("deck-overlay"),
         deckOverlayClose: document.getElementById("deck-overlay-close"),
+        appShell: document.querySelector(".app-shell"),
         addPlayer: document.getElementById("add-player"),
         removePlayer: document.getElementById("remove-player"),
         playerCountLabel: document.getElementById("player-count-label"),
@@ -142,6 +144,8 @@
         bindSolverPanelToggle();
         bindMenuNavigation();
         bindSettingsMenu();
+        setSeatProbabilitiesVisible(state.showSeatProbabilities);
+        refreshSettingsMenu();
         bindDeckOverlay();
         setupResultsLayoutObserver();
         syncSolverInputs();
@@ -1949,15 +1953,6 @@ function advanceActiveSlot(fromSlot) {
 
         const menu = elements.settingsMenu;
         const toggle = elements.settingsToggle;
-        const menuItems = Array.from(menu.querySelectorAll('.settings-menu__item'));
-
-        const handleItemClick = () => {
-            setSettingsMenuOpen(false);
-        };
-
-        menuItems.forEach((item) => {
-            item.addEventListener('click', handleItemClick);
-        });
 
         toggle.addEventListener('click', (event) => {
             event.stopPropagation();
@@ -1966,6 +1961,18 @@ function advanceActiveSlot(fromSlot) {
 
         menu.addEventListener('click', (event) => {
             event.stopPropagation();
+            const target = event.target;
+            if (!target || !(target instanceof Element)) {
+                return;
+            }
+            const item = target.closest('.settings-menu__item');
+            if (!item) {
+                return;
+            }
+            const action = item.dataset.settingAction;
+            if (action) {
+                performSettingsMenuAction(action);
+            }
         });
 
         document.addEventListener('click', (event) => {
@@ -2010,6 +2017,87 @@ function advanceActiveSlot(fromSlot) {
         elements.settingsMenu.setAttribute('aria-hidden', shouldOpen ? 'false' : 'true');
         elements.settingsToggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     }
+
+    function refreshSettingsMenu() {
+        if (!elements.settingsMenu) {
+            return;
+        }
+
+        const autoItem = elements.settingsMenu.querySelector('[data-setting-action="toggle-auto-advance"]');
+        const autoIndicator = elements.settingsMenu.querySelector('[data-setting-indicator="auto-advance"]');
+        if (autoIndicator) {
+            const isActive = !state.isAutoAdvancePaused;
+            autoIndicator.textContent = isActive ? "\u05e4\u05e2\u05d9\u05dc" : "\u05de\u05d5\u05e9\u05d4\u05d4";
+            if (autoItem) {
+                autoItem.setAttribute('aria-checked', isActive ? 'true' : 'false');
+            }
+        }
+
+        const probabilitiesItem = elements.settingsMenu.querySelector('[data-setting-action="toggle-seat-probabilities"]');
+        const probabilitiesIndicator = elements.settingsMenu.querySelector('[data-setting-indicator="seat-probabilities"]');
+        if (probabilitiesIndicator) {
+            const isVisible = state.showSeatProbabilities;
+            probabilitiesIndicator.textContent = isVisible ? "\u05de\u05d5\u05e6\u05d2" : "\u05de\u05d5\u05e1\u05ea\u05e8";
+            if (probabilitiesItem) {
+                probabilitiesItem.setAttribute('aria-checked', isVisible ? 'true' : 'false');
+            }
+        }
+    }
+
+    function performSettingsMenuAction(action) {
+        let handled = false;
+
+        switch (action) {
+            case 'toggle-auto-advance':
+                toggleAutoAdvanceSetting();
+                handled = true;
+                break;
+            case 'toggle-seat-probabilities':
+                setSeatProbabilitiesVisible(!state.showSeatProbabilities);
+                handled = true;
+                break;
+            case 'reset-table':
+                resetTableState();
+                handled = true;
+                break;
+            default:
+                break;
+        }
+
+        if (!handled) {
+            return;
+        }
+
+        refreshSettingsMenu();
+        setSettingsMenuOpen(false);
+        if (elements.settingsToggle && typeof elements.settingsToggle.focus === 'function') {
+            elements.settingsToggle.focus();
+        }
+    }
+
+    function toggleAutoAdvanceSetting() {
+        state.isAutoAdvancePaused = !state.isAutoAdvancePaused;
+        if (!state.isAutoAdvancePaused) {
+            ensureActiveSlot();
+        }
+    }
+
+    function setSeatProbabilitiesVisible(visible) {
+        state.showSeatProbabilities = Boolean(visible);
+        if (elements.appShell) {
+            elements.appShell.classList.toggle('settings--hide-seat-probabilities', !state.showSeatProbabilities);
+        }
+    }
+
+    function resetTableState() {
+        setPlayersCount(MIN_PLAYERS);
+        clearAllSlots();
+        state.isAutoAdvancePaused = false;
+        setSeatProbabilitiesVisible(true);
+        ensureActiveSlot();
+    }
+
+
 
 
 
