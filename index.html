@@ -48,6 +48,9 @@
                                 <button id="reset" type="button" class="settings-menu__item" role="menuitem" data-setting-action="quick-reset">
                                     <span class="settings-menu__item-label">איפוס מהיר</span>
                                 </button>
+                                <button id="live-game" type="button" class="settings-menu__item" role="menuitem" data-setting-action="live-game">
+                                    <span class="settings-menu__item-label">משחק חי</span>
+                                </button>
                             </div>
                             <div class="settings-menu__section">
                                 <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-auto-advance" aria-checked="true">
@@ -119,12 +122,30 @@
                                     <div id="table" class="table">
 
                                     <div class="board-area">
+                                        <div id="table-pot" class="table-pot" aria-live="polite" aria-atomic="true">קופה: 0</div>
                                             <div id="board-cards" class="board-cards">
 
                                 <aside class="deck-area">
                                     <section id="errors" class="messages" aria-live="polite"></section>
                                 </aside>                        </section>
 
+                        <section id="live-game-panel" class="live-game" hidden aria-hidden="true">
+                            <header class="live-game__header">
+                                <h2 class="live-game__title">משחק חי</h2>
+                                <button id="live-game-exit" type="button" class="live-game__exit">סיום משחק</button>
+                            </header>
+                            <div id="live-game-status" class="live-game__status" aria-live="polite"></div>
+                            <div class="live-game__actions" role="group" aria-label="פעולות אפשריות">
+                                <button id="live-action-fold" type="button" class="live-game__button live-game__button--fold">קיפול</button>
+                                <button id="live-action-check" type="button" class="live-game__button">צ'ק / קול</button>
+                                <button id="live-action-bet-small" type="button" class="live-game__button">הימור 50%</button>
+                                <button id="live-action-bet-big" type="button" class="live-game__button">הימור 100%</button>
+                            </div>
+                            <div class="live-game__next">
+                                <button id="live-action-next" type="button" class="live-game__button live-game__button--primary" hidden>המשך</button>
+                            </div>
+                            <div id="live-game-log" class="live-game__log" aria-live="polite"></div>
+                        </section>
                         <section id="results" class="results" aria-live="polite"></section>                </section>    </main>
 
     <div id="deck-overlay" class="deck-overlay" hidden role="dialog" aria-modal="true" aria-label="בחירת קלף">

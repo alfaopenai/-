@@ -1,6 +1,23 @@
 ﻿(() => {
     const MIN_PLAYERS = 2;
     const MAX_PLAYERS = 9;
+    const DEFAULT_PLAYER_STACK = 1000;
+    const DEFAULT_SMALL_BLIND = 1;
+    const DEFAULT_BIG_BLIND = 2;
+    const ECONOMY_FIELDS = Object.freeze({
+        stack: 'stack',
+        pendingBet: 'pendingBet'
+    });
+    const ECONOMY_FIELD_ORDER = Object.freeze([
+        ECONOMY_FIELDS.stack,
+        ECONOMY_FIELDS.pendingBet
+    ]);
+    const ECONOMY_LABELS = Object.freeze({
+        stack: '\u05e1\u05d8\u05d0\u05e7',
+        pendingBet: '\u05d4\u05d9\u05de\u05d5\u05e8'
+    });
+    const TABLE_POT_LABEL = '\u05e7\u05d5\u05e4\u05d4';
+    const PLAYER_COMMITTED_LABEL = '\u05d1\u05e7\u05d5\u05e4\u05d4';
     const BOARD_PLACEHOLDERS = [
         "\u05e4\u05dc\u05d5\u05e4 \u0031",
         "\u05e4\u05dc\u05d5\u05e4 \u0032",
@@ -94,6 +111,7 @@
         seats: [],
         seatMeta: [],
         probabilityDisplays: [],
+        playerEconomy: Array.from({ length: MAX_PLAYERS }, () => createDefaultEconomy()),
         dealerSeatIndex: 0,
         isAutoAdvancePaused: false,
         showSeatProbabilities: true,
@@ -103,12 +121,36 @@
         isSettingsMenuOpen: false,
         isSolverPanelOpen: false,
         solverSettings: { ...DEFAULT_SOLVER_SETTINGS },
-        resultsObserver: null
+        resultsObserver: null,
+        lastSolverAnalysis: null,
+        liveGame: createInitialLiveGameState()
     };
+
+    function createInitialLiveGameState() {
+        return {
+            active: false,
+            handActive: false,
+            stage: "idle",
+            deck: [],
+            players: [],
+            boardCards: [],
+            boardIndex: 0,
+            pot: 0,
+            currentBet: 0,
+            bigBlind: DEFAULT_BIG_BLIND,
+            smallBlind: DEFAULT_SMALL_BLIND,
+            heroIndex: 0,
+            villainProfile: DEFAULT_SOLVER_SETTINGS.opponentProfile,
+            awaitingHero: false,
+            log: [],
+            lastAnalysis: null
+        };
+    }
 
     const elements = {
         table: document.getElementById("table"),
         board: document.getElementById("board-cards"),
+        tablePot: document.getElementById("table-pot"),
         deck: document.getElementById("deck"),
         deckOverlay: document.getElementById("deck-overlay"),
         deckOverlayClose: document.getElementById("deck-overlay-close"),
@@ -140,10 +182,20 @@
         calculatorView: document.getElementById("calculator-view"),
         statisticsView: document.getElementById("statistics-view"),
         calculatorLayout: document.querySelector(".calculator-layout"),
+        liveGamePanel: document.getElementById("live-game-panel"),
+        liveGameStatus: document.getElementById("live-game-status"),
+        liveGameLog: document.getElementById("live-game-log"),
+        liveGameExit: document.getElementById("live-game-exit"),
+        liveActionFold: document.getElementById("live-action-fold"),
+        liveActionCheck: document.getElementById("live-action-check"),
+        liveActionBetSmall: document.getElementById("live-action-bet-small"),
+        liveActionBetBig: document.getElementById("live-action-bet-big"),
+        liveActionNext: document.getElementById("live-action-next"),
         menuButtons: []
     };
 
     document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("app:settings-live-game", handleLiveGameStartRequest);
 
     function init() {
         if (!elements.table || !elements.board || !elements.deck) {
@@ -155,6 +207,7 @@
         renderDeck();
         buildBoard();
         buildSeats();
+        initializePlayerEconomy();
         initDealerButton();
         updateSeatStates();
         updatePlayerCountLabel();
@@ -168,6 +221,7 @@
         setSeatProbabilitiesVisible(state.showSeatProbabilities);
         refreshSettingsMenu();
         bindDeckOverlay();
+        bindLiveGameControls();
         setupResultsLayoutObserver();
         syncSolverInputs();
         updateModeUI();
@@ -304,10 +358,15 @@
             cardsRow.appendChild(slot);
         }
 
-        seat.append(probability, label, cardsRow);
+        const economyControls = createSeatEconomyControls(index);
+
+        seat.append(probability, label, cardsRow, economyControls.container);
         state.seatMeta[index] = {
             label,
-            positionEl: positionLabel
+            positionEl: positionLabel,
+            economyInputs: economyControls.inputs,
+            betButton: economyControls.betButton,
+            committedDisplay: economyControls.committedDisplay
         };
         state.probabilityDisplays[index] = {
             container: probability,
@@ -315,6 +374,255 @@
             win: winLine
         };
         return seat;
+    }
+
+    function createSeatEconomyControls(playerIndex) {
+        const container = document.createElement('div');
+        container.className = 'seat-economy';
+        container.dataset.playerIndex = String(playerIndex);
+
+        const inputs = {};
+        let betButton = null;
+
+        ECONOMY_FIELD_ORDER.forEach((fieldKey) => {
+            const field = document.createElement('label');
+            field.className = 'seat-economy__field';
+            field.dataset.economyField = fieldKey;
+
+            const caption = document.createElement('span');
+            caption.className = 'seat-economy__label';
+            caption.textContent = ECONOMY_LABELS[fieldKey] || fieldKey;
+            field.appendChild(caption);
+
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'seat-economy__input';
+            input.inputMode = 'decimal';
+            input.min = '0';
+            input.step = '0.5';
+            input.dataset.playerIndex = String(playerIndex);
+            input.dataset.economyField = fieldKey;
+            input.addEventListener('change', handleEconomyInput);
+            input.addEventListener('blur', handleEconomyInput);
+
+            if (fieldKey === ECONOMY_FIELDS.pendingBet) {
+                const controlRow = document.createElement('div');
+                controlRow.className = 'seat-economy__bet-control';
+                controlRow.appendChild(input);
+
+                const commitButton = document.createElement('button');
+                commitButton.type = 'button';
+                commitButton.className = 'seat-economy__commit';
+                commitButton.textContent = '\u05d4\u05de\u05e8';
+                commitButton.dataset.playerIndex = String(playerIndex);
+                commitButton.addEventListener('click', handleCommitBetClick);
+
+                controlRow.appendChild(commitButton);
+                field.appendChild(controlRow);
+                betButton = commitButton;
+            } else {
+                field.appendChild(input);
+            }
+
+            container.appendChild(field);
+            inputs[fieldKey] = input;
+        });
+
+        const committedDisplay = document.createElement('div');
+        committedDisplay.className = 'seat-economy__committed';
+        committedDisplay.textContent = `${PLAYER_COMMITTED_LABEL}: 0`;
+        container.appendChild(committedDisplay);
+
+        return {
+            container,
+            inputs,
+            betButton,
+            committedDisplay
+        };
+    }
+
+    function initializePlayerEconomy() {
+        for (let i = 0; i < MAX_PLAYERS; i += 1) {
+            state.playerEconomy[i] = createDefaultEconomy();
+        }
+        applyDefaultBlinds();
+        syncPlayerEconomyInputs();
+    }
+
+    function createDefaultEconomy() {
+        return {
+            stack: DEFAULT_PLAYER_STACK,
+            pendingBet: 0,
+            committedBet: 0
+        };
+    }
+
+    function ensurePlayerEconomy(index) {
+        if (!state.playerEconomy[index]) {
+            state.playerEconomy[index] = createDefaultEconomy();
+        }
+        return state.playerEconomy[index];
+    }
+
+    function applyDefaultBlinds() {
+        for (let i = 0; i < state.playersCount; i += 1) {
+            const economy = ensurePlayerEconomy(i);
+            economy.pendingBet = 0;
+            economy.committedBet = 0;
+        }
+        if (state.playersCount >= 1) {
+            const smallBlind = ensurePlayerEconomy(0);
+            smallBlind.pendingBet = DEFAULT_SMALL_BLIND;
+            commitPendingBetForPlayer(0);
+        }
+        if (state.playersCount >= 2) {
+            const bigBlind = ensurePlayerEconomy(1);
+            bigBlind.pendingBet = DEFAULT_BIG_BLIND;
+            commitPendingBetForPlayer(1);
+        }
+        updateTablePotDisplay();
+    }
+
+    function syncPlayerEconomyInputs() {
+        state.seatMeta.forEach((meta, index) => {
+            if (!meta || !meta.economyInputs) {
+                return;
+            }
+            const data = ensurePlayerEconomy(index);
+            const isActive = index < state.playersCount;
+
+            const stackInput = meta.economyInputs[ECONOMY_FIELDS.stack];
+            updateEconomyInput(stackInput, data.stack, isActive);
+
+            const pendingInput = meta.economyInputs[ECONOMY_FIELDS.pendingBet];
+            updateEconomyInput(pendingInput, data.pendingBet, isActive);
+
+            if (meta.betButton) {
+                const canCommit = isActive && data.pendingBet > 0 && data.stack > 0;
+                meta.betButton.disabled = !canCommit;
+            }
+
+            if (meta.committedDisplay) {
+                meta.committedDisplay.textContent = `${PLAYER_COMMITTED_LABEL}: ${formatChipAmount(data.committedBet)}`;
+            }
+        });
+        updateTablePotDisplay();
+    }
+
+    function calculateTotalBetAmount() {
+        let total = 0;
+        for (let i = 0; i < state.playersCount; i += 1) {
+            const economy = ensurePlayerEconomy(i);
+            if (economy && Number.isFinite(economy.committedBet)) {
+                total += economy.committedBet;
+            }
+        }
+        return Math.max(0, Math.round(total * 100) / 100);
+    }
+
+    function formatChipAmount(amount) {
+        if (!Number.isFinite(amount)) {
+            return '0';
+        }
+        return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+    }
+
+    function updateTablePotDisplay() {
+        if (!elements.tablePot) {
+            return;
+        }
+        const totalPot = calculateTotalBetAmount();
+        elements.tablePot.textContent = `${TABLE_POT_LABEL}: ${formatChipAmount(totalPot)}`;
+    }
+
+    function commitPendingBetForPlayer(index) {
+        if (!Number.isInteger(index) || index < 0 || index >= MAX_PLAYERS) {
+            return 0;
+        }
+        const economy = ensurePlayerEconomy(index);
+        const pending = sanitizeEconomyValue(economy.pendingBet);
+        const stackAvailable = sanitizeEconomyValue(economy.stack);
+        if (pending <= 0 || stackAvailable <= 0) {
+            economy.pendingBet = pending;
+            return 0;
+        }
+        const commitAmount = Math.min(pending, stackAvailable);
+        const committed = sanitizeEconomyValue(economy.committedBet);
+        economy.committedBet = sanitizeEconomyValue(committed + commitAmount);
+        economy.stack = sanitizeEconomyValue(stackAvailable - commitAmount);
+        economy.pendingBet = sanitizeEconomyValue(pending - commitAmount);
+        return commitAmount;
+    }
+
+    function handleCommitBetClick(event) {
+        const button = event.currentTarget;
+        if (!(button instanceof HTMLButtonElement)) {
+            return;
+        }
+        const playerIndex = Number(button.dataset.playerIndex);
+        if (!Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= MAX_PLAYERS) {
+            return;
+        }
+        if (playerIndex >= state.playersCount) {
+            return;
+        }
+        commitPendingBetForPlayer(playerIndex);
+        syncPlayerEconomyInputs();
+    }
+
+    function updateEconomyInput(input, value, isActive) {
+        if (!input) {
+            return;
+        }
+        const sanitized = Number.isFinite(value) ? value : 0;
+        const normalized = Math.round(sanitized * 100) / 100;
+        const normalizedText = normalized.toString();
+        if (input.value !== normalizedText) {
+            input.value = normalizedText;
+        }
+        input.disabled = !isActive;
+    }
+
+    function sanitizeEconomyValue(rawValue) {
+        if (!Number.isFinite(rawValue)) {
+            return 0;
+        }
+        return Math.max(0, Math.round(rawValue * 100) / 100);
+    }
+
+    function handleEconomyInput(event) {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) {
+            return;
+        }
+        const { economyField } = input.dataset;
+        const playerIndex = Number(input.dataset.playerIndex);
+        if (!Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= MAX_PLAYERS) {
+            return;
+        }
+        if (!economyField || !ECONOMY_FIELD_ORDER.includes(economyField)) {
+            return;
+        }
+        const economy = ensurePlayerEconomy(playerIndex);
+        const rawValue = Number.parseFloat(input.value);
+        const sanitized = sanitizeEconomyValue(rawValue);
+        const sanitizedText = sanitized.toString();
+        if (input.value !== sanitizedText) {
+            input.value = sanitizedText;
+        }
+
+        if (economyField === ECONOMY_FIELDS.pendingBet) {
+            economy.pendingBet = sanitized;
+            const meta = state.seatMeta[playerIndex];
+            if (meta && meta.betButton) {
+                const canCommit = playerIndex < state.playersCount && economy.pendingBet > 0 && economy.stack > 0;
+                meta.betButton.disabled = !canCommit;
+            }
+            return;
+        }
+
+        economy[economyField] = sanitized;
+        syncPlayerEconomyInputs();
     }
 
     function initDealerButton() {
@@ -505,6 +813,7 @@
         slot.dataset.slotKey = key;
         slot.dataset.slotType = type;
         slot.dataset.order = order;
+        slot.dataset.placeholder = placeholder;
         if (typeof playerIndex === "number") {
             slot.dataset.playerIndex = String(playerIndex);
         }
@@ -515,6 +824,9 @@
         slot.addEventListener("click", () => handleSlotClick(slot));
         slot.addEventListener("dblclick", (event) => {
             event.preventDefault();
+            if (slot.dataset.locked === "true") {
+                return;
+            }
             if (!slot.dataset.cardId) {
                 return;
             }
@@ -526,6 +838,9 @@
     }
 
     function handleSlotClick(slot) {
+        if (slot.dataset.locked === "true") {
+            return;
+        }
         if (Number(slot.dataset.playerIndex) >= state.playersCount) {
             return;
         }
@@ -547,6 +862,11 @@
     }
 
     function handleDeckCardClick(card) {
+        if (state.liveGame && state.liveGame.active && state.liveGame.handActive) {
+            showError("במשחק חי אין אפשר לבחור קלפים מידנית.");
+            return;
+        }
+
         const deckButton = elements.deck.querySelector(`[data-card-id="${card.id}"]`);
         if (!deckButton) {
             return;
@@ -570,13 +890,58 @@
         assignCardToSlot(card, state.activeSlot);
         showError("");
     }
-    function assignCardToSlot(card, slot) {
+    function assignCardToSlot(card, slot, options = {}) {
         if (!slot) {
             return;
         }
 
+        const { hidden = false, lock = false, suppressUpdate = false } = options;
+
+        const valueEl = slot.querySelector(".card-value");
+        const rankEl = valueEl.querySelector(".rank");
+        const suitEl = valueEl.querySelector(".suit");
+        const placeholderEl = slot.querySelector(".card-placeholder");
+
+        const applyVisibility = () => {
+            if (hidden) {
+                slot.classList.add("card-slot--hidden");
+                slot.dataset.liveHidden = "true";
+                rankEl.textContent = "";
+                suitEl.textContent = "";
+                delete valueEl.dataset.suit;
+                if (placeholderEl) {
+                    placeholderEl.textContent = "??";
+                }
+            } else {
+                slot.classList.remove("card-slot--hidden");
+                delete slot.dataset.liveHidden;
+                rankEl.textContent = card.rank.label;
+                suitEl.textContent = card.suit.symbol;
+                valueEl.dataset.suit = card.suit.id;
+                if (placeholderEl) {
+                    placeholderEl.textContent = slot.dataset.placeholder || placeholderEl.textContent;
+                }
+            }
+        };
+
+        const applyLock = () => {
+            if (lock) {
+                slot.dataset.locked = "true";
+                slot.classList.add("card-slot--locked");
+            } else {
+                delete slot.dataset.locked;
+                slot.classList.remove("card-slot--locked");
+            }
+        };
+
         if (slot.dataset.cardId === card.id) {
-            advanceActiveSlot(slot);
+            applyVisibility();
+            applyLock();
+            if (!state.isAutoAdvancePaused && !lock) {
+                advanceActiveSlot(slot);
+            } else {
+                setActiveSlot(null);
+            }
             return;
         }
 
@@ -595,12 +960,8 @@
         slot.dataset.suit = card.suit.id;
         slot.classList.add("filled");
 
-        const valueEl = slot.querySelector(".card-value");
-        const rankEl = valueEl.querySelector(".rank");
-        const suitEl = valueEl.querySelector(".suit");
-        rankEl.textContent = card.rank.label;
-        suitEl.textContent = card.suit.symbol;
-        valueEl.dataset.suit = card.suit.id;
+        applyVisibility();
+        applyLock();
 
         const deckButton = elements.deck.querySelector(`[data-card-id="${card.id}"]`);
         if (deckButton) {
@@ -609,17 +970,20 @@
 
         state.cardAssignments.set(card.id, slot);
 
-        if (!state.isAutoAdvancePaused) {
+        if (!state.isAutoAdvancePaused && !lock) {
             advanceActiveSlot(slot);
         } else {
             setActiveSlot(null);
         }
 
-        scheduleImmediateProbabilityUpdate();
-        if (!state.deferProbabilityUpdate && state.mode === "equity") {
-            updateWinProbabilities();
+        if (!suppressUpdate) {
+            scheduleImmediateProbabilityUpdate();
+            if (!state.deferProbabilityUpdate && state.mode === "equity") {
+                updateWinProbabilities();
+            }
         }
     }
+
 
     function clearSlot(slot, options = {}) {
         if (!slot) {
@@ -638,14 +1002,21 @@
             return;
         }
 
-        slot.classList.remove("filled");
+        slot.classList.remove("filled", "card-slot--hidden", "card-slot--locked");
         delete slot.dataset.cardId;
         delete slot.dataset.suit;
+        delete slot.dataset.liveHidden;
+        delete slot.dataset.locked;
 
         const valueEl = slot.querySelector(".card-value");
         delete valueEl.dataset.suit;
         valueEl.querySelector(".rank").textContent = "";
         valueEl.querySelector(".suit").textContent = "";
+
+        const placeholderEl = slot.querySelector(".card-placeholder");
+        if (placeholderEl) {
+            placeholderEl.textContent = slot.dataset.placeholder || placeholderEl.textContent;
+        }
 
         state.cardAssignments.delete(cardId);
 
@@ -670,6 +1041,7 @@
             }
         }
     }
+
 
     function releaseCard(cardId) {
         const slot = state.cardAssignments.get(cardId);
@@ -794,6 +1166,7 @@ function advanceActiveSlot(fromSlot) {
         }
         ensureActiveSlot("player");
         updateSeatPositionLabels();
+        syncPlayerEconomyInputs();
     }
 
     function updatePlayerCountLabel() {
@@ -808,12 +1181,21 @@ function advanceActiveSlot(fromSlot) {
             return;
         }
 
+        const previousCount = state.playersCount;
+
         for (let i = next; i < state.playersCount; i += 1) {
             clearSlot(state.slotByKey.get(`player-${i}-0`), { suppressUpdate: true });
             clearSlot(state.slotByKey.get(`player-${i}-1`), { suppressUpdate: true });
         }
 
         state.playersCount = next;
+
+        if (next > previousCount) {
+            for (let i = previousCount; i < next; i += 1) {
+                state.playerEconomy[i] = createDefaultEconomy();
+            }
+        }
+
         updateSeatStates();
         updatePlayerCountLabel();
         showError("");
@@ -2308,6 +2690,9 @@ function advanceActiveSlot(fromSlot) {
                 clearAllSlots();
                 refreshSettingsMenu();
                 return { handled: true, shouldClose: true };
+            case 'live-game':
+                document.dispatchEvent(new CustomEvent('app:settings-live-game'));
+                return { handled: true, shouldClose: true };
             case 'reset-table':
                 resetTableState();
                 refreshSettingsMenu();
@@ -2335,6 +2720,7 @@ function advanceActiveSlot(fromSlot) {
     function resetTableState() {
         setPlayersCount(MIN_PLAYERS);
         clearAllSlots();
+        initializePlayerEconomy();
         state.isAutoAdvancePaused = false;
         setSeatProbabilitiesVisible(true);
         setDealerSeatIndex(0);
@@ -2460,6 +2846,657 @@ function advanceActiveSlot(fromSlot) {
 
 
 
+
+
+    // Live game controls and state management
+    function bindLiveGameControls() {
+        if (!elements.liveGamePanel) {
+            return;
+        }
+        const {
+            liveGameExit,
+            liveActionFold,
+            liveActionCheck,
+            liveActionBetSmall,
+            liveActionBetBig,
+            liveActionNext
+        } = elements;
+
+        if (liveGameExit) {
+            liveGameExit.addEventListener("click", finishLiveGameSession);
+        }
+        if (liveActionFold) {
+            liveActionFold.addEventListener("click", () => handleLiveHeroAction("fold"));
+        }
+        if (liveActionCheck) {
+            liveActionCheck.addEventListener("click", () => handleLiveHeroAction("check"));
+        }
+        if (liveActionBetSmall) {
+            liveActionBetSmall.addEventListener("click", () => handleLiveHeroAction("bet-small"));
+        }
+        if (liveActionBetBig) {
+            liveActionBetBig.addEventListener("click", () => handleLiveHeroAction("bet-big"));
+        }
+        if (liveActionNext) {
+            liveActionNext.addEventListener("click", () => {
+                if (!state.liveGame) {
+                    return;
+                }
+                if (state.liveGame.handActive) {
+                    return;
+                }
+                updateLiveGameStatus("פותחים יד חדשה...");
+                startLiveGameHand();
+            });
+        }
+        disableLiveActionButtons(true);
+    }
+
+    function handleLiveGameStartRequest() {
+        if (state.liveGame && state.liveGame.active) {
+            updateLiveGameStatus("מתחיל יד חדשה...");
+            startLiveGameHand();
+            return;
+        }
+        startLiveGameSession();
+    }
+
+    function startLiveGameSession() {
+        cancelScheduledProbabilityUpdate();
+        const live = state.liveGame || createInitialLiveGameState();
+        state.liveGame = live;
+        if (!live.players || live.players.length < 2) {
+            live.players = [
+                { index: 0, name: "Hero", stack: DEFAULT_PLAYER_STACK, bet: 0, cards: [], revealed: true },
+                { index: 1, name: "Solver", stack: DEFAULT_PLAYER_STACK, bet: 0, cards: [], revealed: false }
+            ];
+        } else {
+            live.players.forEach((player) => {
+                player.bet = 0;
+            });
+        }
+        live.active = true;
+        live.handActive = false;
+        live.stage = "idle";
+        live.awaitingHero = false;
+        live.log = [];
+        live.villainProfile = state.solverSettings.opponentProfile;
+        live.lastAnalysis = null;
+        state.deferProbabilityUpdate = true;
+        state.isAutoAdvancePaused = true;
+        if (state.playersCount !== MIN_PLAYERS) {
+            setPlayersCount(MIN_PLAYERS);
+            refreshSettingsMenu();
+        }
+        showLiveGamePanel(true);
+        clearLiveGameLog();
+        updateLiveGameStatus("מתכוננים ליד חדשה...");
+        showLiveNextButton(false);
+        startLiveGameHand();
+    }
+
+    function startLiveGameHand() {
+        const live = state.liveGame;
+        if (!live || !elements.liveGamePanel) {
+            return;
+        }
+
+        live.handActive = true;
+        live.stage = "preflop";
+        live.awaitingHero = false;
+        live.boardCards = [];
+        live.boardIndex = 0;
+        live.pot = 0;
+        live.currentBet = 0;
+        live.log = [];
+        live.lastAnalysis = null;
+
+        const hero = live.players[0];
+        const villain = live.players[1];
+
+        hero.bet = 0;
+        villain.bet = 0;
+
+        showLiveNextButton(false);
+
+        const playerSlots = getSlotsByType("player");
+        playerSlots.forEach((slot) => {
+            clearSlot(slot, { suppressUpdate: true });
+        });
+        getSlotsByType("board").forEach((slot) => {
+            clearSlot(slot, { suppressUpdate: true });
+        });
+
+        live.deck = state.deck.slice();
+        shuffle(live.deck);
+
+        const heroSlots = [
+            state.slotByKey.get("player-0-0"),
+            state.slotByKey.get("player-0-1")
+        ].filter(Boolean);
+        const villainSlots = [
+            state.slotByKey.get("player-1-0"),
+            state.slotByKey.get("player-1-1")
+        ].filter(Boolean);
+
+        const heroCards = [live.deck.shift(), live.deck.shift()].filter(Boolean);
+        const villainCards = [live.deck.shift(), live.deck.shift()].filter(Boolean);
+
+        if (heroSlots[0] && heroCards[0]) {
+            assignCardToSlot(heroCards[0], heroSlots[0], { lock: true, suppressUpdate: true });
+        }
+        if (heroSlots[1] && heroCards[1]) {
+            assignCardToSlot(heroCards[1], heroSlots[1], { lock: true, suppressUpdate: true });
+        }
+        if (villainSlots[0] && villainCards[0]) {
+            assignCardToSlot(villainCards[0], villainSlots[0], { lock: true, suppressUpdate: true, hidden: true });
+        }
+        if (villainSlots[1] && villainCards[1]) {
+            assignCardToSlot(villainCards[1], villainSlots[1], { lock: true, suppressUpdate: true, hidden: true });
+        }
+
+        hero.cards = heroCards;
+        villain.cards = villainCards;
+
+        updateLivePotDisplay();
+        clearLiveGameLog();
+        appendLiveGameLog("היד נפתחה מול הסולבר.");
+        updateLiveCheckButtonLabel(false);
+        disableLiveActionButtons(false);
+        setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
+
+        const analysis = analyzeLiveGameContext();
+        applyLiveAnalysisFeedback(analysis);
+        live.awaitingHero = true;
+    }
+
+    function updateLivePotDisplay() {
+        if (!elements.tablePot) {
+            return;
+        }
+        const live = state.liveGame;
+        const amount = live ? live.pot : 0;
+        elements.tablePot.textContent = `${TABLE_POT_LABEL}: ${formatChipAmount(amount)}`;
+    }
+
+    function showLiveGamePanel(visible) {
+        if (!elements.liveGamePanel) {
+            return;
+        }
+        elements.liveGamePanel.hidden = !visible;
+        elements.liveGamePanel.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+
+    function updateLiveGameStatus(message) {
+        if (!elements.liveGameStatus) {
+            return;
+        }
+        elements.liveGameStatus.textContent = message || "";
+    }
+
+    function clearLiveGameLog() {
+        if (!elements.liveGameLog) {
+            return;
+        }
+        elements.liveGameLog.innerHTML = "";
+    }
+
+    function appendLiveGameLog(message) {
+        if (!elements.liveGameLog) {
+            return;
+        }
+        const log = elements.liveGameLog;
+        const entry = document.createElement("div");
+        entry.className = "live-game__log-entry";
+        const textSpan = document.createElement("span");
+        textSpan.textContent = message;
+        const timeStamp = document.createElement("time");
+        const now = new Date();
+        timeStamp.dateTime = now.toISOString();
+        timeStamp.textContent = now.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        entry.append(textSpan, timeStamp);
+        log.appendChild(entry);
+        while (log.childElementCount > 40) {
+            log.removeChild(log.firstChild);
+        }
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function disableLiveActionButtons(disabled) {
+        const buttons = [
+            elements.liveActionFold,
+            elements.liveActionCheck,
+            elements.liveActionBetSmall,
+            elements.liveActionBetBig
+        ];
+        buttons.forEach((button) => {
+            if (button) {
+                button.disabled = disabled;
+            }
+        });
+    }
+
+    function setLiveActionAvailability(options = {}) {
+        const { allowFold = true, allowCheck = true, allowBets = true } = options;
+        if (elements.liveActionFold) {
+            elements.liveActionFold.disabled = !allowFold;
+        }
+        if (elements.liveActionCheck) {
+            elements.liveActionCheck.disabled = !allowCheck;
+        }
+        if (elements.liveActionBetSmall) {
+            elements.liveActionBetSmall.disabled = !allowBets;
+        }
+        if (elements.liveActionBetBig) {
+            elements.liveActionBetBig.disabled = !allowBets;
+        }
+    }
+
+    function updateLiveCheckButtonLabel(facingBet, amount = 0) {
+        if (!elements.liveActionCheck) {
+            return;
+        }
+        if (facingBet) {
+            elements.liveActionCheck.textContent = `קול ${formatChipAmount(amount)} BB`;
+        } else {
+            elements.liveActionCheck.textContent = "צ'ק / קול";
+        }
+    }
+
+    function showLiveNextButton(visible, label = "יד חדשה") {
+        if (!elements.liveActionNext) {
+            return;
+        }
+        elements.liveActionNext.hidden = !visible;
+        elements.liveActionNext.setAttribute("aria-hidden", visible ? "false" : "true");
+        elements.liveActionNext.textContent = label;
+    }
+
+    function getLiveBetAmount(factor) {
+        const live = state.liveGame;
+        if (!live) {
+            return DEFAULT_BIG_BLIND;
+        }
+        const hero = live.players[0];
+        const villain = live.players[1];
+        const effective = Math.max(0, Math.min(hero.stack, villain.stack));
+        const baseline = live.pot > 0 ? live.pot : DEFAULT_BIG_BLIND * 2;
+        const raw = Math.min(effective || baseline, baseline * factor);
+        const normalized = Math.max(DEFAULT_SMALL_BLIND, raw);
+        return Math.round(normalized * 100) / 100;
+    }
+
+    function analyzeLiveGameContext() {
+        const live = state.liveGame;
+        if (!live) {
+            return null;
+        }
+        const hero = live.players[0];
+        const board = live.boardCards.slice();
+        const available = buildAvailableVillainCards(hero.cards, board);
+        const analysis = getSolverAnalysis({
+            heroCards: hero.cards,
+            boardCards: board,
+            availableVillainCards: available,
+            settings: state.solverSettings,
+            includeIntegrations: false
+        });
+        if (analysis && analysis.ok) {
+            live.lastAnalysis = analysis;
+        }
+        return analysis;
+    }
+
+    function applyLiveAnalysisFeedback(analysis) {
+        if (!analysis || !analysis.ok) {
+            updateLiveGameStatus("אין המלצה זמינה כרגע. שחקו לפי האינסטינקט.");
+            return;
+        }
+        const data = analysis.data;
+        const heroCardsText = formatCardList(data.heroCards);
+        const boardText = data.boardCards && data.boardCards.length ? formatCardList(data.boardCards) : "";
+        const equityText = formatSolverPercent(data.heroEquity);
+        const recommendation = data.recommendation ? data.recommendation.label : "אין המלצה זמינה";
+        const statusParts = [];
+        statusParts.push(`הקלפים שלך: ${heroCardsText}`);
+        if (boardText) {
+            statusParts.push(`לוח: ${boardText}`);
+        }
+        statusParts.push(`Equity משוער: ${equityText}`);
+        statusParts.push(`המלצת הסולבר: ${recommendation}`);
+        updateLiveGameStatus(statusParts.join(" | "));
+    }
+
+    function buildAvailableVillainCards(heroCards, boardCards) {
+        const excluded = new Set();
+        (heroCards || []).forEach((card) => excluded.add(card.id));
+        (boardCards || []).forEach((card) => excluded.add(card.id));
+        const available = [];
+        state.deck.forEach((card) => {
+            if (!excluded.has(card.id)) {
+                available.push(card);
+            }
+        });
+        return available;
+    }
+
+    function dealLiveBoardCards(count) {
+        const live = state.liveGame;
+        if (!live) {
+            return;
+        }
+        const boardSlots = getSlotsByType("board");
+        for (let i = 0; i < count; i += 1) {
+            const slot = boardSlots[live.boardIndex + i];
+            const card = live.deck.shift();
+            if (!slot || !card) {
+                continue;
+            }
+            live.boardCards.push(card);
+            assignCardToSlot(card, slot, { lock: true, suppressUpdate: true });
+        }
+        live.boardIndex += count;
+    }
+
+    function advanceLiveGameStage() {
+        const live = state.liveGame;
+        if (!live || !live.handActive) {
+            return;
+        }
+        live.awaitingHero = false;
+        switch (live.stage) {
+            case "preflop":
+                dealLiveBoardCards(3);
+                live.stage = "flop";
+                appendLiveGameLog(`הפלופ: ${formatCardList(live.boardCards.slice(0, 3))}.`);
+                break;
+            case "flop":
+                dealLiveBoardCards(1);
+                live.stage = "turn";
+                appendLiveGameLog(`הטרן: ${formatCardList(live.boardCards.slice(0, 4))}.`);
+                break;
+            case "turn":
+                dealLiveBoardCards(1);
+                live.stage = "river";
+                appendLiveGameLog(`הריבר: ${formatCardList(live.boardCards)}.`);
+                break;
+            case "river":
+                resolveLiveShowdown();
+                return;
+            default:
+                return;
+        }
+        const analysis = analyzeLiveGameContext();
+        applyLiveAnalysisFeedback(analysis);
+        updateLiveCheckButtonLabel(false);
+        disableLiveActionButtons(false);
+        setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
+        live.awaitingHero = true;
+    }
+
+    function handleLiveHeroAction(action) {
+        const live = state.liveGame;
+        if (!live || !live.handActive || !live.awaitingHero) {
+            return;
+        }
+        switch (action) {
+            case "fold":
+                disableLiveActionButtons(true);
+                processLiveHeroFold();
+                return;
+            case "check":
+                disableLiveActionButtons(true);
+                if (live.currentBet > 0) {
+                    handleLiveHeroCall();
+                } else {
+                    processLiveHeroCheck();
+                }
+                return;
+            case "bet-small":
+                disableLiveActionButtons(true);
+                processLiveHeroBet(getLiveBetAmount(0.5));
+                return;
+            case "bet-big":
+                disableLiveActionButtons(true);
+                processLiveHeroBet(getLiveBetAmount(1));
+                return;
+            default:
+                return;
+        }
+    }
+
+    function processLiveHeroFold() {
+        appendLiveGameLog("אתה מקפל את היד.");
+        endLiveGameHand({
+            winnerIndex: 1,
+            message: "קיפלת את היד והסולבר זכה בקופה."
+        });
+    }
+
+    function processLiveHeroCheck() {
+        const live = state.liveGame;
+        appendLiveGameLog("אתה בוחר בצ'ק.");
+        const villainBet = villainActAfterCheck();
+        if (!villainBet) {
+            disableLiveActionButtons(false);
+            setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
+            updateLiveCheckButtonLabel(false);
+            live.awaitingHero = true;
+            advanceLiveGameStage();
+        }
+    }
+
+    function processLiveHeroBet(amount) {
+        const live = state.liveGame;
+        const hero = live.players[0];
+        const villain = live.players[1];
+        const commit = Math.min(hero.stack, Math.max(DEFAULT_SMALL_BLIND, Math.round(amount * 100) / 100));
+        hero.stack -= commit;
+        hero.bet = commit;
+        live.pot += commit;
+        live.currentBet = commit;
+        updateLivePotDisplay();
+        appendLiveGameLog(`הימור של ${formatChipAmount(commit)} BB.`);
+
+        const analysis = analyzeLiveGameContext();
+        const callFrequency = analysis && analysis.ok ? clampProbability(analysis.data.callFrequency || 0.5) : 0.5;
+        const villainCalls = Math.random() < callFrequency;
+        if (!villainCalls || villain.stack <= 0) {
+            appendLiveGameLog("הסולבר מקפל את היד.");
+            endLiveGameHand({
+                winnerIndex: 0,
+                message: "הסולבר קיפל מול ההימור שלך."
+            });
+            return;
+        }
+
+        const callAmount = Math.min(villain.stack, commit);
+        villain.stack -= callAmount;
+        villain.bet = callAmount;
+        live.pot += callAmount;
+        updateLivePotDisplay();
+        appendLiveGameLog(`הסולבר משלם ${formatChipAmount(callAmount)} BB.`);
+
+        hero.bet = 0;
+        villain.bet = 0;
+        live.currentBet = 0;
+        advanceLiveGameStage();
+    }
+
+    function villainActAfterCheck() {
+        const live = state.liveGame;
+        const villain = live.players[1];
+        const analysis = analyzeLiveGameContext();
+        let betChance = 0.35;
+        if (analysis && analysis.ok) {
+            const meta = analysis.meta || {};
+            if (meta.solverOutput && typeof meta.solverOutput.villainBetAfterCheckFrequency === "number") {
+                betChance = clampProbability(meta.solverOutput.villainBetAfterCheckFrequency);
+            } else {
+                const heroBetFrequency = clampProbability(analysis.data.heroBetFrequency || 0.5);
+                betChance = Math.max(0.15, Math.min(0.85, 1 - heroBetFrequency));
+            }
+        }
+        if (villain.stack <= 0) {
+            betChance = 0;
+        }
+        const willBet = Math.random() < betChance;
+        if (!willBet) {
+            appendLiveGameLog("הסולבר בוחר בצ'ק.");
+            disableLiveActionButtons(false);
+            setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
+            updateLiveCheckButtonLabel(false);
+            return false;
+        }
+        const betAmount = Math.min(villain.stack, getLiveBetAmount(0.75));
+        if (betAmount <= 0) {
+            appendLiveGameLog("הסולבר בוחר בצ'ק.");
+            disableLiveActionButtons(false);
+            setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
+            updateLiveCheckButtonLabel(false);
+            return false;
+        }
+        villain.stack -= betAmount;
+        villain.bet = betAmount;
+        live.pot += betAmount;
+        live.currentBet = betAmount;
+        updateLivePotDisplay();
+        appendLiveGameLog(`הסולבר מהמר ${formatChipAmount(betAmount)} BB.`);
+        disableLiveActionButtons(false);
+        setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: false });
+        updateLiveCheckButtonLabel(true, betAmount);
+        live.awaitingHero = true;
+        return true;
+    }
+
+    function handleLiveHeroCall() {
+        const live = state.liveGame;
+        if (!live) {
+            return;
+        }
+        const hero = live.players[0];
+        const villain = live.players[1];
+        const callAmount = Math.min(hero.stack, live.currentBet);
+        hero.stack -= callAmount;
+        hero.bet = callAmount;
+        live.pot += callAmount;
+        updateLivePotDisplay();
+        appendLiveGameLog(`אתה משלם ${formatChipAmount(callAmount)} BB.`);
+        hero.bet = 0;
+        villain.bet = 0;
+        live.currentBet = 0;
+        advanceLiveGameStage();
+    }
+
+    function resolveLiveShowdown() {
+        const live = state.liveGame;
+        const hero = live.players[0];
+        const villain = live.players[1];
+        const board = live.boardCards.slice();
+        const heroEval = bestHandForPlayer(hero.cards, board);
+        const villainEval = bestHandForPlayer(villain.cards, board);
+        revealLivePlayerCards(villain);
+        let message;
+        let split = false;
+        let winnerIndex = 0;
+        if (heroEval && villainEval) {
+            const cmp = compareScores(heroEval.score, villainEval.score);
+            if (cmp > 0) {
+                message = `ניצחת עם ${describeHand(heroEval)}.`;
+                appendLiveGameLog(`הסולבר מציג ${describeHand(villainEval)}.`);
+                winnerIndex = 0;
+            } else if (cmp < 0) {
+                message = `הסולבר ניצח עם ${describeHand(villainEval)}.`;
+                appendLiveGameLog(`אתה מציג ${describeHand(heroEval)}.`);
+                winnerIndex = 1;
+            } else {
+                message = "היד הסתיימה בתיקו והקופה חולקה.";
+                appendLiveGameLog(`שני הצדדים: ${describeHand(heroEval)}.`);
+                split = true;
+            }
+        } else {
+            message = "היד הסתיימה.";
+            winnerIndex = 0;
+        }
+        endLiveGameHand({
+            winnerIndex,
+            message,
+            revealVillain: true,
+            split
+        });
+    }
+
+    function revealLivePlayerCards(player) {
+        if (!player || !Array.isArray(player.cards)) {
+            return;
+        }
+        const firstSlot = state.slotByKey.get(`player-${player.index}-0`);
+        const secondSlot = state.slotByKey.get(`player-${player.index}-1`);
+        if (firstSlot && player.cards[0]) {
+            assignCardToSlot(player.cards[0], firstSlot, { lock: true, suppressUpdate: true, hidden: false });
+        }
+        if (secondSlot && player.cards[1]) {
+            assignCardToSlot(player.cards[1], secondSlot, { lock: true, suppressUpdate: true, hidden: false });
+        }
+    }
+
+    function endLiveGameHand(options = {}) {
+        const live = state.liveGame;
+        if (!live) {
+            return;
+        }
+        const {
+            winnerIndex = 0,
+            message = "",
+            revealVillain = false,
+            split = false
+        } = options;
+        const hero = live.players[0];
+        const villain = live.players[1];
+        if (revealVillain) {
+            revealLivePlayerCards(villain);
+        }
+        if (split) {
+            const half = Math.round((live.pot / 2) * 100) / 100;
+            hero.stack += half;
+            villain.stack += live.pot - half;
+        } else if (winnerIndex === 1) {
+            villain.stack += live.pot;
+        } else {
+            hero.stack += live.pot;
+        }
+        live.pot = 0;
+        updateLivePotDisplay();
+        if (message) {
+            appendLiveGameLog(message);
+            updateLiveGameStatus(message);
+        }
+        disableLiveActionButtons(true);
+        showLiveNextButton(true, "יד חדשה");
+        live.handActive = false;
+        live.awaitingHero = false;
+    }
+
+    function finishLiveGameSession() {
+        const live = state.liveGame;
+        if (live) {
+            live.active = false;
+            live.handActive = false;
+        }
+        showLiveGamePanel(false);
+        showLiveNextButton(false);
+        disableLiveActionButtons(true);
+        updateLiveGameStatus("");
+        clearLiveGameLog();
+        clearAllSlots({ keepResults: false });
+        state.liveGame = createInitialLiveGameState();
+        state.deferProbabilityUpdate = false;
+        state.isAutoAdvancePaused = false;
+        scheduleImmediateProbabilityUpdate();
+        updateTablePotDisplay();
+        refreshSettingsMenu();
+        showError("");
+    }
 
     function normalizeViewName() {
         return "equity";
@@ -2729,63 +3766,75 @@ function advanceActiveSlot(fromSlot) {
         }
     }
 
-    function updateSolverRecommendations() {
-        if (state.mode !== "solver") {
-            return;
+    
+
+    
+
+        
+
+    function getSolverAnalysis(options = {}) {
+        const {
+            heroCards,
+            boardCards,
+            settings = state.solverSettings,
+            availableVillainCards = null,
+            includeIntegrations = true
+        } = options || {};
+        if (!Array.isArray(heroCards) || heroCards.length !== 2) {
+            return { ok: false, reason: "hero-cards", message: SOLVER_MESSAGES.heroCardsRequired };
         }
-        if (!elements.solverResults) {
-            return;
-        }
-        const players = collectPlayersData();
-        const hero = players[0];
-        if (!hero || hero.cards.length !== 2) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.heroCardsRequired);
-            return;
-        }
-        const boardCards = collectBoardCards();
-        if (boardCards.length > 5) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.boardTooLong);
-            return;
+        if (!Array.isArray(boardCards) || boardCards.length > 5) {
+            return { ok: false, reason: "board-length", message: SOLVER_MESSAGES.boardTooLong };
         }
         const assignedIds = new Set();
-        hero.cards.forEach((card) => assignedIds.add(card.id));
-        boardCards.forEach((card) => assignedIds.add(card.id));
-        state.cardAssignments.forEach((slot, cardId) => {
-            assignedIds.add(cardId);
-        });
-        const availableForVillain = [];
-        state.deck.forEach((card) => {
-            if (!assignedIds.has(card.id)) {
-                availableForVillain.push(card);
+        heroCards.forEach((card) => {
+            if (card && card.id) {
+                assignedIds.add(card.id);
             }
         });
-        if (availableForVillain.length < 2) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.insufficientDeck);
-            return;
+        boardCards.forEach((card) => {
+            if (card && card.id) {
+                assignedIds.add(card.id);
+            }
+        });
+        let villainCandidates;
+        if (Array.isArray(availableVillainCards)) {
+            villainCandidates = availableVillainCards.filter((card) => card && card.id && !assignedIds.has(card.id));
+        } else {
+            state.cardAssignments.forEach((slot, cardId) => {
+                assignedIds.add(cardId);
+            });
+            villainCandidates = [];
+            state.deck.forEach((card) => {
+                if (!assignedIds.has(card.id)) {
+                    villainCandidates.push(card);
+                }
+            });
         }
-        const profile = SOLVER_PROFILES.has(state.solverSettings.opponentProfile)
-            ? state.solverSettings.opponentProfile
+        if (villainCandidates.length < 2) {
+            return { ok: false, reason: "villain-deck", message: SOLVER_MESSAGES.insufficientDeck };
+        }
+        const profile = SOLVER_PROFILES.has(settings.opponentProfile)
+            ? settings.opponentProfile
             : DEFAULT_SOLVER_SETTINGS.opponentProfile;
-        const villainRange = buildVillainRange(availableForVillain, profile);
+        const villainRange = buildVillainRange(villainCandidates, profile);
         if (!villainRange.combos.length || villainRange.totalWeight <= 0) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.rangeUnavailable);
-            return;
+            return { ok: false, reason: "villain-range", message: SOLVER_MESSAGES.rangeUnavailable };
         }
-        const iterations = Math.max(villainRange.combos.length, Math.max(1000, Number(state.solverSettings.iterations) || 1000));
-        const simulation = simulateRangeMatchup(hero.cards, boardCards, villainRange, iterations);
+        const iterationsSetting = Number(settings.iterations) || 1000;
+        const iterations = Math.max(villainRange.combos.length, Math.max(1000, iterationsSetting));
+        const simulation = simulateRangeMatchup(heroCards, boardCards, villainRange, iterations);
         if (!simulation.samples) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.simulationFailed);
-            return;
+            return { ok: false, reason: "simulation", message: SOLVER_MESSAGES.simulationFailed };
         }
         const heroEquity = (simulation.heroWins + simulation.heroTies * 0.5) / simulation.samples;
-        const potSize = Math.max(0, Number(state.solverSettings.potSize) || 0);
-        const effectiveStack = Math.max(0, Number(state.solverSettings.effectiveStack) || 0);
-        const betPercent = Math.max(1, Number(state.solverSettings.betSizePercent) || 0) / 100;
+        const potSize = Math.max(0, Number(settings.potSize) || 0);
+        const effectiveStack = Math.max(0, Number(settings.effectiveStack) || 0);
+        const betPercent = Math.max(1, Number(settings.betSizePercent) || 0) / 100;
         const proposedBet = potSize > 0 ? potSize * betPercent : betPercent;
         const betAmount = Math.min(effectiveStack, proposedBet);
         if (betAmount <= 0) {
-            renderSolverPlaceholder(SOLVER_MESSAGES.betParametersMissing);
-            return;
+            return { ok: false, reason: "bet-size", message: SOLVER_MESSAGES.betParametersMissing };
         }
         const totalWeight = villainRange.totalWeight;
         const solverNamespace = typeof window !== "undefined" ? window.AlphaPoker : globalThis.AlphaPoker;
@@ -2797,7 +3846,7 @@ function advanceActiveSlot(fromSlot) {
         if (solverRegistry) {
             try {
                 const aggregated = solverRegistry.solveAll({
-                    hero: { cards: hero.cards, equity: heroEquity },
+                    hero: { cards: heroCards, equity: heroEquity },
                     board: boardCards,
                     villainRange,
                     potSize,
@@ -2810,7 +3859,7 @@ function advanceActiveSlot(fromSlot) {
                 if (aggregated && aggregated.primary && aggregated.primary.summary) {
                     solverOutput = aggregated.primary.summary;
                 }
-                if (aggregated && Array.isArray(aggregated.results)) {
+                if (includeIntegrations && aggregated && Array.isArray(aggregated.results)) {
                     integrationSummaries = aggregated.results
                         .map((entry) => ({
                             id: entry.id,
@@ -2840,13 +3889,13 @@ function advanceActiveSlot(fromSlot) {
                     stackSize: effectiveStack,
                     iterations
                 });
-                if (solverOutput && integrationSummaries.length === 0) {
+                if (includeIntegrations && solverOutput && integrationSummaries.length === 0) {
                     integrationSummaries.push({
                         id: "singleStreetCfr",
-                        label: "CFR רחוב בודד",
+                        label: "CFR חד רחובי",
                         ok: true,
                         origin: "ליבת AlphaPoker",
-                        version: "ישן",
+                        version: "לא זמין",
                         priority: 0,
                         summary: solverOutput,
                         detail: null,
@@ -2858,6 +3907,14 @@ function advanceActiveSlot(fromSlot) {
                 console.warn("[AlphaPoker] CFR solver failure", error);
             }
         }
+        const meta = {
+            villainRange,
+            simulation,
+            heroEquity,
+            iterations,
+            profile,
+            solverOutput
+        };
         if (!solverOutput) {
             const callThreshold = betAmount > 0 ? betAmount / ((potSize + betAmount) || 1) : 1;
             const mdf = betAmount > 0 ? potSize / ((potSize + betAmount) || 1) : 0;
@@ -2921,8 +3978,11 @@ function advanceActiveSlot(fromSlot) {
                     detail: rawRecommendation.detail
                 }
                 : rawRecommendation;
-            renderSolverResults({
-                heroCards: hero.cards,
+            const heroBetFrequency = clampProbability(betAdvantage > 0 ? 0.7 : 0.35);
+            const heroCheckFrequency = clampProbability(1 - heroBetFrequency);
+            const heroCallFrequency = clampProbability(callFrequency);
+            const data = {
+                heroCards,
                 boardCards,
                 heroEquity,
                 evBet,
@@ -2941,15 +4001,19 @@ function advanceActiveSlot(fromSlot) {
                 valueWeight,
                 bluffWeight,
                 callDetails,
+                heroBetFrequency,
+                heroCheckFrequency,
+                heroCallFrequency,
+                villainBetAfterCheckFrequency: null,
                 iterations: simulation.samples,
                 combosCount: villainRange.combos.length,
                 confidence,
                 profile,
                 boardStage: boardCards.length,
                 recommendation,
-                integrations: integrationSummaries
-            });
-            return;
+                integrations: includeIntegrations ? integrationSummaries : []
+            };
+            return { ok: true, data, meta };
         }
         const callFrequency = clampProbability(solverOutput.villainCallFrequency);
         const foldFrequency = clampProbability(solverOutput.villainFoldFrequency);
@@ -2974,9 +4038,12 @@ function advanceActiveSlot(fromSlot) {
         const heroCallFrequency = clampProbability(solverOutput.heroCallStrategy && typeof solverOutput.heroCallStrategy.call === "number"
             ? solverOutput.heroCallStrategy.call
             : 1);
+        const villainBetAfterCheckFrequency = solverOutput.villainBetAfterCheckFrequency !== undefined
+            ? clampProbability(solverOutput.villainBetAfterCheckFrequency)
+            : null;
         const rawRecommendation = describeHeroAction(heroEquity, callThreshold, betAdvantage);
-        const mixDetail = `${formatSolverPercent(heroBetFrequency)} \u05d4\u05d9\u05de\u05d5\u05e8 / ${formatSolverPercent(heroCheckFrequency)} \u05e6'\u05e7`;
-        const responseDetail = `${formatSolverPercent(heroCallFrequency)} \u05e7\u05d5\u05dc \u05de\u05d5\u05dc \u05d4\u05d9\u05de\u05d5\u05e8`;
+        const mixDetail = `${formatSolverPercent(heroBetFrequency)} הימור / ${formatSolverPercent(heroCheckFrequency)} צ'ק`;
+        const responseDetail = `${formatSolverPercent(heroCallFrequency)} קול מול ההימור`;
         const recommendationDetail = `${rawRecommendation.detail} | ${mixDetail} | ${responseDetail}`;
         const recommendation = betAmount > 0
             ? {
@@ -3004,8 +4071,8 @@ function advanceActiveSlot(fromSlot) {
                 weightShare: top.weightShare
             });
         }
-        renderSolverResults({
-            heroCards: hero.cards,
+        const data = {
+            heroCards,
             boardCards,
             heroEquity,
             evBet,
@@ -3024,17 +4091,45 @@ function advanceActiveSlot(fromSlot) {
             valueWeight,
             bluffWeight,
             callDetails,
+            heroBetFrequency,
+            heroCheckFrequency,
+            heroCallFrequency,
+            villainBetAfterCheckFrequency,
             iterations: Math.round(iterations + simulation.samples),
             combosCount: villainRange.combos.length,
             confidence,
             profile,
             boardStage: boardCards.length,
             recommendation,
-            integrations: integrationSummaries
-        });
+            integrations: includeIntegrations ? integrationSummaries : []
+        };
+        return { ok: true, data, meta };
     }
-
-    function renderSolverPlaceholder(message = SOLVER_MESSAGES.default) {
+    function updateSolverRecommendations() {
+        if (state.mode !== "solver") {
+            return;
+        }
+        if (!elements.solverResults) {
+            return;
+        }
+        const players = collectPlayersData();
+        const hero = players[0];
+        if (!hero || hero.cards.length !== 2) {
+            state.lastSolverAnalysis = null;
+            renderSolverPlaceholder(SOLVER_MESSAGES.heroCardsRequired);
+            return;
+        }
+        const boardCards = collectBoardCards();
+        const analysis = getSolverAnalysis({ heroCards: hero.cards, boardCards });
+        if (!analysis.ok) {
+            state.lastSolverAnalysis = null;
+            renderSolverPlaceholder(analysis.message || SOLVER_MESSAGES.default);
+            return;
+        }
+        state.lastSolverAnalysis = analysis;
+        renderSolverResults(analysis.data);
+    }
+function renderSolverPlaceholder(message = SOLVER_MESSAGES.default) {
         if (!elements.solverResults) {
             return;
         }
