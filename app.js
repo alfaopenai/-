@@ -443,12 +443,15 @@
         }
         event.preventDefault();
         elements.dealerButton.setPointerCapture(event.pointerId);
-        dealerDragState = { pointerId: event.pointerId };
+        const rect = elements.dealerButton.getBoundingClientRect();
+        const offsetX = event.clientX - rect.left;
+        const offsetY = event.clientY - rect.top;
+        dealerDragState = { pointerId: event.pointerId, offsetX, offsetY };
         elements.dealerButton.classList.add("is-dragging");
         elements.dealerButton.style.position = "fixed";
-        elements.dealerButton.style.left = `${event.clientX}px`;
-        elements.dealerButton.style.top = `${event.clientY}px`;
-        elements.dealerButton.style.transform = "translate(-50%, -50%)";
+        elements.dealerButton.style.left = `${event.clientX - offsetX}px`;
+        elements.dealerButton.style.top = `${event.clientY - offsetY}px`;
+        elements.dealerButton.style.transform = "none";
         elements.dealerButton.style.zIndex = "4000";
         window.addEventListener("pointermove", handleDealerPointerMove);
         window.addEventListener("pointerup", handleDealerPointerUp);
@@ -460,8 +463,9 @@
             return;
         }
         event.preventDefault();
-        elements.dealerButton.style.left = `${event.clientX}px`;
-        elements.dealerButton.style.top = `${event.clientY}px`;
+        const { offsetX = elements.dealerButton.offsetWidth / 2, offsetY = elements.dealerButton.offsetHeight / 2 } = dealerDragState;
+        elements.dealerButton.style.left = `${event.clientX - offsetX}px`;
+        elements.dealerButton.style.top = `${event.clientY - offsetY}px`;
     }
 
     function handleDealerPointerUp(event) {
