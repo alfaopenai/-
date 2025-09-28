@@ -15,15 +15,6 @@
                 <header class="top-toolbar" role="banner">
                     <div class="top-toolbar__controls" role="toolbar" aria-label="ניהול שולחן">
                         <div class="top-toolbar__group" role="group" aria-label="שחקנים">
-                            <button id="add-player" type="button" class="toolbar-button" aria-label="הוסף שחקן">+</button>
-                            <span id="player-count-label" class="toolbar-counter" aria-live="polite">2 שחקנים</span>
-                            <button id="remove-player" type="button" class="toolbar-button" aria-label="הסר שחקן">-</button>
-                        </div>
-                        <div class="top-toolbar__group" role="group" aria-label="פקודות שולחן">
-                            <button id="deal-random" type="button" class="toolbar-chip" aria-label="חלוקה אקראית">חלוקה אקראית</button>
-                            <button id="clear-all" type="button" class="toolbar-chip" aria-label="נקה הכל">נקה הכל</button>
-                            <button id="calculate" type="button" class="toolbar-chip primary" disabled hidden aria-hidden="true" tabindex="-1">חשב הסתברויות</button>
-                            <button id="reset" type="button" class="toolbar-chip" aria-label="איפוס מהיר">איפוס מהיר</button>
                         </div>
                     </div>
                     <div class="top-toolbar__settings">
@@ -36,6 +27,28 @@
                             </span>
                         </button>
                         <div id="settings-menu" class="settings-menu" role="menu" aria-hidden="true">
+                            <div class="settings-menu__section settings-menu__section--players">
+                                <div class="settings-menu__item settings-menu__item--static" role="presentation">
+                                    <span class="settings-menu__item-label">מספר שחקנים</span>
+                                    <div class="player-count-control" role="group" aria-label="שינוי מספר שחקנים">
+                                        <button type="button" class="settings-stepper" data-setting-action="decrement-players" aria-label="הפחת שחקן">-</button>
+                                        <span id="settings-player-count" class="settings-stepper__value">2</span>
+                                        <button type="button" class="settings-stepper" data-setting-action="increment-players" aria-label="הוסף שחקן">+</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-menu__section">
+                                <button id="deal-random" type="button" class="settings-menu__item" role="menuitem" data-setting-action="deal-random">
+                                    <span class="settings-menu__item-label">חלוקה אקראית</span>
+                                </button>
+                                <button id="clear-all" type="button" class="settings-menu__item" role="menuitem" data-setting-action="clear-all">
+                                    <span class="settings-menu__item-label">נקה הכל</span>
+                                </button>
+                                <button id="reset" type="button" class="settings-menu__item" role="menuitem" data-setting-action="quick-reset">
+                                    <span class="settings-menu__item-label">איפוס מהיר</span>
+                                </button>
+                            </div>
                             <div class="settings-menu__section">
                                 <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-auto-advance" aria-checked="true">
                                     <span class="settings-menu__item-label">מעבר אוטומטי בין קלפים</span>

@@ -37,9 +37,26 @@
         betParametersMissing: "\u05e7\u05d1\u05e2\u05d5 \u05d2\u05d5\u05d3\u05dc \u05e7\u05d5\u05e4\u05d4 \u05d5\u05e1\u05d8\u05d0\u05e7 \u05d0\u05e4\u05e7\u05d8\u05d9\u05d1\u05d9 \u05d7\u05d9\u05d5\u05d1\u05d9 \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d4\u05d9\u05de\u05d5\u05e8 GTO.",
         villainMustFold: "\u05d4\u05d9\u05e8\u05d9\u05d1 \u05e6\u05e8\u05d9\u05da \u05dc\u05e7\u05e4\u05dc \u05d0\u05ea \u05d4\u05d8\u05d5\u05d5\u05d7 \u05d4\u05de\u05dc\u05d0 \u05de\u05d5\u05dc \u05d4\u05d4\u05d9\u05de\u05d5\u05e8 \u05d4\u05de\u05d5\u05e6\u05e2."
     });
+    const POSITION_SEQUENCE = [
+        "דילר",
+        "סמול בליינד",
+        "ביג בליינד",
+        "UTG",
+        "UTG+1",
+        "UTG+2",
+        "מידל פוזישן",
+        "הייג'ק",
+        "קאט-אוף"
+    ];
+    const HEADS_UP_POSITIONS = [
+        "דילר / סמול בליינד",
+        "ביג בליינד"
+    ];
+
 
     let probabilityUpdateTimer = null;
     let solverUpdateTimer = null;
+    let dealerDragState = null;
 
     const suits = [
         { id: "S", symbol: "\u2660", name: "\u05e2\u05dc\u05d4", color: "black" },
@@ -75,7 +92,9 @@
         activeSlot: null,
         playersCount: MIN_PLAYERS,
         seats: [],
+        seatMeta: [],
         probabilityDisplays: [],
+        dealerSeatIndex: 0,
         isAutoAdvancePaused: false,
         showSeatProbabilities: true,
         deferProbabilityUpdate: false,
@@ -93,9 +112,8 @@
         deck: document.getElementById("deck"),
         deckOverlay: document.getElementById("deck-overlay"),
         deckOverlayClose: document.getElementById("deck-overlay-close"),
+        dealerButton: null,
         appShell: document.querySelector(".app-shell"),
-        addPlayer: document.getElementById("add-player"),
-        removePlayer: document.getElementById("remove-player"),
         playerCountLabel: document.getElementById("player-count-label"),
         dealRandom: document.getElementById("deal-random"),
         clearAll: document.getElementById("clear-all"),
@@ -107,6 +125,7 @@
         modeToggle: document.getElementById("mode-toggle"),
         settingsToggle: document.getElementById("settings-menu-toggle"),
         settingsMenu: document.getElementById("settings-menu"),
+        settingsPlayerCount: document.getElementById("settings-player-count"),
         solverControls: document.getElementById("solver-controls"),
         solverResults: document.getElementById("solver-results"),
         solverPotSize: document.getElementById("solver-pot-size"),
@@ -136,8 +155,10 @@
         renderDeck();
         buildBoard();
         buildSeats();
+        initDealerButton();
         updateSeatStates();
         updatePlayerCountLabel();
+        updateSeatPositionLabels();
         bindControls();
         bindModeControls();
         bindSolverControls();
@@ -154,6 +175,7 @@
         setTimeout(() => setActiveView("equity"), 0);
         ensureActiveSlot();
         scheduleImmediateProbabilityUpdate();
+        refreshSettingsMenu();
     }
 
     function buildDeck() {
@@ -191,7 +213,7 @@
 
             const label = document.createElement("div");
             label.className = "deck-row-label";
-            label.innerHTML = `<span class="suit-symbol${suit.color === "red" ? " red" : ""}">${suit.symbol}</span><span class="suit-name">${suit.name}</span>`;
+            label.innerHTML = `<span class="suit-symbol${suit.color === "red" ? " red" : ""}">${suit.symbol}</span>`;
             label.title = suit.name;
 
             const cardsContainer = document.createElement("div");
@@ -205,7 +227,8 @@
                 }
                 const cardEl = document.createElement("button");
                 cardEl.type = "button";
-                cardEl.className = `deck-card${card.suit.color === "red" ? " red" : ""}`;
+                cardEl.className = `deck-card deck-card--${card.suit.id.toLowerCase()}`;
+                cardEl.dataset.suit = card.suit.id;
                 cardEl.dataset.cardId = card.id;
                 cardEl.innerHTML = `<span class="rank">${card.rank.label}</span><span class="suit">${card.suit.symbol}</span>`;
                 cardEl.addEventListener("click", () => handleDeckCardClick(card));
@@ -260,7 +283,12 @@
 
         const label = document.createElement("div");
         label.className = "seat-label";
-        label.textContent = `\u05e9\u05d7\u05e7\u05df ${index + 1}`;
+        const labelName = document.createElement("span");
+        labelName.className = "seat-label__name";
+        labelName.textContent = `שחקן ${index + 1}`;
+        const positionLabel = document.createElement("span");
+        positionLabel.className = "seat-position";
+        label.append(labelName, positionLabel);
 
         const cardsRow = document.createElement("div");
         cardsRow.className = "card-row";
@@ -268,7 +296,7 @@
         for (let c = 0; c < 2; c += 1) {
             const slot = createCardSlot({
                 key: `player-${index}-${c}`,
-                placeholder: `\u05e7\u05dc\u05e3 ${c + 1}`,
+                placeholder: `קלף ${c + 1}`,
                 type: "player",
                 order: index * 2 + c,
                 playerIndex: index
@@ -277,12 +305,194 @@
         }
 
         seat.append(probability, label, cardsRow);
+        state.seatMeta[index] = {
+            label,
+            positionEl: positionLabel
+        };
         state.probabilityDisplays[index] = {
             container: probability,
             tie: tieLine,
             win: winLine
         };
         return seat;
+    }
+
+    function initDealerButton() {
+        if (!elements.table || elements.dealerButton) {
+            return;
+        }
+
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "dealer-chip";
+        chip.textContent = "D";
+        chip.setAttribute("aria-label", "אסימון דילר");
+        chip.addEventListener("pointerdown", handleDealerPointerDown);
+        elements.dealerButton = chip;
+        placeDealerButton();
+    }
+
+    function ensureDealerSeatIndex() {
+        if (state.playersCount < MIN_PLAYERS) {
+            state.dealerSeatIndex = 0;
+            return state.dealerSeatIndex;
+        }
+        const normalized = ((state.dealerSeatIndex % state.playersCount) + state.playersCount) % state.playersCount;
+        if (normalized !== state.dealerSeatIndex) {
+            state.dealerSeatIndex = normalized;
+        }
+        return state.dealerSeatIndex;
+    }
+
+    function getPositionSequence(count) {
+        if (count < MIN_PLAYERS) {
+            return [];
+        }
+        if (count === 2) {
+            return HEADS_UP_POSITIONS.slice(0, count);
+        }
+        return POSITION_SEQUENCE.slice(0, Math.min(count, POSITION_SEQUENCE.length));
+    }
+
+    function updateSeatPositionLabels() {
+        if (!state.seatMeta || !state.seatMeta.length) {
+            return;
+        }
+
+        const activeCount = state.playersCount;
+        if (activeCount < MIN_PLAYERS) {
+            state.seatMeta.forEach((meta) => {
+                if (meta && meta.positionEl) {
+                    meta.positionEl.textContent = "";
+                    meta.label?.classList.remove("has-position");
+                }
+            });
+            placeDealerButton();
+            return;
+        }
+
+        ensureDealerSeatIndex();
+        const positions = getPositionSequence(activeCount);
+
+        state.seatMeta.forEach((meta, index) => {
+            if (!meta || !meta.positionEl) {
+                return;
+            }
+            if (index >= activeCount) {
+                meta.positionEl.textContent = "";
+                meta.label?.classList.remove("has-position");
+                return;
+            }
+            const relativeIndex = (index - state.dealerSeatIndex + activeCount) % activeCount;
+            const positionName = positions[relativeIndex] || "";
+            if (positionName) {
+                meta.positionEl.textContent = `(${positionName})`;
+                meta.label?.classList.add("has-position");
+            } else {
+                meta.positionEl.textContent = "";
+                meta.label?.classList.remove("has-position");
+            }
+        });
+        placeDealerButton();
+    }
+
+    function placeDealerButton() {
+        if (!elements.dealerButton || !elements.table || !state.seats.length) {
+            return;
+        }
+        ensureDealerSeatIndex();
+        const seat = state.seats[state.dealerSeatIndex];
+        const label = seat ? seat.querySelector(".seat-label") : null;
+        if (!label) {
+            return;
+        }
+        if (elements.dealerButton.parentElement !== label) {
+            label.appendChild(elements.dealerButton);
+        }
+        elements.dealerButton.classList.remove("is-dragging");
+        elements.dealerButton.style.removeProperty("position");
+        elements.dealerButton.style.removeProperty("left");
+        elements.dealerButton.style.removeProperty("top");
+        elements.dealerButton.style.removeProperty("transform");
+        elements.dealerButton.style.removeProperty("z-index");
+        elements.dealerButton.setAttribute("aria-label", `אסימון דילר - שחקן ${state.dealerSeatIndex + 1}`);
+    }
+
+    function setDealerSeatIndex(index) {
+        if (!Number.isFinite(index)) {
+            return;
+        }
+        const count = state.playersCount;
+        if (count < MIN_PLAYERS) {
+            state.dealerSeatIndex = 0;
+            placeDealerButton();
+            return;
+        }
+        const normalized = ((Number(index) % count) + count) % count;
+        if (normalized === state.dealerSeatIndex) {
+            updateSeatPositionLabels();
+            return;
+        }
+        state.dealerSeatIndex = normalized;
+        updateSeatPositionLabels();
+    }
+
+    function handleDealerPointerDown(event) {
+        if (!elements.dealerButton) {
+            return;
+        }
+        event.preventDefault();
+        elements.dealerButton.setPointerCapture(event.pointerId);
+        dealerDragState = { pointerId: event.pointerId };
+        elements.dealerButton.classList.add("is-dragging");
+        elements.dealerButton.style.position = "fixed";
+        elements.dealerButton.style.left = `${event.clientX}px`;
+        elements.dealerButton.style.top = `${event.clientY}px`;
+        elements.dealerButton.style.transform = "translate(-50%, -50%)";
+        elements.dealerButton.style.zIndex = "4000";
+        window.addEventListener("pointermove", handleDealerPointerMove);
+        window.addEventListener("pointerup", handleDealerPointerUp);
+        window.addEventListener("pointercancel", handleDealerPointerCancel);
+    }
+
+    function handleDealerPointerMove(event) {
+        if (!dealerDragState || event.pointerId !== dealerDragState.pointerId || !elements.dealerButton) {
+            return;
+        }
+        event.preventDefault();
+        elements.dealerButton.style.left = `${event.clientX}px`;
+        elements.dealerButton.style.top = `${event.clientY}px`;
+    }
+
+    function handleDealerPointerUp(event) {
+        if (!dealerDragState || event.pointerId !== dealerDragState.pointerId) {
+            return;
+        }
+        event.preventDefault();
+        if (elements.dealerButton) {
+            elements.dealerButton.releasePointerCapture(event.pointerId);
+        }
+        const target = document.elementFromPoint(event.clientX, event.clientY);
+        const seat = target ? target.closest('.seat') : null;
+        const seatIndex = seat ? Number(seat.dataset.playerIndex) : NaN;
+        cleanupDealerDrag();
+        if (Number.isInteger(seatIndex) && seatIndex < state.playersCount) {
+            setDealerSeatIndex(seatIndex);
+        } else {
+            placeDealerButton();
+        }
+    }
+
+    function handleDealerPointerCancel() {
+        cleanupDealerDrag();
+        placeDealerButton();
+    }
+
+    function cleanupDealerDrag() {
+        window.removeEventListener("pointermove", handleDealerPointerMove);
+        window.removeEventListener("pointerup", handleDealerPointerUp);
+        window.removeEventListener("pointercancel", handleDealerPointerCancel);
+        dealerDragState = null;
     }
 
     function createCardSlot({ key, placeholder, type, order, playerIndex }) {
@@ -378,6 +588,7 @@
         }
 
         slot.dataset.cardId = card.id;
+        slot.dataset.suit = card.suit.id;
         slot.classList.add("filled");
 
         const valueEl = slot.querySelector(".card-value");
@@ -385,7 +596,7 @@
         const suitEl = valueEl.querySelector(".suit");
         rankEl.textContent = card.rank.label;
         suitEl.textContent = card.suit.symbol;
-        valueEl.classList.toggle("red", card.suit.color === "red");
+        valueEl.dataset.suit = card.suit.id;
 
         const deckButton = elements.deck.querySelector(`[data-card-id="${card.id}"]`);
         if (deckButton) {
@@ -425,9 +636,10 @@
 
         slot.classList.remove("filled");
         delete slot.dataset.cardId;
+        delete slot.dataset.suit;
 
         const valueEl = slot.querySelector(".card-value");
-        valueEl.classList.remove("red");
+        delete valueEl.dataset.suit;
         valueEl.querySelector(".rank").textContent = "";
         valueEl.querySelector(".suit").textContent = "";
 
@@ -577,6 +789,7 @@ function advanceActiveSlot(fromSlot) {
             scheduleImmediateProbabilityUpdate();
         }
         ensureActiveSlot("player");
+        updateSeatPositionLabels();
     }
 
     function updatePlayerCountLabel() {
@@ -616,20 +829,12 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function bindControls() {
-        elements.addPlayer?.addEventListener("click", () => setPlayersCount(state.playersCount + 1));
-        elements.removePlayer?.addEventListener("click", () => setPlayersCount(state.playersCount - 1));
-        elements.dealRandom?.addEventListener("click", () => dealRandom());
-        elements.clearAll?.addEventListener("click", () => clearAllSlots());
         if (elements.calculate) {
             elements.calculate.disabled = true;
             elements.calculate.style.display = "none";
             elements.calculate.setAttribute("aria-hidden", "true");
             elements.calculate.tabIndex = -1;
         }
-        elements.reset?.addEventListener("click", () => {
-            setPlayersCount(MIN_PLAYERS);
-            clearAllSlots();
-        });
     }
 
     function clearAllSlots(options = {}) {
@@ -1965,13 +2170,24 @@ function advanceActiveSlot(fromSlot) {
             if (!target || !(target instanceof Element)) {
                 return;
             }
-            const item = target.closest('.settings-menu__item');
-            if (!item) {
+            const actionTarget = target.closest('[data-setting-action]');
+            if (!actionTarget) {
                 return;
             }
-            const action = item.dataset.settingAction;
-            if (action) {
-                performSettingsMenuAction(action);
+            const action = actionTarget.dataset.settingAction;
+            if (!action) {
+                return;
+            }
+            const result = performSettingsMenuAction(action);
+            if (result && result.handled) {
+                if (result.shouldClose !== false) {
+                    setSettingsMenuOpen(false);
+                    if (elements.settingsToggle && typeof elements.settingsToggle.focus === 'function') {
+                        elements.settingsToggle.focus();
+                    }
+                } else {
+                    refreshSettingsMenu();
+                }
             }
         });
 
@@ -2004,6 +2220,7 @@ function advanceActiveSlot(fromSlot) {
 
         setSettingsMenuOpen(false);
     }
+
 
     function setSettingsMenuOpen(open) {
         state.isSettingsMenuOpen = Boolean(open);
@@ -2042,38 +2259,60 @@ function advanceActiveSlot(fromSlot) {
                 probabilitiesItem.setAttribute('aria-checked', isVisible ? 'true' : 'false');
             }
         }
+
+        const countDisplay = elements.settingsPlayerCount;
+        if (countDisplay) {
+            countDisplay.textContent = String(state.playersCount);
+        }
+        const decrementBtn = elements.settingsMenu.querySelector('[data-setting-action="decrement-players"]');
+        const incrementBtn = elements.settingsMenu.querySelector('[data-setting-action="increment-players"]');
+        if (decrementBtn) {
+            decrementBtn.disabled = state.playersCount <= MIN_PLAYERS;
+        }
+        if (incrementBtn) {
+            incrementBtn.disabled = state.playersCount >= MAX_PLAYERS;
+        }
     }
 
-    function performSettingsMenuAction(action) {
-        let handled = false;
 
+    function performSettingsMenuAction(action) {
         switch (action) {
             case 'toggle-auto-advance':
                 toggleAutoAdvanceSetting();
-                handled = true;
-                break;
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: true };
             case 'toggle-seat-probabilities':
                 setSeatProbabilitiesVisible(!state.showSeatProbabilities);
-                handled = true;
-                break;
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: true };
+            case 'increment-players':
+                setPlayersCount(state.playersCount + 1);
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: false };
+            case 'decrement-players':
+                setPlayersCount(state.playersCount - 1);
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: false };
+            case 'deal-random':
+                dealRandom();
+                return { handled: true, shouldClose: true };
+            case 'clear-all':
+                clearAllSlots();
+                return { handled: true, shouldClose: true };
+            case 'quick-reset':
+                setPlayersCount(MIN_PLAYERS);
+                clearAllSlots();
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: true };
             case 'reset-table':
                 resetTableState();
-                handled = true;
-                break;
+                refreshSettingsMenu();
+                return { handled: true, shouldClose: true };
             default:
-                break;
-        }
-
-        if (!handled) {
-            return;
-        }
-
-        refreshSettingsMenu();
-        setSettingsMenuOpen(false);
-        if (elements.settingsToggle && typeof elements.settingsToggle.focus === 'function') {
-            elements.settingsToggle.focus();
+                return { handled: false, shouldClose: true };
         }
     }
+
 
     function toggleAutoAdvanceSetting() {
         state.isAutoAdvancePaused = !state.isAutoAdvancePaused;
@@ -2094,6 +2333,7 @@ function advanceActiveSlot(fromSlot) {
         clearAllSlots();
         state.isAutoAdvancePaused = false;
         setSeatProbabilitiesVisible(true);
+        setDealerSeatIndex(0);
         ensureActiveSlot();
     }
 
@@ -2425,12 +2665,6 @@ function advanceActiveSlot(fromSlot) {
         }
         if (elements.controls) {
             elements.controls.classList.toggle("is-solver-mode", isSolver);
-        }
-        if (elements.addPlayer) {
-            elements.addPlayer.disabled = isSolver;
-        }
-        if (elements.removePlayer) {
-            elements.removePlayer.disabled = isSolver;
         }
         if (elements.solverSettingsToggle) {
             elements.solverSettingsToggle.hidden = !isSolver;
