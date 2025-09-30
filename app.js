@@ -18,6 +18,19 @@
     });
     const TABLE_POT_LABEL = '\u05e7\u05d5\u05e4\u05d4';
     const PLAYER_COMMITTED_LABEL = '\u05d1\u05e7\u05d5\u05e4\u05d4';
+    const LIVE_RAISE_PRESETS = Object.freeze([
+        { id: '0.5', factor: 0.5, descriptor: '\u05d7\u05e6\u05d9 \u05e7\u05d5\u05e4\u05d4' },
+        { id: '0.75', factor: 0.75, descriptor: '75% \u05e7\u05d5\u05e4\u05d4' },
+        { id: '1', factor: 1, descriptor: '\u05e7\u05d5\u05e4\u05d4 \u05de\u05dc\u05d0\u05d4' },
+        { id: '1.5', factor: 1.5, descriptor: '150% \u05e7\u05d5\u05e4\u05d4' },
+        { id: 'all-in', type: 'all-in', descriptor: '\u05d0\u05d5\u05dc \u05d0\u05d9\u05df' }
+    ]);
+    const SEAT_ACTIONS = Object.freeze([
+        { id: 'fold', label: '\u05e7\u05d9\u05e4\u05d5\u05dc', className: 'seat-action--fold' },
+        { id: 'check', label: "\u05e6'\u05e7 / \u05e7\u05d5\u05dc", className: 'seat-action--check' },
+        { id: 'raise', label: '\u05e8\u05d9\u05d9\u05d6', className: 'seat-action--raise' }
+    ]);
+
     const BOARD_PLACEHOLDERS = [
         "\u05e4\u05dc\u05d5\u05e4 \u0031",
         "\u05e4\u05dc\u05d5\u05e4 \u0032",
@@ -143,7 +156,8 @@
             villainProfile: DEFAULT_SOLVER_SETTINGS.opponentProfile,
             awaitingHero: false,
             log: [],
-            lastAnalysis: null
+            lastAnalysis: null,
+            raiseSelection: null
         };
     }
 
@@ -188,8 +202,8 @@
         liveGameExit: document.getElementById("live-game-exit"),
         liveActionFold: document.getElementById("live-action-fold"),
         liveActionCheck: document.getElementById("live-action-check"),
-        liveActionBetSmall: document.getElementById("live-action-bet-small"),
-        liveActionBetBig: document.getElementById("live-action-bet-big"),
+        liveActionRaise: document.getElementById("live-action-raise"),
+        liveActionRaiseOptions: document.getElementById("live-action-raise-options"),
         liveActionNext: document.getElementById("live-action-next"),
         menuButtons: []
     };
@@ -358,15 +372,22 @@
             cardsRow.appendChild(slot);
         }
 
+        const betDisplay = document.createElement('div');
+        betDisplay.className = 'seat-bet';
+        betDisplay.setAttribute('aria-hidden', 'true');
+
         const economyControls = createSeatEconomyControls(index);
 
-        seat.append(probability, label, cardsRow, economyControls.container);
+        seat.append(probability, label, cardsRow, betDisplay, economyControls.container);
         state.seatMeta[index] = {
             label,
             positionEl: positionLabel,
+            betDisplay,
             economyInputs: economyControls.inputs,
             betButton: economyControls.betButton,
-            committedDisplay: economyControls.committedDisplay
+            committedDisplay: economyControls.committedDisplay,
+            actionRow: economyControls.actionsRow,
+            actionButtons: economyControls.actionButtons
         };
         state.probabilityDisplays[index] = {
             container: probability,
@@ -402,6 +423,7 @@
             input.step = '0.5';
             input.dataset.playerIndex = String(playerIndex);
             input.dataset.economyField = fieldKey;
+            input.addEventListener('input', handleEconomyInput);
             input.addEventListener('change', handleEconomyInput);
             input.addEventListener('blur', handleEconomyInput);
 
@@ -433,11 +455,31 @@
         committedDisplay.textContent = `${PLAYER_COMMITTED_LABEL}: 0`;
         container.appendChild(committedDisplay);
 
+        const actionsRow = document.createElement('div');
+        actionsRow.className = 'seat-actions';
+        actionsRow.dataset.playerIndex = String(playerIndex);
+
+        const actionButtons = SEAT_ACTIONS.map((definition) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `seat-action ${definition.className}`;
+            button.textContent = definition.label;
+            button.dataset.playerIndex = String(playerIndex);
+            button.dataset.seatAction = definition.id;
+            button.addEventListener('click', handleSeatActionClick);
+            actionsRow.appendChild(button);
+            return button;
+        });
+
+        container.appendChild(actionsRow);
+
         return {
             container,
             inputs,
             betButton,
-            committedDisplay
+            committedDisplay,
+            actionsRow,
+            actionButtons
         };
     }
 
@@ -480,6 +522,9 @@
             bigBlind.pendingBet = DEFAULT_BIG_BLIND;
             commitPendingBetForPlayer(1);
         }
+        for (let i = 0; i < state.playersCount; i += 1) {
+            updateSeatBetDisplay(i);
+        }
         updateTablePotDisplay();
     }
 
@@ -505,6 +550,17 @@
             if (meta.committedDisplay) {
                 meta.committedDisplay.textContent = `${PLAYER_COMMITTED_LABEL}: ${formatChipAmount(data.committedBet)}`;
             }
+            if (Array.isArray(meta.actionButtons) && meta.actionButtons.length) {
+                meta.actionButtons.forEach((button) => {
+                    if (button instanceof HTMLButtonElement) {
+                        button.disabled = !isActive;
+                        if (!isActive) {
+                            button.classList.remove('is-selected');
+                        }
+                    }
+                });
+            }
+            updateSeatBetDisplay(index);
         });
         updateTablePotDisplay();
     }
@@ -525,6 +581,29 @@
             return '0';
         }
         return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+    }
+
+    function updateSeatBetDisplay(index) {
+        if (!Number.isInteger(index) || index < 0 || index >= MAX_PLAYERS) {
+            return;
+        }
+        const meta = state.seatMeta[index];
+        if (!meta || !meta.betDisplay) {
+            return;
+        }
+        const isSeatActive = index < state.playersCount;
+        const economy = ensurePlayerEconomy(index);
+        const totalBet = sanitizeEconomyValue((economy.pendingBet || 0) + (economy.committedBet || 0));
+        if (isSeatActive && totalBet > 0) {
+            const betLabel = ECONOMY_LABELS.pendingBet || 'הימור';
+            meta.betDisplay.textContent = `${betLabel}: ${formatChipAmount(totalBet)}`;
+            meta.betDisplay.classList.add('seat-bet--visible');
+            meta.betDisplay.setAttribute('aria-hidden', 'false');
+            return;
+        }
+        meta.betDisplay.textContent = '';
+        meta.betDisplay.classList.remove('seat-bet--visible');
+        meta.betDisplay.setAttribute('aria-hidden', 'true');
     }
 
     function updateTablePotDisplay() {
@@ -551,6 +630,7 @@
         economy.committedBet = sanitizeEconomyValue(committed + commitAmount);
         economy.stack = sanitizeEconomyValue(stackAvailable - commitAmount);
         economy.pendingBet = sanitizeEconomyValue(pending - commitAmount);
+        updateSeatBetDisplay(index);
         return commitAmount;
     }
 
@@ -568,6 +648,31 @@
         }
         commitPendingBetForPlayer(playerIndex);
         syncPlayerEconomyInputs();
+    }
+
+    function handleSeatActionClick(event) {
+        const button = event.currentTarget;
+        if (!(button instanceof HTMLButtonElement)) {
+            return;
+        }
+        const action = button.dataset.seatAction || '';
+        const playerIndex = Number(button.dataset.playerIndex);
+        if (!action || !Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= MAX_PLAYERS) {
+            return;
+        }
+        const container = button.parentElement;
+        if (container && container.classList.contains('seat-actions')) {
+            container.querySelectorAll('.seat-action').forEach((actionButton) => {
+                if (actionButton instanceof HTMLButtonElement) {
+                    actionButton.classList.toggle('is-selected', actionButton === button);
+                }
+            });
+        }
+        const seatEvent = new CustomEvent('app:seat-action', {
+            detail: { playerIndex, action },
+            bubbles: true
+        });
+        button.dispatchEvent(seatEvent);
     }
 
     function updateEconomyInput(input, value, isActive) {
@@ -618,6 +723,7 @@
                 const canCommit = playerIndex < state.playersCount && economy.pendingBet > 0 && economy.stack > 0;
                 meta.betButton.disabled = !canCommit;
             }
+            updateSeatBetDisplay(playerIndex);
             return;
         }
 
@@ -2857,8 +2963,8 @@ function advanceActiveSlot(fromSlot) {
             liveGameExit,
             liveActionFold,
             liveActionCheck,
-            liveActionBetSmall,
-            liveActionBetBig,
+            liveActionRaise,
+            liveActionRaiseOptions,
             liveActionNext
         } = elements;
 
@@ -2871,11 +2977,11 @@ function advanceActiveSlot(fromSlot) {
         if (liveActionCheck) {
             liveActionCheck.addEventListener("click", () => handleLiveHeroAction("check"));
         }
-        if (liveActionBetSmall) {
-            liveActionBetSmall.addEventListener("click", () => handleLiveHeroAction("bet-small"));
+        if (liveActionRaise) {
+            liveActionRaise.addEventListener("click", () => handleLiveHeroAction("raise"));
         }
-        if (liveActionBetBig) {
-            liveActionBetBig.addEventListener("click", () => handleLiveHeroAction("bet-big"));
+        if (liveActionRaiseOptions) {
+            liveActionRaiseOptions.addEventListener("click", handleLiveRaiseOptionsClick);
         }
         if (liveActionNext) {
             liveActionNext.addEventListener("click", () => {
@@ -2890,6 +2996,60 @@ function advanceActiveSlot(fromSlot) {
             });
         }
         disableLiveActionButtons(true);
+    }
+
+    function handleLiveRaiseOptionsClick(event) {
+        const live = state.liveGame;
+        if (!live || !live.handActive) {
+            return;
+        }
+        const target = event.target;
+        if (!target || !(target instanceof HTMLElement)) {
+            return;
+        }
+        const button = target.closest('button[data-raise-value]');
+        if (!button || button.disabled) {
+            return;
+        }
+        const value = Number.parseFloat(button.dataset.raiseValue || '');
+        if (!Number.isFinite(value) || value <= 0) {
+            return;
+        }
+        live.raiseSelection = String(value);
+        refreshLiveRaiseOptionSelection();
+        updateLiveRaiseButtonState();
+    }
+
+    function refreshLiveRaiseOptionSelection() {
+        const live = state.liveGame;
+        const container = elements.liveActionRaiseOptions;
+        if (!live || !container) {
+            return;
+        }
+        const selected = live.raiseSelection ? Number.parseFloat(live.raiseSelection) : NaN;
+        container.querySelectorAll('button[data-raise-value]').forEach((button) => {
+            const amount = Number.parseFloat(button.dataset.raiseValue || '');
+            if (Number.isFinite(selected) && Number.isFinite(amount) && Math.abs(amount - selected) < 1e-6) {
+                button.classList.add('is-selected');
+            } else {
+                button.classList.remove('is-selected');
+            }
+        });
+    }
+
+    function setLiveRaiseOptionsDisabled(disabled) {
+        const container = elements.liveActionRaiseOptions;
+        if (!container) {
+            return;
+        }
+        container.querySelectorAll('button[data-raise-value]').forEach((button) => {
+            button.disabled = disabled;
+        });
+        if (disabled) {
+            container.setAttribute('aria-disabled', 'true');
+        } else {
+            container.removeAttribute('aria-disabled');
+        }
     }
 
     function handleLiveGameStartRequest() {
@@ -3017,8 +3177,100 @@ function advanceActiveSlot(fromSlot) {
         const live = state.liveGame;
         const amount = live ? live.pot : 0;
         elements.tablePot.textContent = `${TABLE_POT_LABEL}: ${formatChipAmount(amount)}`;
+        updateLiveRaiseOptions();
     }
 
+    function updateLiveRaiseOptions() {
+        const container = elements.liveActionRaiseOptions;
+        if (!container) {
+            return;
+        }
+        const optionsDisabled = container.getAttribute("aria-disabled") === "true";
+        container.innerHTML = '';
+        container.hidden = true;
+        container.setAttribute("aria-hidden", "true");
+        const live = state.liveGame;
+        if (!live || !live.handActive) {
+            if (live) {
+                live.raiseSelection = null;
+            }
+            updateLiveRaiseButtonState();
+            return;
+        }
+        const options = buildLiveRaiseOptionData(live);
+        if (!options.length) {
+            live.raiseSelection = null;
+            updateLiveRaiseButtonState();
+            return;
+        }
+        const previous = live.raiseSelection ? Number.parseFloat(live.raiseSelection) : NaN;
+        let applied = false;
+        options.forEach((option) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'live-game__raise-option';
+            button.dataset.raiseValue = String(option.amount);
+            button.textContent = option.label;
+            container.appendChild(button);
+            if (!applied && Number.isFinite(previous) && Math.abs(previous - option.amount) < 1e-6) {
+                applied = true;
+            }
+        });
+        if (applied && Number.isFinite(previous)) {
+            live.raiseSelection = String(previous);
+        } else {
+            live.raiseSelection = String(options[0].amount);
+        }
+        container.hidden = false;
+        setLiveRaiseOptionsDisabled(optionsDisabled);
+        container.setAttribute("aria-hidden", "false");
+        refreshLiveRaiseOptionSelection();
+        updateLiveRaiseButtonState();
+    }
+
+    function buildLiveRaiseOptionData(live) {
+        const hero = live.players[0];
+        const villain = live.players[1];
+        if (!hero || hero.stack <= 0) {
+            return [];
+        }
+        const options = [];
+        const seen = new Set();
+        const totalPot = live.pot + (villain && villain.bet ? villain.bet : 0) + (hero.bet || 0);
+        const baseline = totalPot > 0 ? totalPot : DEFAULT_BIG_BLIND * 2;
+        const effectiveStack = villain ? Math.max(0, Math.min(hero.stack, villain.stack)) : hero.stack;
+        LIVE_RAISE_PRESETS.forEach((preset) => {
+            let amount;
+            if (preset.type === 'all-in') {
+                amount = hero.stack;
+            } else {
+                amount = baseline * preset.factor;
+            }
+            if (live.currentBet > 0) {
+                const minRaise = Math.max(live.currentBet * 2, live.currentBet + DEFAULT_SMALL_BLIND);
+                amount = Math.max(amount, minRaise);
+            } else {
+                amount = Math.max(amount, DEFAULT_BIG_BLIND);
+            }
+            if (effectiveStack > 0) {
+                amount = Math.min(amount, effectiveStack);
+            }
+            amount = Math.min(amount, hero.stack);
+            amount = Math.round(amount * 100) / 100;
+            if (amount <= 0) {
+                return;
+            }
+            const key = amount.toFixed(2);
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            const label = `${preset.descriptor} - ${formatChipAmount(amount)} BB`;
+            options.push({ value: key, amount, label });
+        });
+        options.sort((a, b) => a.amount - b.amount);
+        return options;
+    }
     function showLiveGamePanel(visible) {
         if (!elements.liveGamePanel) {
             return;
@@ -3066,14 +3318,17 @@ function advanceActiveSlot(fromSlot) {
         const buttons = [
             elements.liveActionFold,
             elements.liveActionCheck,
-            elements.liveActionBetSmall,
-            elements.liveActionBetBig
+            elements.liveActionRaise
         ];
         buttons.forEach((button) => {
             if (button) {
                 button.disabled = disabled;
             }
         });
+        setLiveRaiseOptionsDisabled(disabled);
+        if (!disabled) {
+            updateLiveRaiseButtonState();
+        }
     }
 
     function setLiveActionAvailability(options = {}) {
@@ -3084,14 +3339,39 @@ function advanceActiveSlot(fromSlot) {
         if (elements.liveActionCheck) {
             elements.liveActionCheck.disabled = !allowCheck;
         }
-        if (elements.liveActionBetSmall) {
-            elements.liveActionBetSmall.disabled = !allowBets;
-        }
-        if (elements.liveActionBetBig) {
-            elements.liveActionBetBig.disabled = !allowBets;
-        }
+        setLiveRaiseOptionsDisabled(!allowBets);
+        updateLiveRaiseButtonState({ allowRaise: allowBets });
     }
 
+
+    function updateLiveRaiseButtonState(options = {}) {
+        const { allowRaise } = options;
+        const raiseButton = elements.liveActionRaise;
+        if (!raiseButton) {
+            return;
+        }
+        if (typeof allowRaise === "boolean" && !allowRaise) {
+            raiseButton.disabled = true;
+            return;
+        }
+        raiseButton.disabled = !hasValidRaiseSelection();
+    }
+
+    function hasValidRaiseSelection() {
+        const live = state.liveGame;
+        if (!live || !live.handActive) {
+            return false;
+        }
+        const selection = live.raiseSelection ? Number.parseFloat(live.raiseSelection) : NaN;
+        if (!Number.isFinite(selection) || selection <= 0) {
+            return false;
+        }
+        const hero = live.players && live.players[0];
+        if (!hero || hero.stack <= 0) {
+            return false;
+        }
+        return true;
+    }
     function updateLiveCheckButtonLabel(facingBet, amount = 0) {
         if (!elements.liveActionCheck) {
             return;
@@ -3252,19 +3532,40 @@ function advanceActiveSlot(fromSlot) {
                     processLiveHeroCheck();
                 }
                 return;
-            case "bet-small":
+            case "raise": {
+                const amount = getSelectedRaiseAmount();
+                if (!amount) {
+                    disableLiveActionButtons(false);
+                    updateLiveRaiseButtonState();
+                    return;
+                }
+                if (state.liveGame) {
+                }
                 disableLiveActionButtons(true);
-                processLiveHeroBet(getLiveBetAmount(0.5));
+                processLiveHeroBet(amount);
                 return;
-            case "bet-big":
-                disableLiveActionButtons(true);
-                processLiveHeroBet(getLiveBetAmount(1));
-                return;
+            }
             default:
                 return;
         }
     }
 
+    function getSelectedRaiseAmount() {
+        const live = state.liveGame;
+        if (!live || !live.raiseSelection) {
+            return 0;
+        }
+        const amount = Number.parseFloat(live.raiseSelection);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            return 0;
+        }
+        const hero = live.players && live.players[0];
+        if (!hero) {
+            return amount;
+        }
+        const heroStack = Math.max(0, hero.stack);
+        return heroStack > 0 ? Math.min(amount, heroStack) : 0;
+    }
     function processLiveHeroFold() {
         appendLiveGameLog("אתה מקפל את היד.");
         endLiveGameHand({
@@ -3288,41 +3589,58 @@ function advanceActiveSlot(fromSlot) {
 
     function processLiveHeroBet(amount) {
         const live = state.liveGame;
+        if (!live) {
+            return;
+        }
         const hero = live.players[0];
         const villain = live.players[1];
-        const commit = Math.min(hero.stack, Math.max(DEFAULT_SMALL_BLIND, Math.round(amount * 100) / 100));
-        hero.stack -= commit;
-        hero.bet = commit;
-        live.pot += commit;
-        live.currentBet = commit;
+        if (!hero || hero.stack <= 0) {
+            disableLiveActionButtons(false);
+            updateLiveRaiseButtonState();
+            return;
+        }
+        const normalized = Math.max(DEFAULT_SMALL_BLIND, Math.round(amount * 100) / 100);
+        const heroContribution = Math.min(hero.stack, normalized);
+        if (heroContribution <= 0) {
+            disableLiveActionButtons(false);
+            updateLiveRaiseButtonState();
+            return;
+        }
+        hero.stack -= heroContribution;
+        hero.bet = (hero.bet || 0) + heroContribution;
+        live.pot += heroContribution;
+        live.currentBet = Math.max(live.currentBet || 0, hero.bet);
         updateLivePotDisplay();
-        appendLiveGameLog(`הימור של ${formatChipAmount(commit)} BB.`);
+        updateLiveRaiseOptions();
+        appendLiveGameLog(`\u05d4\u05d2\u05d9\u05d1\u05d5\u05e8 \u05de\u05e2\u05dc\u05d4 \u05dc${formatChipAmount(live.currentBet)} BB.`);
 
         const analysis = analyzeLiveGameContext();
         const callFrequency = analysis && analysis.ok ? clampProbability(analysis.data.callFrequency || 0.5) : 0.5;
         const villainCalls = Math.random() < callFrequency;
-        if (!villainCalls || villain.stack <= 0) {
-            appendLiveGameLog("הסולבר מקפל את היד.");
+        if (!villainCalls || !villain || villain.stack <= 0) {
+            appendLiveGameLog("\u05d4\u05d9\u05e8\u05d9\u05d1 \u05de\u05e7\u05e4\u05dc.");
             endLiveGameHand({
                 winnerIndex: 0,
-                message: "הסולבר קיפל מול ההימור שלך."
+                message: "\u05d4\u05d9\u05e8\u05d9\u05d1 \u05de\u05e7\u05e4\u05dc \u05d5\u05d4\u05d2\u05d9\u05d1\u05d5\u05e8 \u05d6\u05db\u05d4 \u05d0\u05ea \u05d4\u05e7\u05d5\u05e4\u05d4."
             });
             return;
         }
 
-        const callAmount = Math.min(villain.stack, commit);
-        villain.stack -= callAmount;
-        villain.bet = callAmount;
-        live.pot += callAmount;
+        const previousVillainBet = villain.bet || 0;
+        const toCall = Math.max(0, live.currentBet - previousVillainBet);
+        const villainContribution = Math.min(villain.stack, toCall);
+        villain.stack -= villainContribution;
+        villain.bet = previousVillainBet + villainContribution;
+        live.pot += villainContribution;
         updateLivePotDisplay();
-        appendLiveGameLog(`הסולבר משלם ${formatChipAmount(callAmount)} BB.`);
+        appendLiveGameLog(`\u05d4\u05d9\u05e8\u05d9\u05d1 \u05de\u05e9\u05d5\u05d5\u05d4 ${formatChipAmount(villainContribution)} BB.`);
 
         hero.bet = 0;
         villain.bet = 0;
         live.currentBet = 0;
+        updateLiveRaiseOptions();
         advanceLiveGameStage();
     }
-
     function villainActAfterCheck() {
         const live = state.liveGame;
         const villain = live.players[1];
@@ -3363,7 +3681,7 @@ function advanceActiveSlot(fromSlot) {
         updateLivePotDisplay();
         appendLiveGameLog(`הסולבר מהמר ${formatChipAmount(betAmount)} BB.`);
         disableLiveActionButtons(false);
-        setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: false });
+        setLiveActionAvailability({ allowFold: true, allowCheck: true, allowBets: true });
         updateLiveCheckButtonLabel(true, betAmount);
         live.awaitingHero = true;
         return true;
@@ -4612,21 +4930,6 @@ function renderSolverPlaceholder(message = SOLVER_MESSAGES.default) {
         return id ? state.cardById.get(id) : null;
     }
 })();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
