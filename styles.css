@@ -5392,6 +5392,19 @@ body {
     background: linear-gradient(135deg, #fde047, #f59e0b);
 }
 
+.toolbar-action--gg {
+    background: #dcfce7;
+    color: #052e16;
+    border-color: #22c55e;
+}
+
+.toolbar-action--gg:hover,
+.toolbar-action--gg:focus-visible {
+    background: #bbf7d0;
+    color: #052e16;
+    border-color: #16a34a;
+}
+
 .toolbar-action--quiet {
     background: #e0f2fe;
     color: #0f172a;

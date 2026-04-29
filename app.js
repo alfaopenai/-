@@ -3286,6 +3286,9 @@ function advanceActiveSlot(fromSlot) {
             case 'clear-all':
                 clearAllSlots();
                 return { handled: true, shouldClose: true };
+            case 'read-gg-table':
+                showError("כפתור קריאת שולחן GG מוכן. החיבור לקריאת השולחן יתווסף בשלב הבא.");
+                return { handled: true, shouldClose: true };
             case 'quick-reset':
                 setPlayersCount(DEFAULT_PLAYERS);
                 clearAllSlots();
