@@ -159,6 +159,12 @@
         "דילר / סמול בליינד",
         "ביג בליינד"
     ];
+    const GG_READER_API_BASE = "http://127.0.0.1:8787";
+    const GG_READER_WS_URL = "ws://127.0.0.1:8787/ws/gg-reader";
+    const GG_READER_MOCK_URL = "mock/gg_snapshot_example.json";
+    const GG_READER_CONFIDENCE_MIN = 0.75;
+    const GG_READER_CONFIDENCE_DIRECT = 0.9;
+    const GG_READER_HISTORY_LIMIT = 80;
 
 
     let probabilityUpdateTimer = null;
@@ -209,6 +215,7 @@
         deferProbabilityUpdate: false,
         mode: "equity",
         activeView: "equity",
+        ggReader: createInitialGgReaderState(),
         isSettingsMenuOpen: false,
         openToolbarMenu: null,
         isSolverPanelOpen: false,
@@ -253,6 +260,15 @@
         playerCountMenu: document.getElementById("player-count-menu"),
         gameTypeLabel: document.getElementById("game-type-label"),
         gameTypeMenu: document.getElementById("game-type-menu"),
+        readGgTable: document.getElementById("read-gg-table"),
+        ggReaderStatus: document.getElementById("gg-reader-status"),
+        ggReaderStatusText: document.getElementById("gg-reader-status-text"),
+        ggReaderConfidence: document.getElementById("gg-reader-confidence"),
+        ggReaderStop: document.getElementById("gg-reader-stop"),
+        ggReaderHistoryToggle: document.getElementById("gg-reader-history-toggle"),
+        ggReaderHistory: document.getElementById("gg-reader-history"),
+        ggReaderHistoryList: document.getElementById("gg-reader-history-list"),
+        ggReaderHistoryDownload: document.getElementById("gg-reader-history-download"),
         dealRandom: document.getElementById("deal-random"),
         liveGame: document.getElementById("live-game"),
         clearAll: document.getElementById("clear-all"),
@@ -294,6 +310,21 @@
     document.addEventListener("DOMContentLoaded", init);
     document.addEventListener("app:settings-live-game", handleLiveGameStartRequest);
 
+    function createInitialGgReaderState() {
+        return {
+            running: false,
+            status: "idle",
+            lastSnapshot: null,
+            pendingSnapshot: null,
+            history: [],
+            connection: null,
+            errors: [],
+            potOverride: null,
+            isHistoryOpen: false,
+            lastStatusText: "GG מנותק"
+        };
+    }
+
     function init() {
         if (!elements.table || !elements.board || !elements.deck) {
             console.warn("Alpha Poker UI: missing core elements, aborting init.");
@@ -314,6 +345,7 @@
         bindModeControls();
         bindToolbarActions();
         bindToolbarChoiceMenus();
+        bindGgReaderControls();
         bindSolverControls();
         bindSolverPanelToggle();
         bindMenuNavigation();
@@ -329,6 +361,7 @@
         setTimeout(() => setActiveView("equity"), 0);
         ensureActiveSlot();
         scheduleImmediateProbabilityUpdate();
+        renderGgReaderStatus();
         refreshSettingsMenu();
     }
 
@@ -552,6 +585,7 @@
         seat.append(probability, cardsRow, label, betDisplay, economyControls.container);
         state.seatMeta[index] = {
             label,
+            nameEl: labelName,
             positionEl: positionLabel,
             betDisplay,
             economyInputs: economyControls.inputs,
@@ -781,7 +815,10 @@
         if (!elements.tablePot) {
             return;
         }
-        const totalPot = calculateTotalBetAmount();
+        const importedPot = state.ggReader && Number.isFinite(state.ggReader.potOverride)
+            ? state.ggReader.potOverride
+            : null;
+        const totalPot = importedPot !== null ? importedPot : calculateTotalBetAmount();
         elements.tablePot.textContent = `${TABLE_POT_LABEL}: ${formatChipAmount(totalPot)}`;
     }
 
@@ -1273,6 +1310,75 @@
     }
 
 
+    function markSlotHidden(slot, options = {}) {
+        if (!slot || !isSlotActiveForCurrentGame(slot)) {
+            return;
+        }
+
+        const { display = "X", lock = true } = options;
+        if (slot.dataset.cardId) {
+            clearSlot(slot, { suppressUpdate: true });
+        }
+
+        slot.classList.add("card-slot--hidden", "card-slot--gg-hidden");
+        slot.classList.remove("filled");
+        slot.dataset.ggHidden = "true";
+        delete slot.dataset.cardId;
+        delete slot.dataset.suit;
+        delete slot.dataset.liveHidden;
+        if (lock) {
+            slot.dataset.locked = "true";
+            slot.classList.add("card-slot--locked");
+        }
+
+        const valueEl = slot.querySelector(".card-value");
+        if (valueEl) {
+            delete valueEl.dataset.suit;
+            const rankEl = valueEl.querySelector(".rank");
+            const suitEl = valueEl.querySelector(".suit");
+            if (rankEl) {
+                rankEl.textContent = "";
+            }
+            if (suitEl) {
+                suitEl.textContent = "";
+            }
+        }
+
+        const placeholderEl = slot.querySelector(".card-placeholder");
+        if (placeholderEl) {
+            placeholderEl.textContent = display || "X";
+        }
+    }
+
+    function clearHiddenMarker(slot) {
+        if (!slot || !slot.classList.contains("card-slot--hidden")) {
+            return;
+        }
+        slot.classList.remove("card-slot--hidden", "card-slot--gg-hidden", "card-slot--locked");
+        delete slot.dataset.ggHidden;
+        delete slot.dataset.liveHidden;
+        delete slot.dataset.locked;
+
+        const valueEl = slot.querySelector(".card-value");
+        if (valueEl) {
+            delete valueEl.dataset.suit;
+            const rankEl = valueEl.querySelector(".rank");
+            const suitEl = valueEl.querySelector(".suit");
+            if (rankEl) {
+                rankEl.textContent = "";
+            }
+            if (suitEl) {
+                suitEl.textContent = "";
+            }
+        }
+
+        const placeholderEl = slot.querySelector(".card-placeholder");
+        if (placeholderEl) {
+            placeholderEl.textContent = slot.dataset.placeholder || "";
+        }
+    }
+
+
     function clearSlot(slot, options = {}) {
         if (!slot) {
             return;
@@ -1281,6 +1387,7 @@
         const { keepFocus = false, suppressUpdate = false } = options;
         const cardId = slot.dataset.cardId;
         if (!cardId) {
+            clearHiddenMarker(slot);
             if (keepFocus) {
                 setActiveSlot(slot);
             } else if (state.activeSlot === slot) {
@@ -1294,6 +1401,7 @@
         delete slot.dataset.cardId;
         delete slot.dataset.suit;
         delete slot.dataset.liveHidden;
+        delete slot.dataset.ggHidden;
         delete slot.dataset.locked;
 
         const valueEl = slot.querySelector(".card-value");
@@ -1735,6 +1843,9 @@ function advanceActiveSlot(fromSlot) {
         state.slotByKey.forEach((slot) => clearSlot(slot, { suppressUpdate: true }));
         state.isAutoAdvancePaused = previousAuto;
         state.deferProbabilityUpdate = previousDefer;
+        if (state.ggReader) {
+            state.ggReader.potOverride = null;
+        }
 
         setActiveSlot(null);
         showError("");
@@ -3117,6 +3228,637 @@ function advanceActiveSlot(fromSlot) {
         });
     }
 
+    function bindGgReaderControls() {
+        if (elements.ggReaderStop) {
+            elements.ggReaderStop.addEventListener("click", () => {
+                stopGgTableReader();
+            });
+        }
+
+        if (elements.ggReaderHistoryToggle) {
+            elements.ggReaderHistoryToggle.addEventListener("click", () => {
+                state.ggReader.isHistoryOpen = !state.ggReader.isHistoryOpen;
+                renderGgReaderHistory();
+            });
+        }
+
+        if (elements.ggReaderHistoryDownload) {
+            elements.ggReaderHistoryDownload.addEventListener("click", downloadGgReaderHistory);
+        }
+    }
+
+    function toggleGgTableReader() {
+        if (state.ggReader.running) {
+            stopGgTableReader();
+            return;
+        }
+        startGgTableReader();
+    }
+
+    async function startGgTableReader() {
+        setGgReaderStatus("connecting", "מתחבר לקורא GG...");
+        showError("מתחבר לקורא GG מקומי...");
+
+        if (isGgMockMode()) {
+            try {
+                const snapshot = await loadGgMockSnapshot();
+                applyGgSnapshot(snapshot, { source: "mock" });
+                setGgReaderStatus("mock", "GG mock נטען");
+                showError("נטען snapshot לדוגמה של GG.");
+            } catch (error) {
+                setGgReaderStatus("error", "שגיאה בטעינת GG mock");
+                showError("לא ניתן לטעון snapshot לדוגמה של GG.");
+                state.ggReader.errors.push(String(error && error.message ? error.message : error));
+            }
+            return;
+        }
+
+        let timeoutId = null;
+        try {
+            const controller = new AbortController();
+            timeoutId = window.setTimeout(() => controller.abort(), 2500);
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/start`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                signal: controller.signal,
+                body: JSON.stringify({
+                    monitorIndex: 2,
+                    fps: 2,
+                    profile: "ggclub_9max"
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`GG reader start failed: ${response.status}`);
+            }
+
+            state.ggReader.running = true;
+            connectGgReaderSocket();
+        } catch (error) {
+            state.ggReader.running = false;
+            setGgReaderStatus("error", "שרת GG לא פעיל");
+            showError("שרת GG המקומי לא פועל. הפעל את backend על פורט 8787 או פתח עם ?ggMock=1 לבדיקה.");
+            state.ggReader.errors.push(String(error && error.message ? error.message : error));
+        } finally {
+            if (timeoutId !== null) {
+                window.clearTimeout(timeoutId);
+            }
+        }
+    }
+
+    async function stopGgTableReader() {
+        const connection = state.ggReader.connection;
+        state.ggReader.running = false;
+        state.ggReader.connection = null;
+        if (connection && connection.readyState <= WebSocket.OPEN) {
+            connection.close();
+        }
+
+        try {
+            await fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, { method: "POST" });
+        } catch (error) {
+            state.ggReader.errors.push(String(error && error.message ? error.message : error));
+        }
+
+        setGgReaderStatus("idle", "GG מנותק");
+        showError("קריאת GG הופסקה.");
+    }
+
+    function connectGgReaderSocket() {
+        if (state.ggReader.connection) {
+            state.ggReader.connection.close();
+        }
+
+        const socket = new WebSocket(GG_READER_WS_URL);
+        state.ggReader.connection = socket;
+
+        socket.addEventListener("open", () => {
+            state.ggReader.running = true;
+            setGgReaderStatus("running", "קורא GG...");
+            showError("קורא שולחן GG ממסך 2.");
+        });
+
+        socket.addEventListener("message", (event) => {
+            try {
+                const payload = JSON.parse(event.data);
+                handleGgReaderSocketPayload(payload);
+            } catch (error) {
+                saveGgHistoryEvent({
+                    type: "warning",
+                    message: "פריים GG לא נקרא כ-JSON תקין"
+                });
+                state.ggReader.errors.push(String(error && error.message ? error.message : error));
+            }
+        });
+
+        socket.addEventListener("close", () => {
+            if (state.ggReader.running) {
+                state.ggReader.running = false;
+                setGgReaderStatus("error", "חיבור GG נסגר");
+                showError("חיבור GG נסגר. בדוק שה-backend עדיין רץ.");
+            }
+        });
+
+        socket.addEventListener("error", () => {
+            state.ggReader.running = false;
+            setGgReaderStatus("error", "שגיאת GG");
+            showError("שגיאה בחיבור WebSocket לקורא GG.");
+        });
+    }
+
+    function handleGgReaderSocketPayload(payload) {
+        if (!payload) {
+            return;
+        }
+
+        if (payload.type === "status") {
+            setGgReaderStatus(payload.status || "waiting", payload.message || "ממתין ל-GG...");
+            if (payload.message) {
+                showError(payload.message);
+            }
+            if (payload.clearTable) {
+                clearGgImportedSnapshot();
+            }
+            if (payload.fatal) {
+                state.ggReader.running = false;
+                const connection = state.ggReader.connection;
+                state.ggReader.connection = null;
+                if (connection && connection.readyState <= WebSocket.OPEN) {
+                    connection.close();
+                }
+                fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, { method: "POST" }).catch(() => {});
+                renderGgReaderStatus();
+            }
+            saveGgHistoryEvent({
+                type: payload.status === "warning" ? "warning" : "reader_status",
+                message: payload.message || "סטטוס GG עודכן"
+            });
+            return;
+        }
+
+        applyGgSnapshot(payload, { source: "socket" });
+    }
+
+    function isGgMockMode() {
+        try {
+            return new URLSearchParams(window.location.search).get("ggMock") === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async function loadGgMockSnapshot() {
+        const response = await fetch(GG_READER_MOCK_URL, { cache: "no-store" });
+        if (!response.ok) {
+            throw new Error(`Mock snapshot failed: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    function applyGgSnapshot(snapshot, options = {}) {
+        if (!snapshot || snapshot.source !== "ggclub") {
+            saveGgHistoryEvent({
+                type: "warning",
+                message: "Snapshot GG נדחה: מקור לא תקין"
+            });
+            return false;
+        }
+
+        const duplicate = findDuplicateVisibleGgCard(snapshot);
+        if (duplicate) {
+            saveGgHistoryEvent({
+                type: "warning",
+                message: `Snapshot GG נדחה: הקלף ${duplicate} הופיע פעמיים`
+            });
+            setGgReaderStatus("warning", "פריים GG נדחה");
+            showError(`פריים GG נדחה: הקלף ${duplicate} הופיע פעמיים.`);
+            return false;
+        }
+
+        if (!shouldApplyGgSnapshot(snapshot)) {
+            setGgReaderStatus("waiting", "ממתין לאימות GG...");
+            return false;
+        }
+
+        const previousSnapshot = state.ggReader.lastSnapshot;
+        const seats = Array.isArray(snapshot.seats) ? snapshot.seats : [];
+        const board = Array.isArray(snapshot.board) ? snapshot.board : [];
+
+        state.deferProbabilityUpdate = true;
+        setPlayersCount(MAX_PLAYERS);
+        state.deferProbabilityUpdate = true;
+
+        state.ggReader.potOverride = sanitizeEconomyValue(Number(snapshot.pot) || 0);
+        applyGgBoardSnapshot(board);
+        seats.forEach((seat) => applyGgSeatSnapshot(seat));
+
+        const dealerIndex = Number(snapshot.dealerSeatIndex);
+        if (Number.isInteger(dealerIndex) && dealerIndex >= 0 && dealerIndex < MAX_PLAYERS) {
+            setDealerSeatIndex(dealerIndex);
+        }
+        applyGgPositionLabels(snapshot);
+
+        state.deferProbabilityUpdate = false;
+        state.ggReader.lastSnapshot = snapshot;
+        syncPlayerEconomyInputs();
+        updateTablePotDisplay();
+        updateSeatStates();
+        applyGgPositionLabels(snapshot);
+        ensureActiveSlot("player");
+        scheduleImmediateProbabilityUpdate();
+        if (options.source !== "mock") {
+            setGgReaderStatus("running", "קורא GG...");
+        }
+        renderGgReaderStatus();
+        recordGgSnapshotDiff(previousSnapshot, snapshot, options);
+        return true;
+    }
+
+    function clearGgImportedSnapshot() {
+        if (!state.ggReader.lastSnapshot && state.ggReader.potOverride === null) {
+            return;
+        }
+
+        const previousDefer = state.deferProbabilityUpdate;
+        state.deferProbabilityUpdate = true;
+        state.ggReader.lastSnapshot = null;
+        state.ggReader.pendingSnapshot = null;
+        state.ggReader.potOverride = null;
+
+        state.slotByKey.forEach((slot) => clearSlot(slot, { suppressUpdate: true }));
+        for (let index = 0; index < MAX_PLAYERS; index += 1) {
+            state.playerEconomy[index] = createDefaultEconomy();
+            const seat = state.seats[index];
+            if (seat) {
+                seat.classList.remove("seat--gg-empty", "seat--gg-hero");
+            }
+            const meta = state.seatMeta[index];
+            if (meta && meta.nameEl) {
+                meta.nameEl.textContent = `שחקן ${index + 1}`;
+            }
+            updateSeatBetDisplay(index);
+        }
+
+        state.deferProbabilityUpdate = previousDefer;
+        syncPlayerEconomyInputs();
+        updateTablePotDisplay();
+        ensureActiveSlot("player");
+        scheduleImmediateProbabilityUpdate();
+    }
+
+    function applyGgBoardSnapshot(board) {
+        getSlotsByType("board").forEach((slot, index) => {
+            const cardSnapshot = board[index];
+            applyGgCardSnapshotToSlot(cardSnapshot, slot);
+        });
+    }
+
+    function applyGgSeatSnapshot(seatSnapshot) {
+        if (!seatSnapshot || !Number.isInteger(Number(seatSnapshot.physicalSeatIndex))) {
+            return;
+        }
+
+        const index = Number(seatSnapshot.physicalSeatIndex);
+        if (index < 0 || index >= MAX_PLAYERS) {
+            return;
+        }
+
+        const seatEl = state.seats[index];
+        const meta = state.seatMeta[index];
+        const isActive = seatSnapshot.active !== false;
+        if (seatEl) {
+            seatEl.classList.toggle("seat--gg-empty", !isActive);
+            seatEl.classList.toggle("seat--gg-hero", Boolean(seatSnapshot.isHero));
+        }
+        if (meta && meta.nameEl) {
+            meta.nameEl.textContent = isActive && seatSnapshot.name
+                ? String(seatSnapshot.name)
+                : `שחקן ${index + 1}`;
+        }
+
+        const economy = ensurePlayerEconomy(index);
+        if (isActive) {
+            if (shouldApplyGgField(seatSnapshot.stackConfidence ?? seatSnapshot.confidence, seatSnapshot.stack)) {
+                economy.stack = sanitizeEconomyValue(Number(seatSnapshot.stack) || 0);
+            }
+            if (shouldApplyGgField(seatSnapshot.betConfidence ?? seatSnapshot.confidence, seatSnapshot.currentBet)) {
+                economy.pendingBet = 0;
+                economy.committedBet = sanitizeEconomyValue(Number(seatSnapshot.currentBet) || Number(seatSnapshot.committed) || 0);
+            }
+        } else {
+            economy.stack = 0;
+            economy.pendingBet = 0;
+            economy.committedBet = 0;
+        }
+
+        getPlayerCardSlots(index).forEach((slot, cardIndex) => {
+            const cardSnapshot = Array.isArray(seatSnapshot.holeCards)
+                ? seatSnapshot.holeCards[cardIndex]
+                : null;
+            applyGgCardSnapshotToSlot(isActive ? cardSnapshot : null, slot);
+        });
+
+        updateSeatBetDisplay(index);
+    }
+
+    function applyGgCardSnapshotToSlot(cardSnapshot, slot) {
+        if (!slot) {
+            return;
+        }
+
+        if (!cardSnapshot) {
+            clearSlot(slot, { suppressUpdate: true });
+            return;
+        }
+
+        const confidence = Number(cardSnapshot.confidence ?? 1);
+        if (Number.isFinite(confidence) && confidence < GG_READER_CONFIDENCE_MIN) {
+            return;
+        }
+
+        if (cardSnapshot.hidden) {
+            markSlotHidden(slot, { display: cardSnapshot.display || "X", lock: true });
+            return;
+        }
+
+        const cardId = getGgCardId(cardSnapshot);
+        const card = cardId ? getCardById(cardId) : null;
+        if (!card) {
+            clearSlot(slot, { suppressUpdate: true });
+            return;
+        }
+
+        clearHiddenMarker(slot);
+        assignCardToSlot(card, slot, { lock: true, suppressUpdate: true });
+    }
+
+    function getGgCardId(cardSnapshot) {
+        if (!cardSnapshot || !cardSnapshot.rank || !cardSnapshot.suit) {
+            return "";
+        }
+        const rank = String(cardSnapshot.rank).trim().toUpperCase();
+        const suit = normalizeGgSuit(cardSnapshot.suit);
+        return rank && suit ? `${rank}${suit}` : "";
+    }
+
+    function normalizeGgSuit(suit) {
+        const value = String(suit || "").trim().toUpperCase();
+        const map = {
+            S: "S",
+            SPADE: "S",
+            SPADES: "S",
+            "♠": "S",
+            H: "H",
+            HEART: "H",
+            HEARTS: "H",
+            "♥": "H",
+            D: "D",
+            DIAMOND: "D",
+            DIAMONDS: "D",
+            "♦": "D",
+            C: "C",
+            CLUB: "C",
+            CLUBS: "C",
+            "♣": "C"
+        };
+        return map[value] || "";
+    }
+
+    function findDuplicateVisibleGgCard(snapshot) {
+        const visibleCards = [];
+        const collect = (card) => {
+            if (!card || card.hidden || card.visible === false) {
+                return;
+            }
+            const cardId = getGgCardId(card);
+            if (cardId) {
+                visibleCards.push(cardId);
+            }
+        };
+
+        (Array.isArray(snapshot.board) ? snapshot.board : []).forEach(collect);
+        (Array.isArray(snapshot.seats) ? snapshot.seats : []).forEach((seat) => {
+            (Array.isArray(seat.holeCards) ? seat.holeCards : []).forEach(collect);
+        });
+
+        const seen = new Set();
+        return visibleCards.find((cardId) => {
+            if (seen.has(cardId)) {
+                return true;
+            }
+            seen.add(cardId);
+            return false;
+        }) || "";
+    }
+
+    function shouldApplyGgField(confidence, value) {
+        if (value === undefined || value === null || value === "") {
+            return false;
+        }
+        const normalizedConfidence = Number(confidence ?? 1);
+        return !Number.isFinite(normalizedConfidence) || normalizedConfidence >= GG_READER_CONFIDENCE_MIN;
+    }
+
+    function shouldApplyGgSnapshot(snapshot) {
+        const confidence = Number(snapshot.confidence ?? 1);
+        if (!Number.isFinite(confidence) || confidence >= GG_READER_CONFIDENCE_DIRECT) {
+            state.ggReader.pendingSnapshot = null;
+            return true;
+        }
+        if (confidence < GG_READER_CONFIDENCE_MIN) {
+            state.ggReader.pendingSnapshot = null;
+            return false;
+        }
+
+        const signature = buildGgSnapshotSignature(snapshot);
+        if (state.ggReader.pendingSnapshot === signature) {
+            state.ggReader.pendingSnapshot = null;
+            return true;
+        }
+        state.ggReader.pendingSnapshot = signature;
+        return false;
+    }
+
+    function buildGgSnapshotSignature(snapshot) {
+        const seatPart = (Array.isArray(snapshot.seats) ? snapshot.seats : []).map((seat) => [
+            seat.physicalSeatIndex,
+            seat.active,
+            seat.name,
+            seat.stack,
+            seat.currentBet,
+            (Array.isArray(seat.holeCards) ? seat.holeCards : []).map((card) => card.hidden ? "X" : getGgCardId(card)).join("/")
+        ].join(":")).join("|");
+        const boardPart = (Array.isArray(snapshot.board) ? snapshot.board : []).map(getGgCardId).join("/");
+        return `${snapshot.street || "unknown"}|${snapshot.pot}|${snapshot.dealerSeatIndex}|${boardPart}|${seatPart}`;
+    }
+
+    function applyGgPositionLabels(snapshot) {
+        const activeSeats = (Array.isArray(snapshot.seats) ? snapshot.seats : [])
+            .filter((seat) => seat && seat.active !== false && Number.isInteger(Number(seat.physicalSeatIndex)))
+            .map((seat) => Number(seat.physicalSeatIndex))
+            .filter((index) => index >= 0 && index < MAX_PLAYERS)
+            .sort((a, b) => a - b);
+
+        if (!activeSeats.length) {
+            updateSeatPositionLabels();
+            return;
+        }
+
+        const dealerIndex = activeSeats.includes(Number(snapshot.dealerSeatIndex))
+            ? Number(snapshot.dealerSeatIndex)
+            : activeSeats[0];
+        const dealerOrderIndex = activeSeats.indexOf(dealerIndex);
+        const positions = getPositionSequence(activeSeats.length);
+
+        state.seatMeta.forEach((meta, index) => {
+            if (!meta || !meta.positionEl) {
+                return;
+            }
+            const activeOrderIndex = activeSeats.indexOf(index);
+            if (activeOrderIndex < 0) {
+                meta.positionEl.textContent = "";
+                meta.label?.classList.remove("has-position");
+                return;
+            }
+            const relativeIndex = (activeOrderIndex - dealerOrderIndex + activeSeats.length) % activeSeats.length;
+            const positionName = positions[relativeIndex] || "";
+            meta.positionEl.textContent = positionName ? `(${positionName})` : "";
+            meta.label?.classList.toggle("has-position", Boolean(positionName));
+        });
+        placeDealerButton();
+    }
+
+    function recordGgSnapshotDiff(previousSnapshot, snapshot, options = {}) {
+        if (!previousSnapshot) {
+            saveGgHistoryEvent({
+                type: "hand_started",
+                message: "Snapshot ראשון נקלט מ-GG",
+                source: options.source || "gg"
+            });
+            return;
+        }
+
+        if ((previousSnapshot.street || "unknown") !== (snapshot.street || "unknown")) {
+            saveGgHistoryEvent({
+                type: "street_changed",
+                message: `רחוב השתנה ל-${snapshot.street || "unknown"}`
+            });
+        }
+        if (Number(previousSnapshot.pot) !== Number(snapshot.pot)) {
+            saveGgHistoryEvent({
+                type: "pot_changed",
+                message: `קופה: ${formatChipAmount(Number(snapshot.pot) || 0)}`
+            });
+        }
+        if (Number(previousSnapshot.dealerSeatIndex) !== Number(snapshot.dealerSeatIndex)) {
+            saveGgHistoryEvent({
+                type: "dealer_changed",
+                message: `דילר עבר לשחקן ${Number(snapshot.dealerSeatIndex) + 1}`
+            });
+        }
+
+        const previousBoard = new Set((Array.isArray(previousSnapshot.board) ? previousSnapshot.board : []).map(getGgCardId).filter(Boolean));
+        (Array.isArray(snapshot.board) ? snapshot.board : []).forEach((card) => {
+            const cardId = getGgCardId(card);
+            if (cardId && !previousBoard.has(cardId)) {
+                saveGgHistoryEvent({
+                    type: "board_card_added",
+                    message: `קלף board נוסף: ${cardId}`
+                });
+            }
+        });
+
+        const previousSeats = new Map((Array.isArray(previousSnapshot.seats) ? previousSnapshot.seats : [])
+            .map((seat) => [Number(seat.physicalSeatIndex), seat]));
+        (Array.isArray(snapshot.seats) ? snapshot.seats : []).forEach((seat) => {
+            const index = Number(seat.physicalSeatIndex);
+            const previous = previousSeats.get(index);
+            if (!previous && seat.active !== false) {
+                saveGgHistoryEvent({ type: "player_joined", message: `${seat.name || `שחקן ${index + 1}`} נכנס` });
+                return;
+            }
+            if (previous && previous.active !== false && seat.active === false) {
+                saveGgHistoryEvent({ type: "player_left", message: `${previous.name || `שחקן ${index + 1}`} יצא` });
+            }
+            if (previous && Number(previous.currentBet) !== Number(seat.currentBet)) {
+                saveGgHistoryEvent({
+                    type: "bet_changed",
+                    message: `${seat.name || `שחקן ${index + 1}`}: הימור ${formatChipAmount(Number(seat.currentBet) || 0)}`
+                });
+            }
+        });
+    }
+
+    function saveGgHistoryEvent(event) {
+        const entry = {
+            time: new Date().toISOString(),
+            type: event.type || "event",
+            message: event.message || "",
+            source: event.source || "gg"
+        };
+        state.ggReader.history.unshift(entry);
+        if (state.ggReader.history.length > GG_READER_HISTORY_LIMIT) {
+            state.ggReader.history.length = GG_READER_HISTORY_LIMIT;
+        }
+        renderGgReaderHistory();
+    }
+
+    function setGgReaderStatus(status, message) {
+        state.ggReader.status = status;
+        state.ggReader.lastStatusText = message;
+        renderGgReaderStatus();
+    }
+
+    function renderGgReaderStatus() {
+        if (elements.ggReaderStatus) {
+            elements.ggReaderStatus.dataset.status = state.ggReader.status || "idle";
+        }
+        if (elements.ggReaderStatusText) {
+            elements.ggReaderStatusText.textContent = state.ggReader.lastStatusText || "GG מנותק";
+        }
+        if (elements.ggReaderConfidence) {
+            const confidence = Number(state.ggReader.lastSnapshot?.confidence);
+            elements.ggReaderConfidence.textContent = Number.isFinite(confidence)
+                ? `${Math.round(confidence * 100)}%`
+                : "";
+        }
+        if (elements.ggReaderStop) {
+            elements.ggReaderStop.hidden = !state.ggReader.running;
+        }
+        if (elements.readGgTable) {
+            elements.readGgTable.textContent = state.ggReader.running ? "קורא GG..." : "קרא שולחן GG";
+            elements.readGgTable.classList.toggle("is-active", state.ggReader.running);
+        }
+    }
+
+    function renderGgReaderHistory() {
+        if (elements.ggReaderHistory) {
+            elements.ggReaderHistory.hidden = !state.ggReader.isHistoryOpen;
+            elements.ggReaderHistory.setAttribute("aria-hidden", state.ggReader.isHistoryOpen ? "false" : "true");
+        }
+        if (!elements.ggReaderHistoryList) {
+            return;
+        }
+        elements.ggReaderHistoryList.innerHTML = "";
+        state.ggReader.history.slice(0, 20).forEach((entry) => {
+            const item = document.createElement("li");
+            item.textContent = `${new Date(entry.time).toLocaleTimeString("he-IL")} · ${entry.message}`;
+            elements.ggReaderHistoryList.appendChild(item);
+        });
+    }
+
+    function downloadGgReaderHistory() {
+        const blob = new Blob([JSON.stringify(state.ggReader.history, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "gg-reader-history.json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
     function bindMenuNavigation() {
         if (!elements.appMenu) {
             return;
@@ -3287,7 +4029,7 @@ function advanceActiveSlot(fromSlot) {
                 clearAllSlots();
                 return { handled: true, shouldClose: true };
             case 'read-gg-table':
-                showError("כפתור קריאת שולחן GG מוכן. החיבור לקריאת השולחן יתווסף בשלב הבא.");
+                toggleGgTableReader();
                 return { handled: true, shouldClose: true };
             case 'quick-reset':
                 setPlayersCount(DEFAULT_PLAYERS);

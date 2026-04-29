@@ -1,0 +1,123 @@
+{
+  "source": "ggclub",
+  "timestamp": 1764500000000,
+  "tableType": "9max",
+  "handId": "mock-gg-001",
+  "street": "flop",
+  "pot": 125.5,
+  "dealerSeatIndex": 3,
+  "heroSeatIndex": 0,
+  "board": [
+    { "rank": "10", "suit": "H", "visible": true, "confidence": 0.96 },
+    { "rank": "9", "suit": "S", "visible": true, "confidence": 0.95 },
+    { "rank": "K", "suit": "D", "visible": true, "confidence": 0.95 }
+  ],
+  "seats": [
+    {
+      "physicalSeatIndex": 0,
+      "active": true,
+      "name": "HeroName",
+      "stack": 366.07,
+      "currentBet": 0,
+      "position": "BTN",
+      "isDealer": false,
+      "isHero": true,
+      "holeCards": [
+        { "rank": "A", "suit": "S", "visible": true, "confidence": 0.96 },
+        { "rank": "K", "suit": "S", "visible": true, "confidence": 0.96 }
+      ],
+      "confidence": 0.94
+    },
+    {
+      "physicalSeatIndex": 1,
+      "active": true,
+      "name": "Wsop champ777",
+      "stack": 768.48,
+      "currentBet": 8,
+      "isDealer": false,
+      "isHero": false,
+      "holeCards": [
+        { "hidden": true, "display": "X", "confidence": 0.93 },
+        { "hidden": true, "display": "X", "confidence": 0.93 }
+      ],
+      "confidence": 0.91
+    },
+    {
+      "physicalSeatIndex": 2,
+      "active": true,
+      "name": "Danabol213",
+      "stack": 402,
+      "currentBet": 0,
+      "holeCards": [
+        { "hidden": true, "display": "X", "confidence": 0.92 },
+        { "hidden": true, "display": "X", "confidence": 0.92 }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "physicalSeatIndex": 3,
+      "active": true,
+      "name": "Anita falali",
+      "stack": 1752.53,
+      "currentBet": 20,
+      "isDealer": true,
+      "holeCards": [
+        { "hidden": true, "display": "X", "confidence": 0.92 },
+        { "hidden": true, "display": "X", "confidence": 0.92 }
+      ],
+      "confidence": 0.9
+    },
+    {
+      "physicalSeatIndex": 4,
+      "active": true,
+      "name": "mor121",
+      "stack": 771.79,
+      "currentBet": 0,
+      "holeCards": [
+        { "hidden": true, "display": "X", "confidence": 0.91 },
+        { "hidden": true, "display": "X", "confidence": 0.91 }
+      ],
+      "confidence": 0.89
+    },
+    {
+      "physicalSeatIndex": 5,
+      "active": true,
+      "name": "razfri",
+      "stack": 247.71,
+      "currentBet": 0,
+      "holeCards": [
+        { "hidden": true, "display": "X", "confidence": 0.91 },
+        { "hidden": true, "display": "X", "confidence": 0.91 }
+      ],
+      "confidence": 0.89
+    },
+    {
+      "physicalSeatIndex": 6,
+      "active": false,
+      "name": "",
+      "stack": 0,
+      "currentBet": 0,
+      "holeCards": [],
+      "confidence": 0.95
+    },
+    {
+      "physicalSeatIndex": 7,
+      "active": false,
+      "name": "",
+      "stack": 0,
+      "currentBet": 0,
+      "holeCards": [],
+      "confidence": 0.95
+    },
+    {
+      "physicalSeatIndex": 8,
+      "active": false,
+      "name": "",
+      "stack": 0,
+      "currentBet": 0,
+      "holeCards": [],
+      "confidence": 0.95
+    }
+  ],
+  "confidence": 0.94
+}

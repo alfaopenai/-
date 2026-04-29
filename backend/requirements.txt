@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+mss
+opencv-python
+numpy
+pillow
+pytesseract
+pydantic

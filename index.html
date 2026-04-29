@@ -33,8 +33,22 @@
                             <button id="deal-random" type="button" class="toolbar-action" data-toolbar-action="deal-random">חלוקה אקראית</button>
                             <button id="clear-all" type="button" class="toolbar-action toolbar-action--quiet" data-toolbar-action="clear-all">נקה שולחן</button>
                         </div>
+                        <div id="gg-reader-status" class="gg-reader-status" data-status="idle" aria-live="polite">
+                            <span id="gg-reader-status-text">GG מנותק</span>
+                            <span id="gg-reader-confidence" class="gg-reader-confidence"></span>
+                            <button id="gg-reader-stop" type="button" class="gg-reader-stop" hidden>עצור</button>
+                            <button id="gg-reader-history-toggle" type="button" class="gg-reader-history-toggle">היסטוריה</button>
+                        </div>
                     </div>
                 </header>
+
+                <section id="gg-reader-history" class="gg-reader-history" hidden aria-hidden="true">
+                    <header class="gg-reader-history__header">
+                        <h2>היסטוריית GG</h2>
+                        <button id="gg-reader-history-download" type="button">הורד JSON</button>
+                    </header>
+                    <ol id="gg-reader-history-list" class="gg-reader-history__list"></ol>
+                </section>
 
                 <section id="calculator-view" class="view-panel view-panel--calculator" aria-hidden="false">
                     <button id="solver-settings-toggle" type="button" class="solver-toggle solver-settings-toggle" aria-controls="solver-controls" aria-expanded="false" hidden aria-hidden="true">

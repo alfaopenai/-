@@ -5405,6 +5405,95 @@ body {
     border-color: #16a34a;
 }
 
+.toolbar-action--gg.is-active {
+    background: #22c55e;
+    color: #052e16;
+    border-color: #86efac;
+}
+
+.gg-reader-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.7);
+    color: #e5e7eb;
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.gg-reader-status[data-status="running"],
+.gg-reader-status[data-status="mock"] {
+    border-color: rgba(34, 197, 94, 0.72);
+    background: rgba(5, 46, 22, 0.82);
+    color: #bbf7d0;
+}
+
+.gg-reader-status[data-status="connecting"],
+.gg-reader-status[data-status="waiting"] {
+    border-color: rgba(250, 204, 21, 0.75);
+    background: rgba(66, 32, 6, 0.82);
+    color: #fef3c7;
+}
+
+.gg-reader-status[data-status="error"],
+.gg-reader-status[data-status="warning"] {
+    border-color: rgba(248, 113, 113, 0.82);
+    background: rgba(69, 10, 10, 0.82);
+    color: #fecaca;
+}
+
+.gg-reader-confidence {
+    color: #facc15;
+}
+
+.gg-reader-stop,
+.gg-reader-history-toggle,
+.gg-reader-history__header button {
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: #f8fafc;
+    color: #0f172a;
+    font-size: 0.76rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.gg-reader-history {
+    margin: 0 auto 14px;
+    width: min(1480px, calc(100% - 40px));
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(34, 197, 94, 0.22);
+    background: rgba(7, 12, 24, 0.8);
+    color: #e5e7eb;
+}
+
+.gg-reader-history__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.gg-reader-history__header h2 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+.gg-reader-history__list {
+    margin: 10px 0 0;
+    padding-inline-start: 20px;
+    display: grid;
+    gap: 6px;
+    font-size: 0.82rem;
+}
+
 .toolbar-action--quiet {
     background: #e0f2fe;
     color: #0f172a;
@@ -6178,6 +6267,30 @@ body {
 
 .seat .card-slot.filled .card-value .suit {
     font-size: clamp(0.85rem, 1.45vw, 1.25rem);
+}
+
+.card-slot.card-slot--gg-hidden {
+    --slot-bg: linear-gradient(145deg, #111827, #020617);
+    --slot-border: rgba(248, 250, 252, 0.85);
+    --slot-inner-border: rgba(248, 250, 252, 0.32);
+}
+
+.card-slot.card-slot--gg-hidden .card-placeholder {
+    display: grid;
+    place-items: center;
+    color: #f8fafc;
+    font-size: clamp(1.35rem, 2.4vw, 2.1rem);
+    font-weight: 900;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
+}
+
+.seat--gg-empty {
+    opacity: 0.48;
+}
+
+.seat--gg-hero .seat-label,
+.seat--gg-hero .seat-economy {
+    border-color: rgba(34, 211, 238, 0.58);
 }
 
 @media (max-width: 900px) {
