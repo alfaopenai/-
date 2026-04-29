@@ -47,64 +47,64 @@
     ]);
     const SEAT_LAYOUTS = Object.freeze({
         2: Object.freeze([
-            { top: "16%", left: "50%" },
-            { top: "84%", left: "50%" }
+            { top: "-4%", left: "50%" },
+            { top: "104%", left: "50%" }
         ]),
         3: Object.freeze([
-            { top: "18%", left: "50%" },
-            { top: "74%", left: "76%" },
-            { top: "74%", left: "24%" }
+            { top: "-4%", left: "50%" },
+            { top: "70%", left: "97%" },
+            { top: "70%", left: "3%" }
         ]),
         4: Object.freeze([
-            { top: "18%", left: "50%" },
-            { top: "42%", left: "82%" },
-            { top: "82%", left: "64%" },
-            { top: "82%", left: "36%" }
+            { top: "-4%", left: "50%" },
+            { top: "48%", left: "102%" },
+            { top: "104%", left: "62%" },
+            { top: "104%", left: "38%" }
         ]),
         5: Object.freeze([
-            { top: "16%", left: "50%" },
-            { top: "34%", left: "82%" },
-            { top: "74%", left: "78%" },
-            { top: "74%", left: "22%" },
-            { top: "34%", left: "18%" }
+            { top: "-4%", left: "50%" },
+            { top: "26%", left: "94%" },
+            { top: "83%", left: "84%" },
+            { top: "83%", left: "16%" },
+            { top: "26%", left: "6%" }
         ]),
         6: Object.freeze([
-            { top: "16%", left: "50%" },
-            { top: "34%", left: "82%" },
-            { top: "68%", left: "84%" },
-            { top: "84%", left: "50%" },
-            { top: "68%", left: "16%" },
-            { top: "34%", left: "18%" }
+            { top: "-4%", left: "50%" },
+            { top: "24%", left: "92%" },
+            { top: "68%", left: "101%" },
+            { top: "104%", left: "50%" },
+            { top: "68%", left: "-1%" },
+            { top: "24%", left: "8%" }
         ]),
         7: Object.freeze([
-            { top: "14%", left: "50%" },
-            { top: "26%", left: "78%" },
-            { top: "52%", left: "88%" },
-            { top: "80%", left: "72%" },
-            { top: "86%", left: "50%" },
-            { top: "80%", left: "28%" },
-            { top: "52%", left: "12%" }
+            { top: "-4%", left: "50%" },
+            { top: "18%", left: "82%" },
+            { top: "50%", left: "102%" },
+            { top: "88%", left: "80%" },
+            { top: "105%", left: "50%" },
+            { top: "88%", left: "20%" },
+            { top: "50%", left: "-2%" }
         ]),
         8: Object.freeze([
-            { top: "12%", left: "50%" },
-            { top: "24%", left: "74%" },
-            { top: "46%", left: "88%" },
-            { top: "76%", left: "78%" },
-            { top: "88%", left: "50%" },
-            { top: "76%", left: "22%" },
-            { top: "46%", left: "12%" },
-            { top: "24%", left: "26%" }
+            { top: "-4%", left: "50%" },
+            { top: "15%", left: "76%" },
+            { top: "45%", left: "102%" },
+            { top: "82%", left: "86%" },
+            { top: "105%", left: "50%" },
+            { top: "82%", left: "14%" },
+            { top: "45%", left: "-2%" },
+            { top: "15%", left: "24%" }
         ]),
         9: Object.freeze([
-            { top: "12%", left: "50%" },
-            { top: "22%", left: "70%" },
-            { top: "40%", left: "86%" },
-            { top: "68%", left: "84%" },
-            { top: "86%", left: "64%" },
-            { top: "90%", left: "36%" },
-            { top: "68%", left: "16%" },
-            { top: "40%", left: "14%" },
-            { top: "22%", left: "30%" }
+            { top: "-4%", left: "50%" },
+            { top: "12%", left: "74%" },
+            { top: "38%", left: "100%" },
+            { top: "72%", left: "98%" },
+            { top: "99%", left: "70%" },
+            { top: "103%", left: "30%" },
+            { top: "72%", left: "2%" },
+            { top: "38%", left: "0%" },
+            { top: "12%", left: "26%" }
         ])
     });
 
@@ -159,17 +159,6 @@
         "דילר / סמול בליינד",
         "ביג בליינד"
     ];
-    const SEAT_AVATARS = Object.freeze([
-        { icon: "A", colorA: "#f8c471", colorB: "#6b2f14" },
-        { icon: "K", colorA: "#60a5fa", colorB: "#111827" },
-        { icon: "Q", colorA: "#f472b6", colorB: "#4a102a" },
-        { icon: "J", colorA: "#a78bfa", colorB: "#26124a" },
-        { icon: "10", colorA: "#34d399", colorB: "#064e3b" },
-        { icon: "9", colorA: "#facc15", colorB: "#713f12" },
-        { icon: "8", colorA: "#fb7185", colorB: "#4c0519" },
-        { icon: "7", colorA: "#38bdf8", colorB: "#082f49" },
-        { icon: "6", colorA: "#c084fc", colorB: "#3b0764" }
-    ]);
 
 
     let probabilityUpdateTimer = null;
@@ -530,14 +519,6 @@
 
         probability.append(tieLine, winLine);
 
-        const avatarTheme = SEAT_AVATARS[index % SEAT_AVATARS.length];
-        const avatar = document.createElement("div");
-        avatar.className = "seat-avatar";
-        avatar.setAttribute("aria-hidden", "true");
-        avatar.style.setProperty("--seat-avatar-a", avatarTheme.colorA);
-        avatar.style.setProperty("--seat-avatar-b", avatarTheme.colorB);
-        avatar.textContent = avatarTheme.icon;
-
         const label = document.createElement("div");
         label.className = "seat-label";
         const labelName = document.createElement("span");
@@ -568,9 +549,8 @@
 
         const economyControls = createSeatEconomyControls(index);
 
-        seat.append(probability, avatar, cardsRow, label, betDisplay, economyControls.container);
+        seat.append(probability, cardsRow, label, betDisplay, economyControls.container);
         state.seatMeta[index] = {
-            avatar,
             label,
             positionEl: positionLabel,
             betDisplay,
