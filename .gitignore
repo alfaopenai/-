@@ -11,7 +11,9 @@ __pycache__/
 *.py[cod]
 backend/data/*.json
 backend/data/*.jsonl
+backend/data/*.png
 !backend/data/.gitkeep
+.venv/
 
 # Environment files
 .env

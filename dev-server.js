@@ -3,7 +3,7 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const { createReadStream } = require("node:fs");
 
-const port = Number(process.env.PORT) || 3001;
+const port = Number(process.env.PORT) || 7000;
 const root = path.resolve(__dirname);
 
 const mimeTypes = new Map([

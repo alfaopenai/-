@@ -6,9 +6,11 @@
   "author": "Alpha Poker Team",
   "scripts": {
     "start": "electron .",
+    "start:backend": "python -m uvicorn backend.main:app --host 127.0.0.1 --port 8787",
     "package": "electron-builder --dir",
     "dist": "electron-builder",
-    "start:web": "node dev-server.js"
+    "start:web": "node dev-server.js",
+    "dev": "node scripts/dev.js"
   },
   "build": {
     "appId": "com.alpha.poker",

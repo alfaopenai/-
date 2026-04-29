@@ -264,6 +264,7 @@
         ggReaderStatus: document.getElementById("gg-reader-status"),
         ggReaderStatusText: document.getElementById("gg-reader-status-text"),
         ggReaderConfidence: document.getElementById("gg-reader-confidence"),
+        ggReaderMonitor: document.getElementById("gg-reader-monitor"),
         ggReaderStop: document.getElementById("gg-reader-stop"),
         ggReaderHistoryToggle: document.getElementById("gg-reader-history-toggle"),
         ggReaderHistory: document.getElementById("gg-reader-history"),
@@ -3229,6 +3230,19 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function bindGgReaderControls() {
+        populateGgMonitorOptions();
+
+        if (elements.ggReaderMonitor) {
+            elements.ggReaderMonitor.value = String(getGgMonitorIndex());
+            elements.ggReaderMonitor.addEventListener("change", () => {
+                const selected = Number(elements.ggReaderMonitor.value);
+                if (Number.isInteger(selected) && selected > 0) {
+                    localStorage.setItem("ggMonitorIndex", String(selected));
+                    setGgReaderStatus("idle", `מסך GG נבחר: ${selected}`);
+                }
+            });
+        }
+
         if (elements.ggReaderStop) {
             elements.ggReaderStop.addEventListener("click", () => {
                 stopGgTableReader();
@@ -3244,6 +3258,68 @@ function advanceActiveSlot(fromSlot) {
 
         if (elements.ggReaderHistoryDownload) {
             elements.ggReaderHistoryDownload.addEventListener("click", downloadGgReaderHistory);
+        }
+    }
+
+    async function populateGgMonitorOptions() {
+        if (!elements.ggReaderMonitor) {
+            return;
+        }
+        try {
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/monitors`);
+            if (!response.ok) {
+                throw new Error(`monitors failed: ${response.status}`);
+            }
+            const monitors = await response.json();
+            if (!Array.isArray(monitors) || !monitors.length) {
+                return;
+            }
+
+            const selected = getGgMonitorIndex();
+            elements.ggReaderMonitor.innerHTML = "";
+            monitors.forEach((monitor) => {
+                const option = document.createElement("option");
+                option.value = String(monitor.index);
+                option.textContent = `${monitor.index} (${monitor.width}×${monitor.height})`;
+                elements.ggReaderMonitor.appendChild(option);
+            });
+
+            const hasSelected = monitors.some((monitor) => Number(monitor.index) === selected);
+            elements.ggReaderMonitor.value = String(hasSelected ? selected : Number(monitors[0].index));
+            if (!hasSelected) {
+                localStorage.setItem("ggMonitorIndex", elements.ggReaderMonitor.value);
+                setGgReaderStatus("idle", `Monitor ${selected} לא נמצא, משתמש במסך ${elements.ggReaderMonitor.value}`);
+            }
+        } catch (error) {
+            state.ggReader.errors.push(String(error && error.message ? error.message : error));
+        }
+    }
+
+    function getGgMonitorIndex() {
+        const fromQuery = getPositiveIntegerQueryParam("ggMonitor");
+        if (fromQuery !== null) {
+            localStorage.setItem("ggMonitorIndex", String(fromQuery));
+            return fromQuery;
+        }
+
+        const fromStorage = Number.parseInt(localStorage.getItem("ggMonitorIndex") || "", 10);
+        if (Number.isInteger(fromStorage) && fromStorage > 0) {
+            return fromStorage;
+        }
+
+        return 2;
+    }
+
+    function getPositiveIntegerQueryParam(name) {
+        try {
+            const value = new URLSearchParams(window.location.search).get(name);
+            if (value === null) {
+                return null;
+            }
+            const parsed = Number.parseInt(value, 10);
+            return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+        } catch (error) {
+            return null;
         }
     }
 
@@ -3275,6 +3351,7 @@ function advanceActiveSlot(fromSlot) {
 
         let timeoutId = null;
         try {
+            const monitorIndex = getGgMonitorIndex();
             const controller = new AbortController();
             timeoutId = window.setTimeout(() => controller.abort(), 2500);
             const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/start`, {
@@ -3282,7 +3359,7 @@ function advanceActiveSlot(fromSlot) {
                 headers: { "Content-Type": "application/json" },
                 signal: controller.signal,
                 body: JSON.stringify({
-                    monitorIndex: 2,
+                    monitorIndex,
                     fps: 2,
                     profile: "ggclub_9max"
                 })
@@ -3293,6 +3370,20 @@ function advanceActiveSlot(fromSlot) {
             }
 
             state.ggReader.running = true;
+            try {
+                const startStatus = await response.json();
+                if (startStatus && Number.isInteger(Number(startStatus.monitorIndex))) {
+                    localStorage.setItem("ggMonitorIndex", String(startStatus.monitorIndex));
+                    if (elements.ggReaderMonitor) {
+                        elements.ggReaderMonitor.value = String(startStatus.monitorIndex);
+                    }
+                    if (startStatus.message && startStatus.message !== "running") {
+                        setGgReaderStatus("connecting", startStatus.message);
+                    }
+                }
+            } catch (error) {
+                state.ggReader.errors.push(String(error && error.message ? error.message : error));
+            }
             connectGgReaderSocket();
         } catch (error) {
             state.ggReader.running = false;

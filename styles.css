@@ -5450,6 +5450,24 @@ body {
     color: #facc15;
 }
 
+.gg-reader-monitor {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: inherit;
+    font-size: 0.76rem;
+}
+
+.gg-reader-monitor select {
+    min-height: 28px;
+    max-width: 96px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: #f8fafc;
+    color: #0f172a;
+    font-weight: 800;
+}
+
 .gg-reader-stop,
 .gg-reader-history-toggle,
 .gg-reader-history__header button {
