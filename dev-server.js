@@ -32,9 +32,10 @@ function getMimeType(filePath) {
 async function resolvePath(requestPath) {
     let normalized = decodeURIComponent(requestPath.split("?")[0]);
     if (!normalized || normalized === "/") {
-        normalized = "/index.html";
+        normalized = "index.html";
     }
     normalized = path.normalize(normalized);
+    normalized = normalized.replace(/^([/\\]+)/, "");
     if (normalized.startsWith("..")) {
         return null;
     }

@@ -1,72 +1,36 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>אלפא פוקר - מחשבון הסתברויות פוקר מתקדם</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <main class="app">
         <div class="app-shell">
             <div class="app-main">
-
                 <header class="top-toolbar" role="banner">
-                    <div class="top-toolbar__controls" role="toolbar" aria-label="ניהול שולחן">
-                        <div class="top-toolbar__group" role="group" aria-label="שחקנים">
+                    <div class="top-toolbar__intro">
+                        <p class="toolbar-eyebrow">אלפא פוקר</p>
+                        <div class="toolbar-status" aria-live="polite">
+                            <div class="toolbar-select">
+                                <button id="player-count-label" type="button" class="toolbar-chip toolbar-chip--button" aria-haspopup="menu" aria-expanded="false" aria-controls="player-count-menu">9 שחקנים</button>
+                                <div id="player-count-menu" class="toolbar-choice-menu" role="menu" aria-hidden="true"></div>
+                            </div>
+                            <div class="toolbar-select">
+                                <button id="game-type-label" type="button" class="toolbar-chip toolbar-chip--button toolbar-chip--muted" aria-haspopup="menu" aria-expanded="false" aria-controls="game-type-menu">טקסס הולדם No-Limit</button>
+                                <div id="game-type-menu" class="toolbar-choice-menu" role="menu" aria-hidden="true"></div>
+                            </div>
                         </div>
                     </div>
-                    <div class="top-toolbar__settings">
-                        <button id="settings-menu-toggle" type="button" class="settings-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="settings-menu" aria-label="הגדרות שולחן">
-                            <span class="settings-toggle__icon" aria-hidden="true">
-                                <svg viewBox="0 0 24 24" role="presentation" focusable="false">
-                                    <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.65l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.5 7.5 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7.5 7.5 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.69 8.6a.5.5 0 0 0 .12.65l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.65l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.13-.55 1.63-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.65l-2.03-1.58z" fill="currentColor"/>
-                                    <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" fill="currentColor"/>
-                                </svg>
-                            </span>
-                        </button>
-                        <div id="settings-menu" class="settings-menu" role="menu" aria-hidden="true">
-                            <div class="settings-menu__section settings-menu__section--players">
-                                <div class="settings-menu__item settings-menu__item--static" role="presentation">
-                                    <span class="settings-menu__item-label">מספר שחקנים</span>
-                                    <div class="player-count-control" role="group" aria-label="שינוי מספר שחקנים">
-                                        <button type="button" class="settings-stepper" data-setting-action="decrement-players" aria-label="הפחת שחקן">-</button>
-                                        <span id="settings-player-count" class="settings-stepper__value">2</span>
-                                        <button type="button" class="settings-stepper" data-setting-action="increment-players" aria-label="הוסף שחקן">+</button>
-                                    </div>
-                                </div>
-                            </div>
 
-                            <div class="settings-menu__section">
-                                <button id="deal-random" type="button" class="settings-menu__item" role="menuitem" data-setting-action="deal-random">
-                                    <span class="settings-menu__item-label">חלוקה אקראית</span>
-                                </button>
-                                <button id="clear-all" type="button" class="settings-menu__item" role="menuitem" data-setting-action="clear-all">
-                                    <span class="settings-menu__item-label">נקה הכל</span>
-                                </button>
-                                <button id="reset" type="button" class="settings-menu__item" role="menuitem" data-setting-action="quick-reset">
-                                    <span class="settings-menu__item-label">איפוס מהיר</span>
-                                </button>
-                                <button id="live-game" type="button" class="settings-menu__item" role="menuitem" data-setting-action="live-game">
-                                    <span class="settings-menu__item-label">משחק חי</span>
-                                </button>
-                            </div>
-                            <div class="settings-menu__section">
-                                <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-auto-advance" aria-checked="true">
-                                    <span class="settings-menu__item-label">מעבר אוטומטי בין קלפים</span>
-                                    <span class="settings-menu__item-state" data-setting-indicator="auto-advance">פעיל</span>
-                                </button>
-                                <button type="button" class="settings-menu__item" role="menuitemcheckbox" data-setting-action="toggle-seat-probabilities" aria-checked="true">
-                                    <span class="settings-menu__item-label">הצג הסתברויות לכל שחקן</span>
-                                    <span class="settings-menu__item-state" data-setting-indicator="seat-probabilities">מוצג</span>
-                                </button>
-                            </div>
-                            <div class="settings-menu__section">
-                                <button type="button" class="settings-menu__item settings-menu__item--accent" role="menuitem" data-setting-action="reset-table">
-                                    <span class="settings-menu__item-label">איפוס שולחן</span>
-                                </button>
-                            </div>
+                    <div class="top-toolbar__controls" role="toolbar" aria-label="ניהול שולחן">
+                        <div class="top-toolbar__group top-toolbar__group--primary" role="group" aria-label="פעולות מהירות">
+                            <button id="deal-random" type="button" class="toolbar-action" data-toolbar-action="deal-random">חלוקה אקראית</button>
+                            <button id="clear-all" type="button" class="toolbar-action toolbar-action--quiet" data-toolbar-action="clear-all">נקה שולחן</button>
                         </div>
                     </div>
                 </header>
@@ -81,6 +45,7 @@
                             <h2>סולבר GTO</h2>
                             <p>הגדירו את פרטי הסיטואציה כדי לחשב קווי משחק מאוזנים לשולחן הנוכחי.</p>
                         </header>
+
                         <div class="solver-panel__grid">
                             <label class="solver-field">
                                 <span>גודל קופה (BB)</span>
@@ -106,28 +71,38 @@
                             <label class="solver-field">
                                 <span>מספר איטרציות</span>
                                 <input id="solver-iterations" type="number" min="1000" step="1000" value="20000">
-                            </label>                        <div class="solver-panel__actions solver-actions">
+                            </label>
+                        </div>
+
+                        <div class="solver-panel__actions solver-actions">
                             <button id="solver-run" type="button" class="primary">הרץ סימולציה</button>
-                            <button id="solver-reset" type="button" class="tertiary">איפוס פרמטרים</button>                    </section>
+                            <button id="solver-reset" type="button" class="tertiary">איפוס פרמטרים</button>
+                        </div>
+                    </section>
 
                     <section id="solver-results" class="solver-results" hidden aria-hidden="true" aria-live="polite">
                         <div class="solver-results__placeholder solver-placeholder">
-                            <p>בחרו קלפים והגדירו פרמטרים כדי להפעיל את הסולבר.</p>                    </section>
+                            <p>בחרו קלפים והגדירו פרמטרים כדי להפעיל את הסולבר.</p>
+                        </div>
+                    </section>
 
                     <div class="calculator-layout">
                         <section class="table-wrapper">
                             <div class="felt">
                                 <div class="table-surface">
-
                                     <div id="table" class="table">
-
-                                    <div class="board-area">
-                                        <div id="table-pot" class="table-pot" aria-live="polite" aria-atomic="true">קופה: 0</div>
-                                            <div id="board-cards" class="board-cards">
+                                        <div class="board-area">
+                                            <div id="table-pot" class="table-pot" aria-live="polite" aria-atomic="true">קופה: 0</div>
+                                            <div id="board-cards" class="board-cards"></div>
+                                        </div>
+                                    </div>
+                                </div>
 
                                 <aside class="deck-area">
                                     <section id="errors" class="messages" aria-live="polite"></section>
-                                </aside>                        </section>
+                                </aside>
+                            </div>
+                        </section>
 
                         <section id="live-game-panel" class="live-game" hidden aria-hidden="true">
                             <header class="live-game__header">
@@ -146,7 +121,13 @@
                             </div>
                             <div id="live-game-log" class="live-game__log" aria-live="polite"></div>
                         </section>
-                        <section id="results" class="results" aria-live="polite"></section>                </section>    </main>
+
+                        <section id="results" class="results" aria-live="polite"></section>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
 
     <div id="deck-overlay" class="deck-overlay" hidden role="dialog" aria-modal="true" aria-label="בחירת קלף">
         <div class="deck-overlay__inner">
@@ -160,7 +141,8 @@
         </div>
         <div class="deck-overlay__arrow" aria-hidden="true"></div>
     </div>
-<script src="solver/index.js"></script>
+
+    <script src="solver/index.js"></script>
     <script src="solver/strategy/singleStreetCfr.js"></script>
     <script src="solver/strategy/texasCfr.js"></script>
     <script src="solver/strategy/pycfrAdapter.js"></script>
@@ -168,18 +150,3 @@
     <script src="app.js"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

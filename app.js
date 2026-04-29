@@ -1,9 +1,24 @@
 ﻿(() => {
     const MIN_PLAYERS = 2;
     const MAX_PLAYERS = 9;
+    const DEFAULT_PLAYERS = MAX_PLAYERS;
+    const MAX_HOLE_CARDS = 4;
     const DEFAULT_PLAYER_STACK = 1000;
     const DEFAULT_SMALL_BLIND = 1;
     const DEFAULT_BIG_BLIND = 2;
+    const GAME_VARIANTS = Object.freeze({
+        texas: Object.freeze({
+            id: "texas",
+            label: "\u05d8\u05e7\u05e1\u05e1 \u05d4\u05d5\u05dc\u05d3\u05dd No-Limit",
+            holeCards: 2
+        }),
+        omaha: Object.freeze({
+            id: "omaha",
+            label: "\u05d0\u05d5\u05de\u05d4\u05d4 4 \u05e7\u05dc\u05e4\u05d9\u05dd Limit",
+            holeCards: 4
+        })
+    });
+    const DEFAULT_GAME_VARIANT = GAME_VARIANTS.texas.id;
     const ECONOMY_FIELDS = Object.freeze({
         stack: 'stack',
         pendingBet: 'pendingBet'
@@ -30,6 +45,68 @@
         { id: 'check', label: "\u05e6'\u05e7 / \u05e7\u05d5\u05dc", className: 'seat-action--check' },
         { id: 'raise', label: '\u05e8\u05d9\u05d9\u05d6', className: 'seat-action--raise' }
     ]);
+    const SEAT_LAYOUTS = Object.freeze({
+        2: Object.freeze([
+            { top: "16%", left: "50%" },
+            { top: "84%", left: "50%" }
+        ]),
+        3: Object.freeze([
+            { top: "18%", left: "50%" },
+            { top: "74%", left: "76%" },
+            { top: "74%", left: "24%" }
+        ]),
+        4: Object.freeze([
+            { top: "18%", left: "50%" },
+            { top: "42%", left: "82%" },
+            { top: "82%", left: "64%" },
+            { top: "82%", left: "36%" }
+        ]),
+        5: Object.freeze([
+            { top: "16%", left: "50%" },
+            { top: "34%", left: "82%" },
+            { top: "74%", left: "78%" },
+            { top: "74%", left: "22%" },
+            { top: "34%", left: "18%" }
+        ]),
+        6: Object.freeze([
+            { top: "16%", left: "50%" },
+            { top: "34%", left: "82%" },
+            { top: "68%", left: "84%" },
+            { top: "84%", left: "50%" },
+            { top: "68%", left: "16%" },
+            { top: "34%", left: "18%" }
+        ]),
+        7: Object.freeze([
+            { top: "14%", left: "50%" },
+            { top: "26%", left: "78%" },
+            { top: "52%", left: "88%" },
+            { top: "80%", left: "72%" },
+            { top: "86%", left: "50%" },
+            { top: "80%", left: "28%" },
+            { top: "52%", left: "12%" }
+        ]),
+        8: Object.freeze([
+            { top: "12%", left: "50%" },
+            { top: "24%", left: "74%" },
+            { top: "46%", left: "88%" },
+            { top: "76%", left: "78%" },
+            { top: "88%", left: "50%" },
+            { top: "76%", left: "22%" },
+            { top: "46%", left: "12%" },
+            { top: "24%", left: "26%" }
+        ]),
+        9: Object.freeze([
+            { top: "12%", left: "50%" },
+            { top: "22%", left: "70%" },
+            { top: "40%", left: "86%" },
+            { top: "68%", left: "84%" },
+            { top: "86%", left: "64%" },
+            { top: "90%", left: "36%" },
+            { top: "68%", left: "16%" },
+            { top: "40%", left: "14%" },
+            { top: "22%", left: "30%" }
+        ])
+    });
 
     const BOARD_PLACEHOLDERS = [
         "\u05e4\u05dc\u05d5\u05e4 \u0031",
@@ -120,7 +197,8 @@
         slotByKey: new Map(),
         cardAssignments: new Map(),
         activeSlot: null,
-        playersCount: MIN_PLAYERS,
+        playersCount: DEFAULT_PLAYERS,
+        gameVariant: DEFAULT_GAME_VARIANT,
         seats: [],
         seatMeta: [],
         probabilityDisplays: [],
@@ -132,6 +210,7 @@
         mode: "equity",
         activeView: "equity",
         isSettingsMenuOpen: false,
+        openToolbarMenu: null,
         isSolverPanelOpen: false,
         solverSettings: { ...DEFAULT_SOLVER_SETTINGS },
         resultsObserver: null,
@@ -171,7 +250,11 @@
         dealerButton: null,
         appShell: document.querySelector(".app-shell"),
         playerCountLabel: document.getElementById("player-count-label"),
+        playerCountMenu: document.getElementById("player-count-menu"),
+        gameTypeLabel: document.getElementById("game-type-label"),
+        gameTypeMenu: document.getElementById("game-type-menu"),
         dealRandom: document.getElementById("deal-random"),
+        liveGame: document.getElementById("live-game"),
         clearAll: document.getElementById("clear-all"),
         calculate: document.getElementById("calculate"),
         reset: document.getElementById("reset"),
@@ -223,11 +306,14 @@
         buildSeats();
         initializePlayerEconomy();
         initDealerButton();
+        updateGameVariantUI();
         updateSeatStates();
         updatePlayerCountLabel();
         updateSeatPositionLabels();
         bindControls();
         bindModeControls();
+        bindToolbarActions();
+        bindToolbarChoiceMenus();
         bindSolverControls();
         bindSolverPanelToggle();
         bindMenuNavigation();
@@ -331,6 +417,90 @@
         }
     }
 
+    function getActiveGameVariant() {
+        return GAME_VARIANTS[state.gameVariant] || GAME_VARIANTS[DEFAULT_GAME_VARIANT];
+    }
+
+    function isOmahaVariant() {
+        return getActiveGameVariant().id === GAME_VARIANTS.omaha.id;
+    }
+
+    function getRequiredHoleCards() {
+        return getActiveGameVariant().holeCards;
+    }
+
+    function getPlayerCardSlots(playerIndex) {
+        const slots = [];
+        for (let c = 0; c < MAX_HOLE_CARDS; c += 1) {
+            const slot = state.slotByKey.get(`player-${playerIndex}-${c}`);
+            if (slot) {
+                slots.push(slot);
+            }
+        }
+        return slots;
+    }
+
+    function getSlotHoleIndex(slot) {
+        const value = Number(slot?.dataset?.holeIndex);
+        return Number.isFinite(value) ? value : 0;
+    }
+
+    function isSlotActiveForCurrentGame(slot) {
+        if (!slot) {
+            return false;
+        }
+        if (slot.dataset.slotType !== "player") {
+            return true;
+        }
+        const playerIndex = Number(slot.dataset.playerIndex);
+        if (!Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= state.playersCount) {
+            return false;
+        }
+        return getSlotHoleIndex(slot) < getRequiredHoleCards();
+    }
+
+    function clearPlayerSlots(playerIndex, options = {}) {
+        getPlayerCardSlots(playerIndex).forEach((slot) => clearSlot(slot, options));
+    }
+
+    function updateGameVariantUI(options = {}) {
+        const { suppressUpdate = false } = options;
+        const previousDefer = state.deferProbabilityUpdate;
+        state.deferProbabilityUpdate = true;
+
+        state.slotByKey.forEach((slot) => {
+            if (slot.dataset.slotType !== "player") {
+                return;
+            }
+            const isActive = isSlotActiveForCurrentGame(slot);
+            slot.hidden = !isActive;
+            slot.classList.toggle("card-slot--inactive-game", !isActive);
+            slot.setAttribute("aria-hidden", isActive ? "false" : "true");
+            if (!isActive) {
+                clearSlot(slot, { suppressUpdate: true });
+            }
+        });
+
+        if (state.activeSlot && !isSlotActiveForCurrentGame(state.activeSlot)) {
+            setActiveSlot(null);
+        }
+
+        if (elements.table) {
+            elements.table.dataset.gameVariant = getActiveGameVariant().id;
+        }
+        if (elements.appShell) {
+            elements.appShell.dataset.gameVariant = getActiveGameVariant().id;
+        }
+
+        state.deferProbabilityUpdate = previousDefer;
+        refreshToolbarControls();
+        ensureActiveSlot("player");
+
+        if (!suppressUpdate && !state.deferProbabilityUpdate) {
+            scheduleImmediateProbabilityUpdate();
+        }
+    }
+
     function createSeat(index) {
         const seat = document.createElement("div");
         seat.className = `seat seat-${index}`;
@@ -361,13 +531,14 @@
         const cardsRow = document.createElement("div");
         cardsRow.className = "card-row";
 
-        for (let c = 0; c < 2; c += 1) {
+        for (let c = 0; c < MAX_HOLE_CARDS; c += 1) {
             const slot = createCardSlot({
                 key: `player-${index}-${c}`,
                 placeholder: `קלף ${c + 1}`,
                 type: "player",
-                order: index * 2 + c,
-                playerIndex: index
+                order: index * MAX_HOLE_CARDS + c,
+                playerIndex: index,
+                holeIndex: c
             });
             cardsRow.appendChild(slot);
         }
@@ -913,7 +1084,7 @@
         dealerDragState = null;
     }
 
-    function createCardSlot({ key, placeholder, type, order, playerIndex }) {
+    function createCardSlot({ key, placeholder, type, order, playerIndex, holeIndex }) {
         const slot = document.createElement("div");
         slot.className = "card-slot";
         slot.dataset.slotKey = key;
@@ -922,6 +1093,9 @@
         slot.dataset.placeholder = placeholder;
         if (typeof playerIndex === "number") {
             slot.dataset.playerIndex = String(playerIndex);
+        }
+        if (typeof holeIndex === "number") {
+            slot.dataset.holeIndex = String(holeIndex);
         }
         slot.innerHTML = `
             <span class="card-placeholder">${placeholder}</span>
@@ -947,7 +1121,7 @@
         if (slot.dataset.locked === "true") {
             return;
         }
-        if (Number(slot.dataset.playerIndex) >= state.playersCount) {
+        if (!isSlotActiveForCurrentGame(slot)) {
             return;
         }
 
@@ -958,12 +1132,17 @@
         }
 
         if (state.activeSlot === slot) {
-            setActiveSlot(null);
-            showError("");
+            if (elements.deckOverlay && elements.deckOverlay.hidden) {
+                setActiveSlot(slot, { openOverlay: true });
+                showError("\u05d1\u05d7\u05e8\u05d5 \u05e7\u05dc\u05e3 \u05de\u05d4\u05d7\u05e4\u05d9\u05e1\u05d4 \u05dc\u05d4\u05e6\u05d1\u05ea\u05d5.");
+            } else {
+                setActiveSlot(null);
+                showError("");
+            }
             return;
         }
 
-        setActiveSlot(slot);
+        setActiveSlot(slot, { openOverlay: true });
         showError("\u05d1\u05d7\u05e8\u05d5 \u05e7\u05dc\u05e3 \u05de\u05d4\u05d7\u05e4\u05d9\u05e1\u05d4 \u05dc\u05d4\u05e6\u05d1\u05ea\u05d5.");
     }
 
@@ -998,6 +1177,9 @@
     }
     function assignCardToSlot(card, slot, options = {}) {
         if (!slot) {
+            return;
+        }
+        if (!isSlotActiveForCurrentGame(slot)) {
             return;
         }
 
@@ -1157,10 +1339,20 @@
     }
 
 
-    function setActiveSlot(slot) {
+    function setActiveSlot(slot, options = {}) {
+        const { openOverlay = false } = options;
+        if (slot && !isSlotActiveForCurrentGame(slot)) {
+            slot = null;
+        }
+        const overlayWasOpen = Boolean(elements.deckOverlay && !elements.deckOverlay.hidden);
+        const shouldOpenOverlay = Boolean(slot) && (openOverlay || overlayWasOpen);
         if (state.activeSlot === slot) {
             if (slot) {
-                positionDeckOverlay(slot);
+                if (shouldOpenOverlay) {
+                    openDeckOverlay(slot);
+                } else {
+                    closeDeckOverlay();
+                }
             } else {
                 closeDeckOverlay();
             }
@@ -1175,7 +1367,11 @@
 
         if (state.activeSlot) {
             state.activeSlot.classList.add("active");
-            openDeckOverlay(state.activeSlot);
+            if (shouldOpenOverlay) {
+                openDeckOverlay(state.activeSlot);
+            } else {
+                closeDeckOverlay();
+            }
         } else {
             closeDeckOverlay();
         }
@@ -1210,7 +1406,7 @@ function advanceActiveSlot(fromSlot) {
     function ensureActiveSlot(preferredType) {
         if (state.activeSlot) {
             const slot = state.activeSlot;
-            const isInactivePlayer = slot.dataset.slotType === "player" && Number(slot.dataset.playerIndex) >= state.playersCount;
+            const isInactivePlayer = slot.dataset.slotType === "player" && !isSlotActiveForCurrentGame(slot);
             if (!slot.isConnected || slot.dataset.cardId || isInactivePlayer) {
                 setActiveSlot(null);
             }
@@ -1262,10 +1458,11 @@ function advanceActiveSlot(fromSlot) {
             const isActive = index < state.playersCount;
             seat.classList.toggle("active", isActive);
             if (!isActive) {
-                clearSlot(state.slotByKey.get(`player-${index}-0`), { suppressUpdate: true });
-                clearSlot(state.slotByKey.get(`player-${index}-1`), { suppressUpdate: true });
+                clearPlayerSlots(index, { suppressUpdate: true });
             }
         });
+        updateGameVariantUI({ suppressUpdate: true });
+        applySeatLayout();
         state.deferProbabilityUpdate = wasDeferred;
         if (!state.deferProbabilityUpdate) {
             scheduleImmediateProbabilityUpdate();
@@ -1275,10 +1472,42 @@ function advanceActiveSlot(fromSlot) {
         syncPlayerEconomyInputs();
     }
 
+    function applySeatLayout() {
+        const layout = SEAT_LAYOUTS[state.playersCount] || SEAT_LAYOUTS[MAX_PLAYERS];
+
+        state.seats.forEach((seat, index) => {
+            if (!(seat instanceof HTMLElement)) {
+                return;
+            }
+            if (index >= state.playersCount) {
+                seat.style.removeProperty("top");
+                seat.style.removeProperty("left");
+                seat.style.removeProperty("--seat-offset-x");
+                seat.style.removeProperty("--seat-offset-y");
+                return;
+            }
+
+            const position = layout[index] || layout[layout.length - 1];
+            if (!position) {
+                return;
+            }
+
+            seat.style.top = position.top;
+            seat.style.left = position.left;
+            seat.style.setProperty("--seat-offset-x", "0px");
+            seat.style.setProperty("--seat-offset-y", "0px");
+        });
+
+        if (elements.table) {
+            elements.table.dataset.playersCount = String(state.playersCount);
+        }
+    }
+
     function updatePlayerCountLabel() {
         if (elements.playerCountLabel) {
             elements.playerCountLabel.textContent = `${state.playersCount} \u05e9\u05d7\u05e7\u05e0\u05d9\u05dd`;
         }
+        refreshToolbarControls();
     }
 
     function setPlayersCount(count) {
@@ -1290,8 +1519,7 @@ function advanceActiveSlot(fromSlot) {
         const previousCount = state.playersCount;
 
         for (let i = next; i < state.playersCount; i += 1) {
-            clearSlot(state.slotByKey.get(`player-${i}-0`), { suppressUpdate: true });
-            clearSlot(state.slotByKey.get(`player-${i}-1`), { suppressUpdate: true });
+            clearPlayerSlots(i, { suppressUpdate: true });
         }
 
         state.playersCount = next;
@@ -1304,6 +1532,7 @@ function advanceActiveSlot(fromSlot) {
 
         updateSeatStates();
         updatePlayerCountLabel();
+        refreshToolbarControls();
         showError("");
         if (elements.results) {
             elements.results.innerHTML = "";
@@ -1318,6 +1547,170 @@ function advanceActiveSlot(fromSlot) {
         }
 
         scheduleImmediateProbabilityUpdate();
+    }
+
+    function setGameVariant(variantId) {
+        const next = GAME_VARIANTS[variantId] ? variantId : DEFAULT_GAME_VARIANT;
+        if (state.gameVariant === next) {
+            refreshToolbarControls();
+            return;
+        }
+
+        if (next !== GAME_VARIANTS.texas.id && state.mode !== "equity") {
+            setMode("equity");
+        }
+        if (next !== GAME_VARIANTS.texas.id && state.liveGame && state.liveGame.active) {
+            finishLiveGameSession();
+        }
+
+        state.gameVariant = next;
+        evaluationCache.clear();
+        updateGameVariantUI({ suppressUpdate: true });
+        updateModeUI();
+        showError("");
+        if (elements.results) {
+            elements.results.innerHTML = "";
+        }
+        refreshToolbarControls();
+        scheduleImmediateProbabilityUpdate();
+    }
+
+    function setToolbarMenuOpen(menuName) {
+        state.openToolbarMenu = menuName;
+        if (menuName && state.isSettingsMenuOpen) {
+            setSettingsMenuOpen(false);
+        }
+        refreshToolbarControls();
+    }
+
+    function refreshToolbarControls() {
+        const variant = getActiveGameVariant();
+        if (elements.playerCountLabel) {
+            elements.playerCountLabel.textContent = `${state.playersCount} \u05e9\u05d7\u05e7\u05e0\u05d9\u05dd`;
+        }
+        if (elements.gameTypeLabel) {
+            elements.gameTypeLabel.textContent = variant.label;
+        }
+
+        const syncMenu = (trigger, menu, isOpen) => {
+            if (trigger) {
+                trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+            }
+            if (menu) {
+                menu.classList.toggle("is-open", isOpen);
+                menu.setAttribute("aria-hidden", isOpen ? "false" : "true");
+            }
+        };
+
+        syncMenu(elements.playerCountLabel, elements.playerCountMenu, state.openToolbarMenu === "players");
+        syncMenu(elements.gameTypeLabel, elements.gameTypeMenu, state.openToolbarMenu === "game");
+
+        document.querySelectorAll("[data-player-count]").forEach((button) => {
+            const isSelected = Number(button.dataset.playerCount) === state.playersCount;
+            button.classList.toggle("is-selected", isSelected);
+            button.setAttribute("aria-checked", isSelected ? "true" : "false");
+        });
+
+        document.querySelectorAll("[data-game-variant]").forEach((button) => {
+            const isSelected = button.dataset.gameVariant === variant.id;
+            button.classList.toggle("is-selected", isSelected);
+            button.setAttribute("aria-checked", isSelected ? "true" : "false");
+        });
+    }
+
+    function bindToolbarChoiceMenus() {
+        const countButton = elements.playerCountLabel;
+        const countMenu = elements.playerCountMenu;
+        const gameButton = elements.gameTypeLabel;
+        const gameMenu = elements.gameTypeMenu;
+
+        if (countMenu && !countMenu.children.length) {
+            const fragment = document.createDocumentFragment();
+            for (let count = MIN_PLAYERS; count <= MAX_PLAYERS; count += 1) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "toolbar-choice-item";
+                button.dataset.playerCount = String(count);
+                button.setAttribute("role", "menuitemradio");
+                button.textContent = `${count} \u05e9\u05d7\u05e7\u05e0\u05d9\u05dd`;
+                fragment.appendChild(button);
+            }
+            countMenu.appendChild(fragment);
+        }
+
+        if (gameMenu && !gameMenu.children.length) {
+            const fragment = document.createDocumentFragment();
+            Object.values(GAME_VARIANTS).forEach((variant) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "toolbar-choice-item";
+                button.dataset.gameVariant = variant.id;
+                button.setAttribute("role", "menuitemradio");
+                button.textContent = variant.label;
+                fragment.appendChild(button);
+            });
+            gameMenu.appendChild(fragment);
+        }
+
+        if (countButton && countMenu) {
+            countButton.addEventListener("click", (event) => {
+                event.stopPropagation();
+                setToolbarMenuOpen(state.openToolbarMenu === "players" ? null : "players");
+            });
+            countMenu.addEventListener("click", (event) => {
+                event.stopPropagation();
+                const target = event.target instanceof Element ? event.target.closest("[data-player-count]") : null;
+                if (!target) {
+                    return;
+                }
+                const count = Number(target.dataset.playerCount);
+                if (Number.isInteger(count)) {
+                    setPlayersCount(count);
+                    setToolbarMenuOpen(null);
+                    countButton.focus();
+                }
+            });
+        }
+
+        if (gameButton && gameMenu) {
+            gameButton.addEventListener("click", (event) => {
+                event.stopPropagation();
+                setToolbarMenuOpen(state.openToolbarMenu === "game" ? null : "game");
+            });
+            gameMenu.addEventListener("click", (event) => {
+                event.stopPropagation();
+                const target = event.target instanceof Element ? event.target.closest("[data-game-variant]") : null;
+                if (!target) {
+                    return;
+                }
+                setGameVariant(target.dataset.gameVariant);
+                setToolbarMenuOpen(null);
+                gameButton.focus();
+            });
+        }
+
+        document.addEventListener("click", (event) => {
+            if (!state.openToolbarMenu) {
+                return;
+            }
+            const target = event.target;
+            if (!(target instanceof Node)) {
+                setToolbarMenuOpen(null);
+                return;
+            }
+            const isInsideToolbarChoice = [countButton, countMenu, gameButton, gameMenu].some((element) => element && element.contains(target));
+            if (!isInsideToolbarChoice) {
+                setToolbarMenuOpen(null);
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && state.openToolbarMenu) {
+                setToolbarMenuOpen(null);
+            }
+        });
+
+        refreshToolbarControls();
     }
 
     function bindControls() {
@@ -1416,8 +1809,7 @@ function advanceActiveSlot(fromSlot) {
                 return;
             }
             if (type === "player") {
-                const playerIndex = Number(slot.dataset.playerIndex);
-                if (Number.isNaN(playerIndex) || playerIndex >= state.playersCount) {
+                if (!isSlotActiveForCurrentGame(slot)) {
                     return;
                 }
             }
@@ -1428,14 +1820,14 @@ function advanceActiveSlot(fromSlot) {
 
     function collectPlayersData() {
         const players = [];
+        const requiredHoleCards = getRequiredHoleCards();
         for (let i = 0; i < state.playersCount; i += 1) {
-            const slotA = state.slotByKey.get(`player-${i}-0`);
-            const slotB = state.slotByKey.get(`player-${i}-1`);
-            const cardIds = [slotA?.dataset.cardId, slotB?.dataset.cardId].filter(Boolean);
+            const slots = getPlayerCardSlots(i).slice(0, requiredHoleCards);
+            const cardIds = slots.map((slot) => slot?.dataset.cardId).filter(Boolean);
             const cards = cardIds.map((id) => getCardById(id));
             players.push({
                 index: i,
-                slots: [slotA, slotB],
+                slots,
                 cardIds,
                 cards
             });
@@ -1581,7 +1973,8 @@ function advanceActiveSlot(fromSlot) {
         });
 
         const isBoardComplete = boardCards.length === 5;
-        const allPlayersComplete = players.every((player) => player.cards.length === 2);
+        const requiredHoleCards = getRequiredHoleCards();
+        const allPlayersComplete = players.every((player) => player.cards.length === requiredHoleCards);
 
         if (elements.results) {
             elements.results.innerHTML = "";
@@ -1832,7 +2225,41 @@ function advanceActiveSlot(fromSlot) {
         return bestScore;
     }
 
+    function bestOmahaScoreForCards(holeCards, boardCards) {
+        if (!holeCards || !boardCards || holeCards.length < 2 || boardCards.length < 3) {
+            return -1;
+        }
+
+        const combo = bestHandScoreScratch.combo;
+        let bestScore = -1;
+
+        for (let h1 = 0; h1 < holeCards.length - 1; h1 += 1) {
+            combo[0] = holeCards[h1];
+            for (let h2 = h1 + 1; h2 < holeCards.length; h2 += 1) {
+                combo[1] = holeCards[h2];
+                for (let b1 = 0; b1 < boardCards.length - 2; b1 += 1) {
+                    combo[2] = boardCards[b1];
+                    for (let b2 = b1 + 1; b2 < boardCards.length - 1; b2 += 1) {
+                        combo[3] = boardCards[b2];
+                        for (let b3 = b2 + 1; b3 < boardCards.length; b3 += 1) {
+                            combo[4] = boardCards[b3];
+                            const score = computeHandScore(combo);
+                            if (score > bestScore) {
+                                bestScore = score;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestScore;
+    }
+
     function bestScoreForCards(holeCards, boardCards) {
+        if (isOmahaVariant()) {
+            return bestOmahaScoreForCards(holeCards, boardCards);
+        }
         const pool = scoreOnlyPoolScratch.pool;
         const poolLength = fillCardPool(holeCards, boardCards, pool);
         return bestHandScoreFromPool(pool, poolLength);
@@ -1840,6 +2267,7 @@ function advanceActiveSlot(fromSlot) {
 
     function calculateWinShares(players, boardCards, remainingCards) {
         const drawsNeeded = 5 - boardCards.length;
+        const requiredHoleCards = getRequiredHoleCards();
         const shares = new Array(players.length).fill(0);
         const winCounts = new Array(players.length).fill(0);
         const tieCounts = new Array(players.length).fill(0);
@@ -1849,7 +2277,7 @@ function advanceActiveSlot(fromSlot) {
             return { shares, winCounts, tieCounts, simulations };
         }
 
-        const missingHoleCounts = players.map((player) => Math.max(0, 2 - player.cards.length));
+        const missingHoleCounts = players.map((player) => Math.max(0, requiredHoleCards - player.cards.length));
         const totalMissingHoleCards = missingHoleCounts.reduce((total, value) => total + value, 0);
 
         if (remainingCards.length < drawsNeeded + totalMissingHoleCards) {
@@ -1863,7 +2291,7 @@ function advanceActiveSlot(fromSlot) {
 
             const evaluateBoard = (board) => {
                 const boardKey = board.map((card) => card.id).sort().join("");
-                const cacheKey = playerKey + '|' + boardKey;
+                const cacheKey = getActiveGameVariant().id + '|' + playerKey + '|' + boardKey;
                 let cachedResult = evaluationCache.get(cacheKey);
 
                 if (!cachedResult) {
@@ -1961,7 +2389,7 @@ function advanceActiveSlot(fromSlot) {
         }
 
         const drawBuffer = new Array(cardsNeededPerSimulation);
-        const playerHands = players.map(() => new Array(2));
+        const playerHands = players.map(() => new Array(requiredHoleCards));
         const boardBaseLength = boardCards.length;
         const boardBuffer = new Array(boardBaseLength + drawsNeeded);
 
@@ -1969,7 +2397,7 @@ function advanceActiveSlot(fromSlot) {
             boardBuffer[i] = boardCards[i];
         }
 
-        const iterations = PREFLOP_SIMULATIONS;
+        const iterations = isOmahaVariant() ? Math.min(PREFLOP_SIMULATIONS, 12000) : PREFLOP_SIMULATIONS;
 
         for (let iter = 0; iter < iterations; iter += 1) {
             for (let i = 0; i < cardsNeededPerSimulation; i += 1) {
@@ -2230,7 +2658,51 @@ function advanceActiveSlot(fromSlot) {
         elements.results.appendChild(footer);
     }
 
+    function bestOmahaHandForPlayer(holeCards, boardCards) {
+        if (!holeCards || !boardCards || holeCards.length < 2 || boardCards.length < 3) {
+            return null;
+        }
+
+        const combo = bestHandScoreScratch.combo;
+        let bestScore = -1;
+        let bestCards = null;
+
+        for (let h1 = 0; h1 < holeCards.length - 1; h1 += 1) {
+            combo[0] = holeCards[h1];
+            for (let h2 = h1 + 1; h2 < holeCards.length; h2 += 1) {
+                combo[1] = holeCards[h2];
+                for (let b1 = 0; b1 < boardCards.length - 2; b1 += 1) {
+                    combo[2] = boardCards[b1];
+                    for (let b2 = b1 + 1; b2 < boardCards.length - 1; b2 += 1) {
+                        combo[3] = boardCards[b2];
+                        for (let b3 = b2 + 1; b3 < boardCards.length; b3 += 1) {
+                            combo[4] = boardCards[b3];
+                            const score = computeHandScore(combo);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestCards = [combo[0], combo[1], combo[2], combo[3], combo[4]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!bestCards) {
+            return null;
+        }
+
+        const evaluation = evaluateFiveCards(bestCards);
+        evaluation.score = decodeHandScore(bestScore);
+        evaluation.scoreValue = bestScore;
+        evaluation.cards = bestCards;
+        return evaluation;
+    }
+
     function bestHandForPlayer(holeCards, boardCards) {
+        if (isOmahaVariant()) {
+            return bestOmahaHandForPlayer(holeCards, boardCards);
+        }
         const selectionScratch = bestHandSelectionScratch;
         const pool = selectionScratch.pool;
         const poolLength = fillCardPool(holeCards, boardCards, pool);
@@ -2593,6 +3065,10 @@ function advanceActiveSlot(fromSlot) {
             return;
         }
         if (normalized === "solver") {
+            if (isOmahaVariant()) {
+                showError("\u05e1\u05d5\u05dc\u05d1\u05e8 GTO \u05e0\u05ea\u05de\u05da \u05db\u05e8\u05d2\u05e2 \u05d1\u05d8\u05e7\u05e1\u05e1 \u05d4\u05d5\u05dc\u05d3\u05dd \u05d1\u05dc\u05d1\u05d3.");
+                return;
+            }
             cancelScheduledProbabilityUpdate();
             state.mode = "solver";
             state.isSolverPanelOpen = true;
@@ -2618,7 +3094,26 @@ function advanceActiveSlot(fromSlot) {
         }
         elements.modeToggle.addEventListener("click", () => {
             const targetView = state.mode === "equity" ? "solver" : "equity";
-            setActiveView(targetView);
+            setMode(targetView);
+        });
+    }
+
+    function bindToolbarActions() {
+        const buttons = Array.from(document.querySelectorAll("[data-toolbar-action]"));
+        buttons.forEach((button) => {
+            if (!(button instanceof HTMLButtonElement)) {
+                return;
+            }
+            button.addEventListener("click", () => {
+                const action = button.dataset.toolbarAction;
+                if (!action) {
+                    return;
+                }
+                const result = performSettingsMenuAction(action);
+                if (result && result.handled) {
+                    refreshSettingsMenu();
+                }
+            });
         });
     }
 
@@ -2792,7 +3287,7 @@ function advanceActiveSlot(fromSlot) {
                 clearAllSlots();
                 return { handled: true, shouldClose: true };
             case 'quick-reset':
-                setPlayersCount(MIN_PLAYERS);
+                setPlayersCount(DEFAULT_PLAYERS);
                 clearAllSlots();
                 refreshSettingsMenu();
                 return { handled: true, shouldClose: true };
@@ -2824,7 +3319,7 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function resetTableState() {
-        setPlayersCount(MIN_PLAYERS);
+        setPlayersCount(DEFAULT_PLAYERS);
         clearAllSlots();
         initializePlayerEconomy();
         state.isAutoAdvancePaused = false;
@@ -2879,6 +3374,14 @@ function advanceActiveSlot(fromSlot) {
         const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
         const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
         const padding = 16;
+
+        if (viewportWidth <= 720) {
+            overlay.dataset.placement = "mobile";
+            overlay.style.removeProperty("--deck-overlay-anchor");
+            overlay.style.left = "";
+            overlay.style.top = "";
+            return;
+        }
 
         const overlayWidth = overlayRect.width || overlay.scrollWidth || 0;
         const overlayHeight = overlayRect.height || overlay.scrollHeight || 0;
@@ -3053,6 +3556,10 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function handleLiveGameStartRequest() {
+        if (isOmahaVariant()) {
+            showError("\u05de\u05e9\u05d7\u05e7 \u05d7\u05d9 \u05e0\u05ea\u05de\u05da \u05db\u05e8\u05d2\u05e2 \u05d1\u05d8\u05e7\u05e1\u05e1 \u05d4\u05d5\u05dc\u05d3\u05dd \u05d1\u05dc\u05d1\u05d3.");
+            return;
+        }
         if (state.liveGame && state.liveGame.active) {
             updateLiveGameStatus("מתחיל יד חדשה...");
             startLiveGameHand();
@@ -3820,7 +4327,16 @@ function advanceActiveSlot(fromSlot) {
         return "equity";
     }
 
-    function setActiveView() {
+    function setActiveView(nextView = "equity") {
+        const normalized = normalizeViewName(nextView);
+        if (normalized === "solver") {
+            setMode("solver");
+            return;
+        }
+        if (state.mode !== "equity") {
+            setMode("equity");
+            return;
+        }
         if (state.activeView !== "equity") {
             state.activeView = "equity";
         }
@@ -3904,6 +4420,12 @@ function advanceActiveSlot(fromSlot) {
             if (!state.isSolverPanelOpen || state.mode !== "solver") {
                 return;
             }
+            const floatingToggleVisible = !elements.solverSettingsToggle.hidden
+                && window.getComputedStyle(elements.solverSettingsToggle).display !== "none"
+                && window.getComputedStyle(elements.solverSettingsToggle).visibility !== "hidden";
+            if (!floatingToggleVisible) {
+                return;
+            }
             const target = event.target;
             if (!target || !(target instanceof Node)) {
                 return;
@@ -3916,6 +4438,12 @@ function advanceActiveSlot(fromSlot) {
 
         document.addEventListener("keydown", (event) => {
             if (!state.isSolverPanelOpen || state.mode !== "solver") {
+                return;
+            }
+            const floatingToggleVisible = !elements.solverSettingsToggle.hidden
+                && window.getComputedStyle(elements.solverSettingsToggle).display !== "none"
+                && window.getComputedStyle(elements.solverSettingsToggle).visibility !== "hidden";
+            if (!floatingToggleVisible) {
                 return;
             }
             if (event.key === "Escape" || event.key === "Esc") {
@@ -4018,9 +4546,16 @@ function advanceActiveSlot(fromSlot) {
 
     function updateModeUI() {
         const isSolver = state.mode === "solver";
+        const isTexas = getActiveGameVariant().id === GAME_VARIANTS.texas.id;
         if (elements.modeToggle) {
+            elements.modeToggle.disabled = !isTexas;
             elements.modeToggle.setAttribute("aria-pressed", isSolver ? "true" : "false");
             elements.modeToggle.textContent = isSolver ? "\u05d7\u05d6\u05e8\u05d4 \u05dc\u05de\u05d7\u05e9\u05d1\u05d5\u05df \u05d4\u05e1\u05ea\u05d1\u05e8\u05d5\u05d9\u05d5\u05ea" : "\u05e2\u05d1\u05d5\u05e8 \u05dc\u05e1\u05d5\u05dc\u05d1\u05e8 GTO";
+            elements.modeToggle.title = isTexas ? "" : "\u05d4\u05e1\u05d5\u05dc\u05d1\u05e8 \u05e0\u05ea\u05de\u05da \u05db\u05e8\u05d2\u05e2 \u05d1\u05d8\u05e7\u05e1\u05e1 \u05d4\u05d5\u05dc\u05d3\u05dd.";
+        }
+        if (elements.liveGame) {
+            elements.liveGame.disabled = !isTexas;
+            elements.liveGame.title = isTexas ? "" : "\u05de\u05e9\u05d7\u05e7 \u05d7\u05d9 \u05e0\u05ea\u05de\u05da \u05db\u05e8\u05d2\u05e2 \u05d1\u05d8\u05e7\u05e1\u05e1 \u05d4\u05d5\u05dc\u05d3\u05dd.";
         }
         if (elements.controls) {
             elements.controls.classList.toggle("is-solver-mode", isSolver);
@@ -4033,7 +4568,7 @@ function advanceActiveSlot(fromSlot) {
             elements.solverControls.hidden = !isSolver;
         }
         if (isSolver) {
-            setSolverPanelOpen(state.isSolverPanelOpen);
+            setSolverPanelOpen(true);
         } else {
             setSolverPanelOpen(false);
         }
