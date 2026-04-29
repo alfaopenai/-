@@ -159,6 +159,17 @@
         "דילר / סמול בליינד",
         "ביג בליינד"
     ];
+    const SEAT_AVATARS = Object.freeze([
+        { icon: "A", colorA: "#f8c471", colorB: "#6b2f14" },
+        { icon: "K", colorA: "#60a5fa", colorB: "#111827" },
+        { icon: "Q", colorA: "#f472b6", colorB: "#4a102a" },
+        { icon: "J", colorA: "#a78bfa", colorB: "#26124a" },
+        { icon: "10", colorA: "#34d399", colorB: "#064e3b" },
+        { icon: "9", colorA: "#facc15", colorB: "#713f12" },
+        { icon: "8", colorA: "#fb7185", colorB: "#4c0519" },
+        { icon: "7", colorA: "#38bdf8", colorB: "#082f49" },
+        { icon: "6", colorA: "#c084fc", colorB: "#3b0764" }
+    ]);
 
 
     let probabilityUpdateTimer = null;
@@ -519,6 +530,14 @@
 
         probability.append(tieLine, winLine);
 
+        const avatarTheme = SEAT_AVATARS[index % SEAT_AVATARS.length];
+        const avatar = document.createElement("div");
+        avatar.className = "seat-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.style.setProperty("--seat-avatar-a", avatarTheme.colorA);
+        avatar.style.setProperty("--seat-avatar-b", avatarTheme.colorB);
+        avatar.textContent = avatarTheme.icon;
+
         const label = document.createElement("div");
         label.className = "seat-label";
         const labelName = document.createElement("span");
@@ -549,8 +568,9 @@
 
         const economyControls = createSeatEconomyControls(index);
 
-        seat.append(probability, label, cardsRow, betDisplay, economyControls.container);
+        seat.append(probability, avatar, cardsRow, label, betDisplay, economyControls.container);
         state.seatMeta[index] = {
+            avatar,
             label,
             positionEl: positionLabel,
             betDisplay,
