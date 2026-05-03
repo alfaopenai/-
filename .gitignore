@@ -12,8 +12,11 @@ __pycache__/
 backend/data/*.json
 backend/data/*.jsonl
 backend/data/*.png
+backend/data/*.sqlite
+backend/data/*.sqlite-*
 !backend/data/.gitkeep
 .venv/
+.playwright-mcp/
 
 # Environment files
 .env

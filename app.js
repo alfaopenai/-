@@ -165,6 +165,8 @@
     const GG_READER_CONFIDENCE_MIN = 0.75;
     const GG_READER_CONFIDENCE_DIRECT = 0.9;
     const GG_READER_HISTORY_LIMIT = 80;
+    const GG_READER_BROWSER_FPS = 3;
+    const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
 
 
     let probabilityUpdateTimer = null;
@@ -319,6 +321,15 @@
             pendingSnapshot: null,
             history: [],
             connection: null,
+            browserStream: null,
+            browserVideo: null,
+            browserCanvas: null,
+            browserCrop: null,
+            browserFrameTimer: null,
+            browserFrameInFlight: false,
+            frameTimes: [],
+            actualFps: 0,
+            lastProbabilityUpdateAt: 0,
             errors: [],
             potOverride: null,
             isHistoryOpen: false,
@@ -581,13 +592,19 @@
         betDisplay.className = 'seat-bet';
         betDisplay.setAttribute('aria-hidden', 'true');
 
+        const actionDisplay = document.createElement("div");
+        actionDisplay.className = "seat-live-action";
+        actionDisplay.hidden = true;
+        actionDisplay.setAttribute("aria-hidden", "true");
+
         const economyControls = createSeatEconomyControls(index);
 
-        seat.append(probability, cardsRow, label, betDisplay, economyControls.container);
+        seat.append(probability, cardsRow, label, actionDisplay, betDisplay, economyControls.container);
         state.seatMeta[index] = {
             label,
             nameEl: labelName,
             positionEl: positionLabel,
+            actionDisplay,
             betDisplay,
             economyInputs: economyControls.inputs,
             betButton: economyControls.betButton,
@@ -1566,6 +1583,8 @@ function advanceActiveSlot(fromSlot) {
         state.seats.forEach((seat, index) => {
             const isActive = index < state.playersCount;
             seat.classList.toggle("active", isActive);
+            seat.hidden = !isActive;
+            seat.setAttribute("aria-hidden", isActive ? "false" : "true");
             if (!isActive) {
                 clearPlayerSlots(index, { suppressUpdate: true });
             }
@@ -1655,7 +1674,9 @@ function advanceActiveSlot(fromSlot) {
             }
         }
 
-        scheduleImmediateProbabilityUpdate();
+        if (!state.deferProbabilityUpdate) {
+            scheduleImmediateProbabilityUpdate();
+        }
     }
 
     function setGameVariant(variantId) {
@@ -3350,7 +3371,16 @@ function advanceActiveSlot(fromSlot) {
         }
 
         let timeoutId = null;
+        let streamPromise = null;
+        let backendStarted = false;
+        const useBrowserCapture = shouldUseBrowserGgCapture();
         try {
+            if (useBrowserCapture) {
+                setGgReaderStatus("connecting", "בחר את חלון NLH 2-4 של GG...");
+                showError("בחר בחלון GG בחלון השיתוף של הדפדפן. אם בוחרים מסך מלא, ודא ש-GG גלוי.");
+                streamPromise = requestGgDisplayMedia();
+            }
+
             const monitorIndex = getGgMonitorIndex();
             const controller = new AbortController();
             timeoutId = window.setTimeout(() => controller.abort(), 2500);
@@ -3360,8 +3390,9 @@ function advanceActiveSlot(fromSlot) {
                 signal: controller.signal,
                 body: JSON.stringify({
                     monitorIndex,
-                    fps: 2,
-                    profile: "ggclub_9max"
+                    fps: GG_READER_BROWSER_FPS,
+                    profile: "ggclub_9max",
+                    captureMode: useBrowserCapture ? "browser" : "auto"
                 })
             });
 
@@ -3370,6 +3401,7 @@ function advanceActiveSlot(fromSlot) {
             }
 
             state.ggReader.running = true;
+            backendStarted = true;
             try {
                 const startStatus = await response.json();
                 if (startStatus && Number.isInteger(Number(startStatus.monitorIndex))) {
@@ -3384,11 +3416,27 @@ function advanceActiveSlot(fromSlot) {
             } catch (error) {
                 state.ggReader.errors.push(String(error && error.message ? error.message : error));
             }
-            connectGgReaderSocket();
+            if (useBrowserCapture) {
+                const stream = await streamPromise;
+                await startGgBrowserCapture(stream);
+            } else {
+                connectGgReaderSocket();
+            }
         } catch (error) {
             state.ggReader.running = false;
-            setGgReaderStatus("error", "שרת GG לא פעיל");
-            showError("שרת GG המקומי לא פועל. הפעל את backend על פורט 8787 או פתח עם ?ggMock=1 לבדיקה.");
+            if (streamPromise) {
+                streamPromise.then(stopGgMediaStream).catch(() => {});
+            }
+            if (error && (error.name === "NotAllowedError" || error.name === "AbortError")) {
+                setGgReaderStatus("idle", "שיתוף GG בוטל");
+                showError("שיתוף המסך בוטל. לחץ שוב ובחר את חלון GG.");
+            } else if (backendStarted && useBrowserCapture) {
+                setGgReaderStatus("error", "שיתוף GG לא זמין");
+                showError("הדפדפן לא הצליח להתחיל שיתוף מסך. לחץ שוב ובחר את חלון GG או פתח עם ?ggNative=1 לניסיון צילום מקומי.");
+            } else {
+                setGgReaderStatus("error", "שרת GG לא פעיל");
+                showError("שרת GG המקומי לא פועל. הפעל את backend על פורט 8787 או פתח עם ?ggMock=1 לבדיקה.");
+            }
             state.ggReader.errors.push(String(error && error.message ? error.message : error));
         } finally {
             if (timeoutId !== null) {
@@ -3401,6 +3449,7 @@ function advanceActiveSlot(fromSlot) {
         const connection = state.ggReader.connection;
         state.ggReader.running = false;
         state.ggReader.connection = null;
+        stopGgBrowserCapture();
         if (connection && connection.readyState <= WebSocket.OPEN) {
             connection.close();
         }
@@ -3415,6 +3464,213 @@ function advanceActiveSlot(fromSlot) {
         showError("קריאת GG הופסקה.");
     }
 
+    function shouldUseBrowserGgCapture() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("ggNative") === "1" || params.get("ggBrowser") === "0") {
+                return false;
+            }
+        } catch (error) {
+            // Keep the default browser capture path.
+        }
+        return Boolean(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+    }
+
+    function requestGgDisplayMedia() {
+        return navigator.mediaDevices.getDisplayMedia({
+            audio: false,
+            video: {
+                frameRate: { ideal: GG_READER_BROWSER_FPS, max: 5 },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            }
+        });
+    }
+
+    async function startGgBrowserCapture(stream) {
+        stopGgBrowserCapture();
+        const video = document.createElement("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.srcObject = stream;
+
+        state.ggReader.browserStream = stream;
+        state.ggReader.browserVideo = video;
+        state.ggReader.browserCanvas = state.ggReader.browserCanvas || document.createElement("canvas");
+
+        const endedHandler = () => {
+            if (state.ggReader.running) {
+                stopGgTableReader();
+            }
+        };
+        stream.getTracks().forEach((track) => track.addEventListener("ended", endedHandler, { once: true }));
+
+        await video.play();
+        if (!video.videoWidth || !video.videoHeight) {
+            await new Promise((resolve) => {
+                video.addEventListener("loadedmetadata", resolve, { once: true });
+            });
+        }
+        state.ggReader.browserCrop = await getGgBrowserCaptureCrop(video).catch(() => null);
+
+        state.ggReader.running = true;
+        setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
+        showError("קורא את שולחן GG 3 פעמים בשנייה.");
+        captureGgBrowserFrame();
+        state.ggReader.browserFrameTimer = window.setInterval(
+            captureGgBrowserFrame,
+            GG_READER_BROWSER_FRAME_INTERVAL_MS
+        );
+    }
+
+    function stopGgBrowserCapture() {
+        if (state.ggReader.browserFrameTimer) {
+            window.clearInterval(state.ggReader.browserFrameTimer);
+        }
+        state.ggReader.browserFrameTimer = null;
+        state.ggReader.browserFrameInFlight = false;
+        state.ggReader.browserCrop = null;
+        state.ggReader.frameTimes = [];
+        state.ggReader.actualFps = 0;
+        if (state.ggReader.browserVideo) {
+            state.ggReader.browserVideo.pause();
+            state.ggReader.browserVideo.srcObject = null;
+        }
+        state.ggReader.browserVideo = null;
+        if (state.ggReader.browserStream) {
+            stopGgMediaStream(state.ggReader.browserStream);
+        }
+        state.ggReader.browserStream = null;
+    }
+
+    function stopGgMediaStream(stream) {
+        if (!stream || typeof stream.getTracks !== "function") {
+            return;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+    }
+
+    async function getGgBrowserCaptureCrop(video) {
+        const [windowsResponse, monitorsResponse] = await Promise.all([
+            fetch(`${GG_READER_API_BASE}/api/gg-reader/windows`),
+            fetch(`${GG_READER_API_BASE}/api/gg-reader/monitors`)
+        ]);
+        if (!windowsResponse.ok || !monitorsResponse.ok) {
+            return null;
+        }
+        const windows = await windowsResponse.json();
+        const monitors = await monitorsResponse.json();
+        const ggWindow = Array.isArray(windows) ? windows[0] : null;
+        if (!ggWindow || !Array.isArray(monitors) || !monitors.length) {
+            return null;
+        }
+
+        const videoWidth = Number(video.videoWidth) || 0;
+        const videoHeight = Number(video.videoHeight) || 0;
+        const windowWidth = Number(ggWindow.width) || 0;
+        const windowHeight = Number(ggWindow.height) || 0;
+        if (!videoWidth || !videoHeight || !windowWidth || !windowHeight) {
+            return null;
+        }
+        if (videoWidth <= windowWidth * 1.35 && videoHeight <= windowHeight * 1.35) {
+            return null;
+        }
+
+        const monitor = monitors.find((item) => {
+            const left = Number(item.left) || 0;
+            const top = Number(item.top) || 0;
+            const width = Number(item.width) || 0;
+            const height = Number(item.height) || 0;
+            return Number(ggWindow.left) >= left
+                && Number(ggWindow.left) < left + width
+                && Number(ggWindow.top) >= top
+                && Number(ggWindow.top) < top + height;
+        }) || monitors[0];
+        const scaleX = videoWidth / Math.max(1, Number(monitor.width) || videoWidth);
+        const scaleY = videoHeight / Math.max(1, Number(monitor.height) || videoHeight);
+        const left = Math.max(0, Math.round((Number(ggWindow.left) - Number(monitor.left || 0)) * scaleX));
+        const top = Math.max(0, Math.round((Number(ggWindow.top) - Number(monitor.top || 0)) * scaleY));
+        const width = Math.min(videoWidth - left, Math.round(windowWidth * scaleX));
+        const height = Math.min(videoHeight - top, Math.round(windowHeight * scaleY));
+        if (width < 320 || height < 240) {
+            return null;
+        }
+        return { left, top, width, height };
+    }
+
+    async function captureGgBrowserFrame() {
+        const video = state.ggReader.browserVideo;
+        const canvas = state.ggReader.browserCanvas;
+        const crop = state.ggReader.browserCrop;
+        if (!state.ggReader.running || !video || !canvas || state.ggReader.browserFrameInFlight) {
+            return;
+        }
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
+            return;
+        }
+
+        state.ggReader.browserFrameInFlight = true;
+        let timeoutId = null;
+        try {
+            canvas.width = crop ? crop.width : video.videoWidth;
+            canvas.height = crop ? crop.height : video.videoHeight;
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            if (!context) {
+                throw new Error("Canvas context is not available");
+            }
+            if (crop) {
+                context.drawImage(video, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+            } else {
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            }
+            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+            if (!blob) {
+                throw new Error("Browser frame encoding failed");
+            }
+
+            const controller = new AbortController();
+            timeoutId = window.setTimeout(() => controller.abort(), 2200);
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/parse-frame`, {
+                method: "POST",
+                headers: { "Content-Type": blob.type || "image/jpeg" },
+                body: blob,
+                signal: controller.signal
+            });
+            if (!response.ok) {
+                throw new Error(`GG frame parse failed: ${response.status}`);
+            }
+            const payload = await response.json();
+            recordGgFrameTiming(performance.now());
+            handleGgReaderSocketPayload(payload);
+        } catch (error) {
+            setGgReaderStatus("warning", "פריים GG לא נקרא");
+            state.ggReader.errors.push(String(error && error.message ? error.message : error));
+            saveGgHistoryEvent({
+                type: "warning",
+                message: "פריים GG לא נקרא מהשיתוף"
+            });
+        } finally {
+            if (timeoutId !== null) {
+                window.clearTimeout(timeoutId);
+            }
+            state.ggReader.browserFrameInFlight = false;
+        }
+    }
+
+    function recordGgFrameTiming(now) {
+        const cutoff = now - 2000;
+        const frameTimes = state.ggReader.frameTimes || [];
+        frameTimes.push(now);
+        while (frameTimes.length && frameTimes[0] < cutoff) {
+            frameTimes.shift();
+        }
+        state.ggReader.frameTimes = frameTimes;
+        const spanSeconds = frameTimes.length > 1
+            ? Math.max(0.25, (frameTimes[frameTimes.length - 1] - frameTimes[0]) / 1000)
+            : 1;
+        state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, frameTimes.length / spanSeconds);
+    }
+
     function connectGgReaderSocket() {
         if (state.ggReader.connection) {
             state.ggReader.connection.close();
@@ -3426,7 +3682,7 @@ function advanceActiveSlot(fromSlot) {
         socket.addEventListener("open", () => {
             state.ggReader.running = true;
             setGgReaderStatus("running", "קורא GG...");
-            showError("קורא שולחן GG ממסך 2.");
+            showError("קורא שולחן GG מהחלון הפעיל או מהמסך שנבחר.");
         });
 
         socket.addEventListener("message", (event) => {
@@ -3463,8 +3719,9 @@ function advanceActiveSlot(fromSlot) {
         }
 
         if (payload.type === "status") {
+            const previousStatusText = state.ggReader.lastStatusText;
             setGgReaderStatus(payload.status || "waiting", payload.message || "ממתין ל-GG...");
-            if (payload.message) {
+            if (payload.message && payload.status !== "waiting") {
                 showError(payload.message);
             }
             if (payload.clearTable) {
@@ -3480,13 +3737,18 @@ function advanceActiveSlot(fromSlot) {
                 fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, { method: "POST" }).catch(() => {});
                 renderGgReaderStatus();
             }
-            saveGgHistoryEvent({
-                type: payload.status === "warning" ? "warning" : "reader_status",
-                message: payload.message || "סטטוס GG עודכן"
-            });
+            if (payload.status !== "waiting" || previousStatusText !== payload.message) {
+                saveGgHistoryEvent({
+                    type: payload.status === "warning" ? "warning" : "reader_status",
+                    message: payload.message || "סטטוס GG עודכן"
+                });
+            }
             return;
         }
 
+        if (payload.captureSource !== "browser") {
+            recordGgFrameTiming(performance.now());
+        }
         applyGgSnapshot(payload, { source: "socket" });
     }
 
@@ -3531,38 +3793,121 @@ function advanceActiveSlot(fromSlot) {
             return false;
         }
 
+        const normalizedSnapshot = normalizeGgSnapshotForUi(snapshot);
         const previousSnapshot = state.ggReader.lastSnapshot;
-        const seats = Array.isArray(snapshot.seats) ? snapshot.seats : [];
-        const board = Array.isArray(snapshot.board) ? snapshot.board : [];
+        const seats = Array.isArray(normalizedSnapshot.seats) ? normalizedSnapshot.seats : [];
+        const board = Array.isArray(normalizedSnapshot.board) ? normalizedSnapshot.board : [];
+        const activeSeatCount = Math.max(
+            MIN_PLAYERS,
+            Math.min(
+                MAX_PLAYERS,
+                Number(normalizedSnapshot.activePlayerCount) || seats.filter((seat) => seat && seat.active !== false).length || MIN_PLAYERS
+            )
+        );
 
         state.deferProbabilityUpdate = true;
-        setPlayersCount(MAX_PLAYERS);
+        setPlayersCount(activeSeatCount);
         state.deferProbabilityUpdate = true;
 
-        state.ggReader.potOverride = sanitizeEconomyValue(Number(snapshot.pot) || 0);
+        clearGgInactiveUiSeats(activeSeatCount);
+        state.ggReader.potOverride = sanitizeEconomyValue(Number(normalizedSnapshot.pot) || 0);
         applyGgBoardSnapshot(board);
         seats.forEach((seat) => applyGgSeatSnapshot(seat));
 
-        const dealerIndex = Number(snapshot.dealerSeatIndex);
+        const dealerIndex = Number(normalizedSnapshot.dealerSeatIndex);
         if (Number.isInteger(dealerIndex) && dealerIndex >= 0 && dealerIndex < MAX_PLAYERS) {
             setDealerSeatIndex(dealerIndex);
         }
-        applyGgPositionLabels(snapshot);
+        applyGgPositionLabels(normalizedSnapshot);
 
         state.deferProbabilityUpdate = false;
-        state.ggReader.lastSnapshot = snapshot;
+        state.ggReader.lastSnapshot = normalizedSnapshot;
         syncPlayerEconomyInputs();
         updateTablePotDisplay();
         updateSeatStates();
-        applyGgPositionLabels(snapshot);
+        applyGgPositionLabels(normalizedSnapshot);
         ensureActiveSlot("player");
-        scheduleImmediateProbabilityUpdate();
+        scheduleGgProbabilityUpdate();
         if (options.source !== "mock") {
             setGgReaderStatus("running", "קורא GG...");
         }
         renderGgReaderStatus();
-        recordGgSnapshotDiff(previousSnapshot, snapshot, options);
+        recordGgSnapshotDiff(previousSnapshot, normalizedSnapshot, options);
         return true;
+    }
+
+    function scheduleGgProbabilityUpdate() {
+        const now = typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        if (now - Number(state.ggReader.lastProbabilityUpdateAt || 0) < 1200) {
+            return;
+        }
+        state.ggReader.lastProbabilityUpdateAt = now;
+        scheduleImmediateProbabilityUpdate();
+    }
+
+    function normalizeGgSnapshotForUi(snapshot) {
+        const rawSeats = Array.isArray(snapshot.seats) ? snapshot.seats : [];
+        const activeSeats = rawSeats
+            .filter((seat) => seat && seat.active !== false && Number.isInteger(Number(seat.physicalSeatIndex)))
+            .sort((left, right) => Number(left.physicalSeatIndex) - Number(right.physicalSeatIndex));
+
+        if (!activeSeats.length) {
+            return {
+                ...snapshot,
+                seats: [],
+                activePlayerCount: 0
+            };
+        }
+
+        const physicalToCompact = new Map();
+        const compactSeats = activeSeats.slice(0, MAX_PLAYERS).map((seat, compactIndex) => {
+            const physicalIndex = Number(seat.physicalSeatIndex);
+            physicalToCompact.set(physicalIndex, compactIndex);
+            return {
+                ...seat,
+                sourcePhysicalSeatIndex: physicalIndex,
+                physicalSeatIndex: compactIndex,
+                active: true
+            };
+        });
+
+        const remapIndex = (value, fallback = 0) => {
+            const physicalIndex = Number(value);
+            return physicalToCompact.has(physicalIndex) ? physicalToCompact.get(physicalIndex) : fallback;
+        };
+
+        return {
+            ...snapshot,
+            seats: compactSeats,
+            dealerSeatIndex: remapIndex(snapshot.dealerSeatIndex, 0),
+            heroSeatIndex: snapshot.heroSeatIndex === null || snapshot.heroSeatIndex === undefined
+                ? null
+                : remapIndex(snapshot.heroSeatIndex, null),
+            activePlayerCount: compactSeats.length
+        };
+    }
+
+    function clearGgInactiveUiSeats(activeSeatCount) {
+        for (let index = activeSeatCount; index < MAX_PLAYERS; index += 1) {
+            clearPlayerSlots(index, { suppressUpdate: true });
+            state.playerEconomy[index] = createDefaultEconomy();
+            const seat = state.seats[index];
+            if (seat) {
+                seat.classList.remove("seat--gg-empty", "seat--gg-hero", "seat--gg-folded");
+            }
+            const meta = state.seatMeta[index];
+            if (meta && meta.nameEl) {
+                meta.nameEl.textContent = `שחקן ${index + 1}`;
+            }
+            if (meta && meta.positionEl) {
+                meta.positionEl.textContent = "";
+                meta.label?.classList.remove("has-position");
+            }
+            updateGgSeatActionDisplay(index, null);
+            updateSeatBetDisplay(index);
+        }
     }
 
     function clearGgImportedSnapshot() {
@@ -3581,12 +3926,13 @@ function advanceActiveSlot(fromSlot) {
             state.playerEconomy[index] = createDefaultEconomy();
             const seat = state.seats[index];
             if (seat) {
-                seat.classList.remove("seat--gg-empty", "seat--gg-hero");
+                seat.classList.remove("seat--gg-empty", "seat--gg-hero", "seat--gg-folded");
             }
             const meta = state.seatMeta[index];
             if (meta && meta.nameEl) {
                 meta.nameEl.textContent = `שחקן ${index + 1}`;
             }
+            updateGgSeatActionDisplay(index, null);
             updateSeatBetDisplay(index);
         }
 
@@ -3617,9 +3963,11 @@ function advanceActiveSlot(fromSlot) {
         const seatEl = state.seats[index];
         const meta = state.seatMeta[index];
         const isActive = seatSnapshot.active !== false;
+        const isFolded = seatSnapshot.status === "folded" || seatSnapshot.action === "fold";
         if (seatEl) {
             seatEl.classList.toggle("seat--gg-empty", !isActive);
             seatEl.classList.toggle("seat--gg-hero", Boolean(seatSnapshot.isHero));
+            seatEl.classList.toggle("seat--gg-folded", Boolean(isFolded));
         }
         if (meta && meta.nameEl) {
             meta.nameEl.textContent = isActive && seatSnapshot.name
@@ -3629,12 +3977,21 @@ function advanceActiveSlot(fromSlot) {
 
         const economy = ensurePlayerEconomy(index);
         if (isActive) {
-            if (shouldApplyGgField(seatSnapshot.stackConfidence ?? seatSnapshot.confidence, seatSnapshot.stack)) {
+            const hasStackConfidence = Object.prototype.hasOwnProperty.call(seatSnapshot, "stackConfidence");
+            const stackConfidence = seatSnapshot.stackConfidence ?? seatSnapshot.confidence;
+            if (shouldApplyGgField(stackConfidence, seatSnapshot.stack)) {
                 economy.stack = sanitizeEconomyValue(Number(seatSnapshot.stack) || 0);
+            } else if (hasStackConfidence && Number(stackConfidence) === 0 && Number(seatSnapshot.stack || 0) === 0) {
+                economy.stack = 0;
             }
-            if (shouldApplyGgField(seatSnapshot.betConfidence ?? seatSnapshot.confidence, seatSnapshot.currentBet)) {
+            const hasBetConfidence = Object.prototype.hasOwnProperty.call(seatSnapshot, "betConfidence");
+            const betConfidence = seatSnapshot.betConfidence ?? seatSnapshot.confidence;
+            if (shouldApplyGgField(betConfidence, seatSnapshot.currentBet)) {
                 economy.pendingBet = 0;
                 economy.committedBet = sanitizeEconomyValue(Number(seatSnapshot.currentBet) || Number(seatSnapshot.committed) || 0);
+            } else if (hasBetConfidence && Number(betConfidence) === 0 && Number(seatSnapshot.currentBet || 0) === 0) {
+                economy.pendingBet = 0;
+                economy.committedBet = 0;
             }
         } else {
             economy.stack = 0;
@@ -3646,10 +4003,51 @@ function advanceActiveSlot(fromSlot) {
             const cardSnapshot = Array.isArray(seatSnapshot.holeCards)
                 ? seatSnapshot.holeCards[cardIndex]
                 : null;
-            applyGgCardSnapshotToSlot(isActive ? cardSnapshot : null, slot);
+            applyGgCardSnapshotToSlot(isActive && !isFolded ? cardSnapshot : null, slot);
         });
 
+        updateGgSeatActionDisplay(index, seatSnapshot);
         updateSeatBetDisplay(index);
+    }
+
+    function updateGgSeatActionDisplay(index, seatSnapshot) {
+        const meta = state.seatMeta[index];
+        if (!meta || !meta.actionDisplay) {
+            return;
+        }
+        const display = meta.actionDisplay;
+        const action = seatSnapshot && seatSnapshot.active !== false
+            ? String(seatSnapshot.action || "none")
+            : "none";
+        if (!action || action === "none") {
+            display.hidden = true;
+            display.textContent = "";
+            display.setAttribute("aria-hidden", "true");
+            display.className = "seat-live-action";
+            return;
+        }
+
+        const amount = Number(seatSnapshot.actionAmount || seatSnapshot.currentBet || 0);
+        const label = getGgActionLabel(action);
+        display.textContent = amount > 0 && ["bet", "raise", "call", "all-in"].includes(action)
+            ? `${label} ${formatChipAmount(amount)} BB`
+            : label;
+        display.hidden = false;
+        display.setAttribute("aria-hidden", "false");
+        display.className = `seat-live-action seat-live-action--${action.replace(/[^a-z-]/g, "")}`;
+    }
+
+    function getGgActionLabel(action) {
+        const labels = {
+            check: "צ'ק",
+            call: "קול",
+            bet: "הימור",
+            raise: "רייז",
+            fold: "פולד",
+            "all-in": "אול אין",
+            waiting: "ממתין"
+        };
+        return labels[action] || action;
     }
 
     function applyGgCardSnapshotToSlot(cardSnapshot, slot) {
@@ -3777,6 +4175,9 @@ function advanceActiveSlot(fromSlot) {
             seat.name,
             seat.stack,
             seat.currentBet,
+            seat.position,
+            seat.action,
+            seat.status,
             (Array.isArray(seat.holeCards) ? seat.holeCards : []).map((card) => card.hidden ? "X" : getGgCardId(card)).join("/")
         ].join(":")).join("|");
         const boardPart = (Array.isArray(snapshot.board) ? snapshot.board : []).map(getGgCardId).join("/");
@@ -3820,6 +4221,16 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function recordGgSnapshotDiff(previousSnapshot, snapshot, options = {}) {
+        if (Array.isArray(snapshot.events) && snapshot.events.length) {
+            snapshot.events.forEach((event) => {
+                saveGgHistoryEvent({
+                    type: event.type || "event",
+                    message: event.message || "אירוע GG",
+                    source: options.source || "gg"
+                });
+            });
+            return;
+        }
         if (!previousSnapshot) {
             saveGgHistoryEvent({
                 type: "hand_started",
@@ -3877,6 +4288,18 @@ function advanceActiveSlot(fromSlot) {
                     message: `${seat.name || `שחקן ${index + 1}`}: הימור ${formatChipAmount(Number(seat.currentBet) || 0)}`
                 });
             }
+            if (previous && previous.action !== seat.action && seat.action && seat.action !== "none") {
+                saveGgHistoryEvent({
+                    type: "player_action",
+                    message: `${seat.name || `שחקן ${index + 1}`}: ${getGgActionLabel(seat.action)}`
+                });
+            }
+            if (previous && previous.status !== seat.status && seat.status === "folded") {
+                saveGgHistoryEvent({
+                    type: "player_folded",
+                    message: `${seat.name || `שחקן ${index + 1}`}: פולד`
+                });
+            }
         });
     }
 
@@ -3905,7 +4328,15 @@ function advanceActiveSlot(fromSlot) {
             elements.ggReaderStatus.dataset.status = state.ggReader.status || "idle";
         }
         if (elements.ggReaderStatusText) {
-            elements.ggReaderStatusText.textContent = state.ggReader.lastStatusText || "GG מנותק";
+            const parts = [state.ggReader.lastStatusText || "GG מנותק"];
+            if (state.ggReader.running) {
+                parts.push(`${GG_READER_BROWSER_FPS}fps`);
+            }
+            const activeCount = Number(state.ggReader.lastSnapshot?.activePlayerCount);
+            if (Number.isInteger(activeCount) && activeCount > 0) {
+                parts.push(`${activeCount} שחקנים`);
+            }
+            elements.ggReaderStatusText.textContent = parts.join(" · ");
         }
         if (elements.ggReaderConfidence) {
             const confidence = Number(state.ggReader.lastSnapshot?.confidence);

@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 
 Street = Literal["preflop", "flop", "turn", "river", "showdown", "unknown"]
+SeatAction = Literal["none", "check", "call", "bet", "raise", "fold", "all-in", "waiting"]
+SeatStatus = Literal["empty", "active", "folded", "sitting_out", "unknown"]
 
 
 class GgReaderStartRequest(BaseModel):
@@ -13,6 +15,7 @@ class GgReaderStartRequest(BaseModel):
     fps: float = Field(default=2, ge=0.2, le=10)
     profile: str = "ggclub_9max"
     debug: bool = False
+    captureMode: Literal["auto", "window", "monitor", "browser"] = "auto"
 
 
 class GgCard(BaseModel):
@@ -28,10 +31,17 @@ class GgSeat(BaseModel):
     physicalSeatIndex: int
     active: bool = True
     name: str | None = None
+    nameConfidence: float | None = Field(default=None, ge=0, le=1)
     stack: float = 0
+    stackConfidence: float | None = Field(default=None, ge=0, le=1)
     currentBet: float = 0
+    betConfidence: float | None = Field(default=None, ge=0, le=1)
     committed: float = 0
     position: str | None = None
+    action: SeatAction = "none"
+    actionAmount: float = 0
+    actionConfidence: float | None = Field(default=None, ge=0, le=1)
+    status: SeatStatus = "active"
     isDealer: bool = False
     isHero: bool = False
     holeCards: list[GgCard] = Field(default_factory=list)
@@ -45,6 +55,8 @@ class GgTableSnapshot(BaseModel):
     handId: str | None = None
     street: Street = "unknown"
     pot: float = 0
+    activePlayerCount: int = 0
+    bigBlind: float = 1
     dealerSeatIndex: int = 0
     heroSeatIndex: int | None = None
     board: list[GgCard] = Field(default_factory=list)
@@ -59,3 +71,6 @@ class GgReaderStatus(BaseModel):
     profile: str = "ggclub_9max"
     message: str = "idle"
     lastSnapshotAt: int | None = None
+    framesRead: int = 0
+    lastFrameMs: float | None = None
+    captureSource: str | None = None

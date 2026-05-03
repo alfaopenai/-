@@ -6,3 +6,4 @@ numpy
 pillow
 pytesseract
 pydantic
+windows-capture

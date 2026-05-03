@@ -6217,8 +6217,65 @@ body {
     display: none;
 }
 
-.seat-bet {
+.seat-live-action {
     order: 4;
+    z-index: 9;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    min-height: 24px;
+    max-width: calc(100% + 28px);
+    padding: 4px 9px;
+    margin-top: -8px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background: #111827;
+    color: #f8fafc;
+    font-size: clamp(0.62rem, 0.8vw, 0.78rem);
+    font-weight: 900;
+    line-height: 1;
+    white-space: nowrap;
+    box-shadow: 0 8px 14px rgba(0, 0, 0, 0.34);
+}
+
+.seat-live-action[hidden] {
+    display: none !important;
+}
+
+.seat-live-action--bet,
+.seat-live-action--raise,
+.seat-live-action--call,
+.seat-live-action--all-in {
+    background: #facc15;
+    border-color: #f59e0b;
+    color: #111827;
+}
+
+.seat-live-action--check,
+.seat-live-action--waiting {
+    background: #0f766e;
+    border-color: #2dd4bf;
+    color: #ecfeff;
+}
+
+.seat-live-action--fold {
+    background: #991b1b;
+    border-color: #fca5a5;
+    color: #fee2e2;
+}
+
+.seat--gg-folded .card-row {
+    opacity: 0.22;
+}
+
+.seat--gg-folded .seat-label,
+.seat--gg-folded .seat-economy {
+    filter: grayscale(0.7);
+}
+
+.seat-bet {
+    order: 5;
     z-index: 8;
     margin-top: -8px;
     background: rgba(3, 7, 18, 0.88);

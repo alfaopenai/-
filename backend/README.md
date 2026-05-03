@@ -54,13 +54,46 @@ Click `קרא שולחן GG`. This uses `mock/gg_snapshot_example.json`.
 
 ## Live Screen Check
 
-The backend must run in the same Windows session where GG Club is visible.
-If GG Club is open on your local computer but this backend runs inside RDP/VPS, the backend cannot see the local screen.
+The recommended live path is browser capture:
+
+1. Open `http://127.0.0.1:7000/`.
+2. Click `קרא שולחן GG`.
+3. In the browser sharing dialog, choose the `NLH` / `PLO` GG table window. If you choose the full screen, keep the GG window visible.
+
+The browser sends cropped frames to:
+
+```text
+POST http://127.0.0.1:8787/api/gg-reader/parse-frame
+```
+
+The frontend samples at 3 FPS. Hidden opponent cards are displayed as `X` and are not inserted into the deck.
+
+Every accepted snapshot is stored in SQLite:
+
+```text
+backend/data/gg_history.sqlite
+GET http://127.0.0.1:8787/api/gg-reader/hands
+GET http://127.0.0.1:8787/api/gg-reader/history
+```
+
+Native backend capture is still available with:
+
+```text
+http://127.0.0.1:7000/?ggNative=1
+```
+
+Native capture must run in the same Windows session where GG Club is visible. If GG Club is open on your local computer but this backend runs inside RDP/VPS, the backend cannot see the local screen.
 
 List monitors:
 
 ```text
 GET http://127.0.0.1:8787/api/gg-reader/monitors
+```
+
+List detected GG windows:
+
+```text
+GET http://127.0.0.1:8787/api/gg-reader/windows
 ```
 
 Select a monitor from the UI dropdown or use:
@@ -72,7 +105,9 @@ http://127.0.0.1:7000/?ggMonitor=1
 Capture a debug frame:
 
 ```text
-GET http://127.0.0.1:8787/api/gg-reader/debug/frame
+GET http://127.0.0.1:8787/api/gg-reader/debug/frame?source=auto
+GET http://127.0.0.1:8787/api/gg-reader/debug/frame?source=window
+GET http://127.0.0.1:8787/api/gg-reader/debug/frame?source=monitor
 GET http://127.0.0.1:8787/api/gg-reader/debug/frame-info
 ```
 
@@ -84,8 +119,11 @@ backend/data/debug_last_frame.png
 
 ## Current Limitations
 
-- OCR and template matching are scaffolded, not complete.
+- Browser capture is the default live mode because Windows may block direct capture of game windows.
+- Auto native mode still prefers the visible ClubGG table window (`NLH` / `PLO`) through Windows Graphics Capture, then falls back to monitor capture.
+- The live reader is tuned for 3 FPS; OCR runs from cache/background work so card/seat updates do not wait on Tesseract every frame.
+- Board-card recognition is implemented for large GG card faces.
+- OCR for names and stacks is still imperfect and depends on Tesseract being installed.
 - Calibration profiles are placeholders until verified against real GG screenshots.
 - Hidden cards can be represented as `X`.
-- Visible-card recognition requires templates in `backend/gg_reader/templates/`.
 - A weak/unparsed frame must not clear the table; the frontend preserves the last valid snapshot.
