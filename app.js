@@ -3299,6 +3299,9 @@ function advanceActiveSlot(fromSlot) {
                 if (!action) {
                     return;
                 }
+                if (action === "read-gg-table") {
+                    return;
+                }
                 const result = performSettingsMenuAction(action);
                 if (result && result.handled) {
                     refreshSettingsMenu();
@@ -3309,6 +3312,13 @@ function advanceActiveSlot(fromSlot) {
 
     function bindGgReaderControls() {
         populateGgMonitorOptions();
+
+        if (elements.readGgTable) {
+            elements.readGgTable.addEventListener("click", (event) => {
+                event.preventDefault();
+                toggleGgTableReader();
+            });
+        }
 
         if (elements.ggReaderMonitor) {
             elements.ggReaderMonitor.value = String(getGgMonitorIndex());
