@@ -16,12 +16,15 @@ from backend.gg_reader.fast_reader import FastGgReader
 
 
 def main() -> int:
-    fixture = ROOT / "backend" / "data" / "debug_last_frame.png"
+    fixture = ROOT / "tests" / "fixtures" / "gg_table_preflop.png"
     frame = cv2.imread(str(fixture), cv2.IMREAD_UNCHANGED)
     if frame is None:
         raise SystemExit(f"Could not load fixture: {fixture}")
 
     reader = FastGgReader()
+    for _index in range(30):
+        reader.parse(frame)
+
     times_ms: list[float] = []
     snapshot = None
     for _index in range(300):
@@ -31,20 +34,31 @@ def main() -> int:
 
     ordered = sorted(times_ms)
     p95 = ordered[int(0.95 * (len(ordered) - 1))]
+    avg = statistics.mean(times_ms)
+    metrics = reader.get_metrics()
     print(
         "frames=300 "
-        f"first={times_ms[0]:.2f}ms "
-        f"avg={statistics.mean(times_ms):.2f}ms "
-        f"p95={p95:.2f}ms "
-        f"max={max(times_ms):.2f}ms"
+        "warmup=30 "
+        f"avgParseMs={avg:.2f} "
+        f"p95ParseMs={p95:.2f} "
+        f"maxParseMs={max(times_ms):.2f} "
+        f"actualReaderFps={metrics.get('actualReaderFps', 0)} "
+        f"fieldsUpdated={metrics.get('fieldsUpdated', 0)} "
+        f"fieldsReused={metrics.get('fieldsReused', 0)} "
+        f"changedRois={metrics.get('changedRois', 0)} "
+        f"ocrPending={metrics.get('ocrPending', 0)}"
     )
+    if avg >= 100 or p95 >= 180 or max(times_ms) >= 333:
+        raise SystemExit(
+            f"Benchmark failed: avg={avg:.2f}ms p95={p95:.2f}ms max={max(times_ms):.2f}ms"
+        )
     if snapshot is not None:
         print(
             f"snapshot active={snapshot.activePlayerCount} "
             f"street={snapshot.street} pot={snapshot.pot} "
             f"dealer={snapshot.dealerSeatIndex} confidence={snapshot.confidence:.3f}"
         )
-    print(reader.get_metrics())
+    print(metrics)
     return 0
 
 

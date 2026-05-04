@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .fast_amount import amount_text_signal, read_amount_fast
+from .fast_amount import amount_text_signal, read_amount_fast, read_amount_tight_ocr
 from .fixed_profile import FixedGgProfile, FixedSeatProfile, get_fixed_profile
 from .models import GgCard, GgSeat, GgTableSnapshot
 from .ocr import normalize_amount, read_amount, read_card, read_name
@@ -23,7 +23,7 @@ CARD_CHANGE_THRESHOLD = 3.5
 TEXT_CHANGE_THRESHOLD = 4.0
 DEALER_HOLD_SECONDS = 1.5
 BAD_FRAME_HOLD_SECONDS = 1.2
-MAX_PENDING_OCR = 3
+MAX_PENDING_OCR = 1
 
 
 @dataclass
@@ -309,9 +309,25 @@ class FastGgReader:
 
         stack_crop = crop_norm(frame, seat_profile.stack)
         bet_crop = crop_norm(frame, seat_profile.bet)
+        active_crop = crop_norm(frame, seat_profile.active)
         stack_signal = _cyan_signal(stack_crop)
-        active_signal = _active_signal(crop_norm(frame, seat_profile.active))
-        likely_active = bool(hole_cards or stack_signal > 0.012 or active_signal > 0.10)
+        stack_text_signal = amount_text_signal(stack_crop)
+        bet_text_signal = amount_text_signal(bet_crop)
+        has_two_hole_cards = len(hole_cards) >= 2
+        has_clear_stack_text = stack_text_signal >= 0.025
+        has_clear_bet_text = bet_text_signal >= 0.020
+        has_clear_cyan_stack = stack_signal >= 0.025
+        empty_take_seat = _looks_like_empty_take_seat(
+            active_crop,
+            has_two_hole_cards=has_two_hole_cards,
+            stack_signal=stack_signal,
+            stack_text_signal=stack_text_signal,
+            bet_text_signal=bet_text_signal,
+        )
+        likely_active = bool(
+            not empty_take_seat
+            and (has_two_hole_cards or has_clear_stack_text or has_clear_bet_text or has_clear_cyan_stack)
+        )
 
         stack = 0.0
         stack_confidence = 0.0
@@ -345,12 +361,17 @@ class FastGgReader:
                 min_confidence=0.18,
             )
 
+        name_with_money = bool(name_confidence >= 0.25 and (stack_confidence >= 0.50 or bet_confidence >= 0.50))
         active = bool(
-            likely_active
-            or stack_confidence >= 0.55
-            or bet_confidence >= 0.55
-            or stack > 0
-            or current_bet > 0
+            not empty_take_seat
+            and (
+                likely_active
+                or name_with_money
+                or stack_confidence >= 0.55
+                or bet_confidence >= 0.55
+                or stack > 0
+                or current_bet > 0
+            )
         )
         if active and not name:
             name = f"GG Seat {seat_profile.index + 1}"
@@ -359,8 +380,9 @@ class FastGgReader:
         stack = stack if stack_confidence >= 0.50 else 0.0
         action = "bet" if current_bet > 0 else "none"
         confidence = _estimate_confidence([
-            min(0.95, active_signal),
             min(0.90, stack_signal * 16),
+            min(0.90, stack_text_signal * 10),
+            min(0.90, bet_text_signal * 12),
             stack_confidence,
             bet_confidence,
             name_confidence,
@@ -368,6 +390,8 @@ class FastGgReader:
         ])
         if active and confidence < 0.72:
             confidence = 0.72
+        if empty_take_seat:
+            metrics["emptyTakeSeats"] = int(metrics.get("emptyTakeSeats") or 0) + 1
 
         return GgSeat(
             physicalSeatIndex=seat_profile.index,
@@ -438,10 +462,14 @@ class FastGgReader:
         changed = roi_changed(entry.image_hash, new_hash, TEXT_CHANGE_THRESHOLD) if entry.image_hash is not None else True
         if changed:
             self._mark_changed(metrics, key)
+        if entry.future is not None:
+            metrics["fieldsReused"] += 1
+            entry.image_hash = new_hash
+            return float(entry.value or 0.0), float(entry.confidence or 0.0), str(entry.raw or "")
         retry_window_due = (
             entry.future is None
             and float(entry.confidence or 0.0) < 0.50
-            and now - float(entry.requested_at or 0.0) >= max(2.0, stale_seconds)
+            and now - float(entry.requested_at or 0.0) >= max(5.0, stale_seconds)
         )
         if not changed and entry.known and not retry_window_due:
             metrics["fieldsReused"] += 1
@@ -465,22 +493,20 @@ class FastGgReader:
         retry_due = retry_window_due and signal >= 0.008
         should_refresh = changed or not entry.known or retry_due
         if should_refresh:
-            use_template_reader = key == "pot"
-            if use_template_reader:
-                fast_started_at = time.perf_counter()
-                amount, confidence, raw = read_amount_fast(crop)
-                metrics["ocrMs"] += round((time.perf_counter() - fast_started_at) * 1000, 2)
-            else:
-                amount, confidence, raw = 0.0, 0.0, ""
-            if amount > 0 and confidence >= 0.80:
+            fast_started_at = time.perf_counter()
+            amount, confidence, raw = read_amount_fast(crop)
+            metrics["ocrMs"] += round((time.perf_counter() - fast_started_at) * 1000, 2)
+            fast_accept_confidence = 0.80 if key == "pot" else 0.88
+            if amount > 0 and confidence >= fast_accept_confidence:
                 entry.value = amount
                 entry.confidence = confidence
                 entry.raw = raw
                 entry.known = True
                 entry.completed_at = now
                 metrics["fieldsUpdated"] += 1
-            elif entry.future is None and self._can_queue_ocr(now):
-                entry.future = self._executor.submit(read_amount, crop.copy())
+            elif entry.future is None and self._can_queue_ocr(now, priority=key == "pot"):
+                reader = _read_pot_amount if key == "pot" else read_amount
+                entry.future = self._executor.submit(reader, crop.copy())
                 entry.requested_at = now
                 metrics["ocrQueued"] += 1
                 if not entry.known:
@@ -490,6 +516,10 @@ class FastGgReader:
                 else:
                     metrics["fieldsReused"] += 1
             else:
+                if not entry.known:
+                    entry.known = True
+                    entry.completed_at = now
+                    entry.requested_at = now
                 metrics["fieldsReused"] += 1
         else:
             metrics["fieldsReused"] += 1
@@ -633,15 +663,17 @@ class FastGgReader:
         span = max(0.25, self._parse_timestamps[-1] - self._parse_timestamps[0])
         return round((len(self._parse_timestamps) - 1) / span, 3)
 
-    def _can_queue_ocr(self, now: float) -> bool:
+    def _can_queue_ocr(self, now: float, *, priority: bool = False) -> bool:
         if self._pending_ocr_count() >= MAX_PENDING_OCR:
             return False
+        if priority:
+            return True
         if not self._parse_timestamps:
             return False
         current_fps = self._actual_fps()
         if current_fps and current_fps > 4.5:
             return False
-        return now - self._parse_timestamps[-1] >= 0.25
+        return True
 
     def _pending_ocr_count(self) -> int:
         return sum(1 for entry in self._fields.values() if entry.future is not None)
@@ -671,6 +703,13 @@ def _cyan_signal(image: np.ndarray) -> float:
     return float(mask.mean())
 
 
+def _read_pot_amount(image: np.ndarray) -> tuple[float, float, str]:
+    amount, confidence, raw = read_amount_tight_ocr(image, squash_bb_suffix=True)
+    if amount > 0 and confidence > 0:
+        return amount, confidence, raw
+    return read_amount(image)
+
+
 def _active_signal(image: np.ndarray) -> float:
     if image.size == 0 or image.ndim < 3:
         return 0.0
@@ -679,6 +718,28 @@ def _active_signal(image: np.ndarray) -> float:
     bright = float((gray > 120).mean())
     cyan = _cyan_signal(image)
     return min(1.0, bright * 1.5 + cyan * 8)
+
+
+def _looks_like_empty_take_seat(
+    image: np.ndarray,
+    *,
+    has_two_hole_cards: bool,
+    stack_signal: float,
+    stack_text_signal: float,
+    bet_text_signal: float,
+) -> bool:
+    if has_two_hole_cards or stack_signal >= 0.025 or stack_text_signal >= 0.025 or bet_text_signal >= 0.020:
+        return False
+    if image.size == 0 or image.ndim < 3:
+        return True
+    channels = image[:, :, :3].astype(np.int16)
+    blue = channels[:, :, 0]
+    green = channels[:, :, 1]
+    red = channels[:, :, 2]
+    white_ratio = float(((red > 165) & (green > 165) & (blue > 165)).mean())
+    gray = np.mean(channels, axis=2)
+    bright_ratio = float((gray > 115).mean())
+    return white_ratio >= 0.006 or bright_ratio >= 0.035
 
 
 def _dealer_signal(image: np.ndarray) -> float:

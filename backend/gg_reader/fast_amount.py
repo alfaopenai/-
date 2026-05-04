@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .ocr import normalize_amount
+from .ocr import _configure_tesseract, normalize_amount
 
 
 FAST_AMOUNT_MIN_CONFIDENCE = 0.74
@@ -45,6 +45,43 @@ def amount_text_signal(image: np.ndarray) -> float:
     if mask is None or image.size == 0:
         return 0.0
     return float((mask > 0).sum() / max(1, image.shape[0] * image.shape[1]))
+
+
+def read_amount_tight_ocr(image: np.ndarray, *, squash_bb_suffix: bool = False) -> tuple[float, float, str]:
+    import cv2
+
+    mask = _best_text_mask(image)
+    if mask is None:
+        return 0.0, 0.0, ""
+    rows, cols = np.where(mask > 0)
+    if len(cols) == 0:
+        return 0.0, 0.0, ""
+    left = max(0, int(cols.min()) - 3)
+    top = max(0, int(rows.min()) - 3)
+    right = min(mask.shape[1], int(cols.max()) + 4)
+    bottom = min(mask.shape[0], int(rows.max()) + 4)
+    tight = mask[top:bottom, left:right]
+    if tight.size == 0:
+        return 0.0, 0.0, ""
+    has_decimal_marker = _has_decimal_marker(tight)
+    processed = 255 - cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
+    try:
+        import pytesseract
+
+        _configure_tesseract(pytesseract)
+        raw = pytesseract.image_to_string(
+            processed,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789.,KMBBO",
+        ).strip()
+    except Exception:
+        return 0.0, 0.0, ""
+    if has_decimal_marker and re.fullmatch(r"\d{2,4}", raw or ""):
+        raw = f"{raw[:-1]}.{raw[-1]}"
+    amount = normalize_amount(raw)
+    if squash_bb_suffix:
+        amount = _squash_bb_noise(raw, amount)
+    confidence = 0.82 if amount > 0 else 0.0
+    return amount, confidence, raw
 
 
 def _best_text_mask(image: np.ndarray) -> np.ndarray | None:
@@ -131,15 +168,14 @@ def _char_templates() -> tuple[tuple[str, np.ndarray], ...]:
 
     glyphs = "0123456789.KMB"
     templates: list[tuple[str, np.ndarray]] = []
-    for scale in (0.34, 0.42, 0.50):
-        for thickness in (1, 2):
-            for glyph in glyphs:
-                canvas = np.zeros((34, 34), dtype=np.uint8)
-                cv2.putText(canvas, glyph, (2, 24), cv2.FONT_HERSHEY_SIMPLEX, scale, 255, thickness, cv2.LINE_AA)
-                rows, cols = np.where(canvas > 0)
-                if len(cols) == 0:
-                    continue
-                templates.append((glyph, canvas[rows.min():rows.max() + 1, cols.min():cols.max() + 1]))
+    for scale in (0.42, 0.50):
+        for glyph in glyphs:
+            canvas = np.zeros((34, 34), dtype=np.uint8)
+            cv2.putText(canvas, glyph, (2, 24), cv2.FONT_HERSHEY_SIMPLEX, scale, 255, 1, cv2.LINE_AA)
+            rows, cols = np.where(canvas > 0)
+            if len(cols) == 0:
+                continue
+            templates.append((glyph, canvas[rows.min():rows.max() + 1, cols.min():cols.max() + 1]))
     return tuple(templates)
 
 
@@ -174,3 +210,27 @@ def _sanitize_amount_text(raw: str) -> str:
     if value.endswith("B") and not value.endswith("BB"):
         value += "B"
     return value
+
+
+def _squash_bb_noise(raw: str, amount: float) -> float:
+    value = (raw or "").replace(",", "").upper()
+    match = re.search(r"(\d+)\.(\d)(?:[568B]{1,3})$", value)
+    if match:
+        return float(f"{match.group(1)}.{match.group(2)}")
+    if amount >= 20 and re.fullmatch(r"\d{2,4}", value):
+        digits = re.sub(r"\D+", "", value)
+        if len(digits) >= 2:
+            return float(f"{digits[:-1]}.{digits[-1]}")
+    return amount
+
+
+def _has_decimal_marker(mask: np.ndarray) -> bool:
+    import cv2
+
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height, width = mask.shape[:2]
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        if box_width <= max(3, width * 0.08) and box_height <= max(2, height * 0.25) and y > height * 0.45:
+            return True
+    return False

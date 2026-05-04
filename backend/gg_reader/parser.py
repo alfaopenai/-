@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 
-from .fast_reader import FastGgReader
 from .models import GgCard, GgSeat, GgTableSnapshot
 from .ocr import read_amount, read_card, read_name
 
@@ -33,9 +32,6 @@ def _warm_ocr() -> None:
 
 
 _OCR_EXECUTOR.submit(_warm_ocr)
-_FAST_READER = FastGgReader()
-
-
 def load_mock_snapshot() -> GgTableSnapshot:
     data: dict[str, Any] = json.loads(MOCK_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     data["timestamp"] = int(time.time() * 1000)
@@ -45,12 +41,12 @@ def load_mock_snapshot() -> GgTableSnapshot:
 def parse_frame(
     frame: np.ndarray,
     calibration: dict[str, Any],
-    fast_reader: FastGgReader | None = None,
+    fast_reader: Any | None = None,
 ) -> GgTableSnapshot | None:
-    reader = fast_reader or _FAST_READER
-    fast_snapshot = reader.parse(frame)
-    if fast_snapshot and fast_snapshot.confidence >= 0.58:
-        return fast_snapshot
+    if fast_reader is not None:
+        fast_snapshot = fast_reader.parse(frame)
+        if fast_snapshot and fast_snapshot.confidence >= 0.58:
+            return fast_snapshot
 
     auto_snapshot = parse_auto_gg_frame(frame)
     if auto_snapshot:
