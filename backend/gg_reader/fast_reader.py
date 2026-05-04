@@ -24,6 +24,7 @@ TEXT_CHANGE_THRESHOLD = 4.0
 DEALER_HOLD_SECONDS = 1.5
 BAD_FRAME_HOLD_SECONDS = 1.2
 MAX_PENDING_OCR = 1
+QUICK_REUSE_MIN_FPS = 2.5
 
 
 @dataclass
@@ -276,7 +277,7 @@ class FastGgReader:
             return None
         if self._pending_ocr_count() > 0:
             return None
-        if self._actual_fps() <= 4.5:
+        if self._actual_fps() < QUICK_REUSE_MIN_FPS:
             return None
         if not np.array_equal(quick_hash, self._last_quick_hash):
             return None

@@ -167,6 +167,14 @@
     const GG_READER_HISTORY_LIMIT = 80;
     const GG_READER_BROWSER_FPS = 3;
     const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
+    const GG_READER_RENDER_INTERVAL_MS = GG_READER_BROWSER_FRAME_INTERVAL_MS;
+    const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1280;
+    const GG_READER_BROWSER_JPEG_QUALITY = 0.58;
+    const GG_READER_MAX_IN_FLIGHT_FRAMES = 2;
+    const GG_READER_PROBABILITY_THROTTLE_MS = 5000;
+    const GG_READER_STATUS_LOG_INTERVAL_MS = 1000;
+    const GG_READER_LIVE_ENUMERATION_LIMIT = 50000;
+    const GG_READER_LIVE_PREFLOP_SIMULATIONS = 8000;
 
 
     let probabilityUpdateTimer = null;
@@ -318,6 +326,9 @@
             running: false,
             status: "idle",
             lastSnapshot: null,
+            latestSnapshot: null,
+            latestSnapshotSeq: 0,
+            lastRenderedSnapshotSeq: 0,
             pendingSnapshot: null,
             history: [],
             connection: null,
@@ -327,12 +338,39 @@
             browserCrop: null,
             browserFrameTimer: null,
             browserFrameInFlight: false,
+            browserFrameInFlightCount: 0,
             browserFrameNextAt: 0,
+            browserFrameSeq: 0,
+            browserFrameInFlightStartedAt: 0,
+            browserFrameInFlightStartedAts: [],
+            renderTimer: null,
             frameTimes: [],
+            captureTimes: [],
+            responseTimes: [],
+            renderTimes: [],
             actualFps: 0,
+            captureFps: 0,
+            parseFps: 0,
+            renderFps: 0,
             lastFrameMs: null,
             lastParseMs: null,
+            lastDecodeMs: null,
+            lastCropMs: null,
+            lastReaderParseMs: null,
+            lastEncodeMs: null,
+            lastImageBytes: 0,
+            lastFrameBytes: 0,
+            lastInFlightMs: 0,
+            lastSnapshotReceivedAt: 0,
+            lastResponseAt: 0,
+            lastRenderAt: 0,
+            lastApplySnapshotMs: 0,
+            lastProbabilityMs: 0,
+            lastProbabilitySnapshotSignature: "",
             lastProbabilityUpdateAt: 0,
+            lastPipelineLogAt: 0,
+            droppedFrames: 0,
+            staleResponsesIgnored: 0,
             errors: [],
             potOverride: null,
             isHistoryOpen: false,
@@ -2404,6 +2442,8 @@ function advanceActiveSlot(fromSlot) {
     function calculateWinShares(players, boardCards, remainingCards) {
         const drawsNeeded = 5 - boardCards.length;
         const requiredHoleCards = getRequiredHoleCards();
+        const enumerationLimit = getActiveEnumerationLimit();
+        const simulationLimit = getActiveSimulationLimit();
         const shares = new Array(players.length).fill(0);
         const winCounts = new Array(players.length).fill(0);
         const tieCounts = new Array(players.length).fill(0);
@@ -2483,7 +2523,7 @@ function advanceActiveSlot(fromSlot) {
             const totalCombos = combinationCount(remainingCards.length, drawsNeeded);
             const boardBuffer = [...boardCards];
 
-            if (totalCombos && totalCombos <= ENUMERATION_LIMIT) {
+            if (totalCombos && totalCombos <= enumerationLimit) {
                 forEachCombinationFast(remainingCards, drawsNeeded, (combo) => {
                     boardBuffer.length = boardCards.length;
                     boardBuffer.push(...combo);
@@ -2498,7 +2538,7 @@ function advanceActiveSlot(fromSlot) {
                     tempIndices[i] = i;
                 }
 
-                for (let iter = 0; iter < PREFLOP_SIMULATIONS; iter += 1) {
+                for (let iter = 0; iter < simulationLimit; iter += 1) {
                     for (let i = 0; i < drawsNeeded; i += 1) {
                         const j = i + Math.floor(Math.random() * (remainingLength - i));
                         const temp = tempIndices[i];
@@ -2533,7 +2573,7 @@ function advanceActiveSlot(fromSlot) {
             boardBuffer[i] = boardCards[i];
         }
 
-        const iterations = isOmahaVariant() ? Math.min(PREFLOP_SIMULATIONS, 12000) : PREFLOP_SIMULATIONS;
+        const iterations = isOmahaVariant() ? Math.min(simulationLimit, 12000) : simulationLimit;
 
         for (let iter = 0; iter < iterations; iter += 1) {
             for (let i = 0; i < cardsNeededPerSimulation; i += 1) {
@@ -2604,6 +2644,19 @@ function advanceActiveSlot(fromSlot) {
 
         return { shares, winCounts, tieCounts, simulations };
     }
+
+    function isGgLiveReaderActive() {
+        return Boolean(state.ggReader && state.ggReader.running);
+    }
+
+    function getActiveEnumerationLimit() {
+        return isGgLiveReaderActive() ? GG_READER_LIVE_ENUMERATION_LIMIT : ENUMERATION_LIMIT;
+    }
+
+    function getActiveSimulationLimit() {
+        return isGgLiveReaderActive() ? GG_READER_LIVE_PREFLOP_SIMULATIONS : PREFLOP_SIMULATIONS;
+    }
+
     // Optimized combination generator that avoids recursive calls
     function forEachCombinationFast(pool, choose, callback) {
         if (choose === 0) {
@@ -3519,6 +3572,7 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.running = true;
         setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
         showError("קורא את שולחן GG 3 פעמים בשנייה.");
+        startGgRenderLoop();
         state.ggReader.browserFrameNextAt = performance.now();
         scheduleNextGgBrowserFrame(0);
     }
@@ -3529,12 +3583,22 @@ function advanceActiveSlot(fromSlot) {
         }
         state.ggReader.browserFrameTimer = null;
         state.ggReader.browserFrameInFlight = false;
+        state.ggReader.browserFrameInFlightCount = 0;
+        state.ggReader.browserFrameInFlightStartedAt = 0;
+        state.ggReader.browserFrameInFlightStartedAts = [];
         state.ggReader.browserFrameNextAt = 0;
         state.ggReader.browserCrop = null;
         state.ggReader.frameTimes = [];
+        state.ggReader.captureTimes = [];
+        state.ggReader.responseTimes = [];
+        state.ggReader.renderTimes = [];
         state.ggReader.actualFps = 0;
+        state.ggReader.captureFps = 0;
+        state.ggReader.parseFps = 0;
+        state.ggReader.renderFps = 0;
         state.ggReader.lastFrameMs = null;
         state.ggReader.lastParseMs = null;
+        stopGgRenderLoop();
         if (state.ggReader.browserVideo) {
             state.ggReader.browserVideo.pause();
             state.ggReader.browserVideo.srcObject = null;
@@ -3618,9 +3682,11 @@ function advanceActiveSlot(fromSlot) {
         const video = state.ggReader.browserVideo;
         const canvas = state.ggReader.browserCanvas;
         const crop = state.ggReader.browserCrop;
-        if (!state.ggReader.running || !video || !canvas || state.ggReader.browserFrameInFlight) {
-            if (state.ggReader.running && state.ggReader.browserFrameInFlight) {
-                scheduleNextGgBrowserFrame(20);
+        const inFlightCount = Number(state.ggReader.browserFrameInFlightCount) || 0;
+        if (!state.ggReader.running || !video || !canvas || inFlightCount >= GG_READER_MAX_IN_FLIGHT_FRAMES) {
+            if (state.ggReader.running && inFlightCount >= GG_READER_MAX_IN_FLIGHT_FRAMES) {
+                state.ggReader.droppedFrames += 1;
+                scheduleNextGgBrowserFrame(GG_READER_BROWSER_FRAME_INTERVAL_MS);
             }
             return;
         }
@@ -3629,31 +3695,52 @@ function advanceActiveSlot(fromSlot) {
             return;
         }
 
-        state.ggReader.browserFrameInFlight = true;
         const frameStartedAt = performance.now();
+        beginGgBrowserFrameRequest(frameStartedAt);
         let timeoutId = null;
+        let nextFrameScheduled = false;
         try {
-            canvas.width = crop ? crop.width : video.videoWidth;
-            canvas.height = crop ? crop.height : video.videoHeight;
+            const sourceWidth = crop ? crop.width : video.videoWidth;
+            const sourceHeight = crop ? crop.height : video.videoHeight;
+            const scale = Math.min(1, GG_READER_BROWSER_MAX_FRAME_WIDTH / Math.max(1, sourceWidth));
+            const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+            const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+            canvas.width = targetWidth;
+            canvas.height = targetHeight;
             const context = canvas.getContext("2d", { willReadFrequently: true });
             if (!context) {
                 throw new Error("Canvas context is not available");
             }
             if (crop) {
-                context.drawImage(video, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+                context.drawImage(video, crop.left, crop.top, crop.width, crop.height, 0, 0, targetWidth, targetHeight);
             } else {
-                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                context.drawImage(video, 0, 0, targetWidth, targetHeight);
             }
-            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+            const encodeStartedAt = performance.now();
+            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", GG_READER_BROWSER_JPEG_QUALITY));
             if (!blob) {
                 throw new Error("Browser frame encoding failed");
+            }
+            state.ggReader.lastEncodeMs = performance.now() - encodeStartedAt;
+            state.ggReader.lastImageBytes = Number(blob.size) || 0;
+            const sentSeq = state.ggReader.browserFrameSeq + 1;
+            state.ggReader.browserFrameSeq = sentSeq;
+            recordGgCaptureSent(frameStartedAt);
+            if (state.ggReader.running) {
+                const nextFrameAt = frameStartedAt + GG_READER_BROWSER_FRAME_INTERVAL_MS;
+                state.ggReader.browserFrameNextAt = nextFrameAt;
+                scheduleNextGgBrowserFrame(nextFrameAt - performance.now());
+                nextFrameScheduled = true;
             }
 
             const controller = new AbortController();
             timeoutId = window.setTimeout(() => controller.abort(), 2200);
-            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/parse-frame`, {
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/parse-frame?seq=${encodeURIComponent(String(sentSeq))}`, {
                 method: "POST",
-                headers: { "Content-Type": blob.type || "image/jpeg" },
+                headers: {
+                    "Content-Type": blob.type || "image/jpeg",
+                    "X-GG-Frame-Seq": String(sentSeq)
+                },
                 body: blob,
                 signal: controller.signal
             });
@@ -3661,9 +3748,13 @@ function advanceActiveSlot(fromSlot) {
                 throw new Error(`GG frame parse failed: ${response.status}`);
             }
             const payload = await response.json();
-            recordGgFrameTiming(performance.now());
-            handleGgReaderSocketPayload(payload);
+            const responseAt = performance.now();
+            state.ggReader.lastInFlightMs = responseAt - frameStartedAt;
+            state.ggReader.lastResponseAt = responseAt;
+            recordGgParseResponse(responseAt);
+            handleGgReaderSocketPayload(payload, { sentSeq, source: "browser-response" });
         } catch (error) {
+            state.ggReader.lastInFlightMs = performance.now() - frameStartedAt;
             setGgReaderStatus("warning", "פריים GG לא נקרא");
             state.ggReader.errors.push(String(error && error.message ? error.message : error));
             saveGgHistoryEvent({
@@ -3674,8 +3765,8 @@ function advanceActiveSlot(fromSlot) {
             if (timeoutId !== null) {
                 window.clearTimeout(timeoutId);
             }
-            state.ggReader.browserFrameInFlight = false;
-            if (state.ggReader.running) {
+            endGgBrowserFrameRequest(frameStartedAt);
+            if (state.ggReader.running && !nextFrameScheduled) {
                 const nextFrameAt = frameStartedAt + GG_READER_BROWSER_FRAME_INTERVAL_MS;
                 state.ggReader.browserFrameNextAt = nextFrameAt;
                 scheduleNextGgBrowserFrame(nextFrameAt - performance.now());
@@ -3683,18 +3774,55 @@ function advanceActiveSlot(fromSlot) {
         }
     }
 
-    function recordGgFrameTiming(now) {
-        const cutoff = now - 2000;
-        const frameTimes = state.ggReader.frameTimes || [];
-        frameTimes.push(now);
-        while (frameTimes.length && frameTimes[0] < cutoff) {
-            frameTimes.shift();
+    function beginGgBrowserFrameRequest(startedAt) {
+        const starts = state.ggReader.browserFrameInFlightStartedAts || [];
+        starts.push(startedAt);
+        state.ggReader.browserFrameInFlightStartedAts = starts;
+        state.ggReader.browserFrameInFlightCount = starts.length;
+        state.ggReader.browserFrameInFlight = starts.length > 0;
+        state.ggReader.browserFrameInFlightStartedAt = starts.length ? Math.min(...starts) : 0;
+    }
+
+    function endGgBrowserFrameRequest(startedAt) {
+        const starts = (state.ggReader.browserFrameInFlightStartedAts || [])
+            .filter((value) => Math.abs(Number(value) - Number(startedAt)) > 0.01);
+        state.ggReader.browserFrameInFlightStartedAts = starts;
+        state.ggReader.browserFrameInFlightCount = starts.length;
+        state.ggReader.browserFrameInFlight = starts.length > 0;
+        state.ggReader.browserFrameInFlightStartedAt = starts.length ? Math.min(...starts) : 0;
+    }
+
+    function recordGgRateSample(samplesKey, fpsKey, now, maxFps = Infinity) {
+        const cutoff = now - 3000;
+        const samples = state.ggReader[samplesKey] || [];
+        samples.push(now);
+        while (samples.length && samples[0] < cutoff) {
+            samples.shift();
         }
-        state.ggReader.frameTimes = frameTimes;
-        const spanSeconds = frameTimes.length > 1
-            ? Math.max(0.25, (frameTimes[frameTimes.length - 1] - frameTimes[0]) / 1000)
+        state.ggReader[samplesKey] = samples;
+        const spanSeconds = samples.length > 1
+            ? Math.max(0.25, (samples[samples.length - 1] - samples[0]) / 1000)
             : 1;
-        state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, frameTimes.length / spanSeconds);
+        const fps = samples.length > 1 ? (samples.length - 1) / spanSeconds : samples.length;
+        state.ggReader[fpsKey] = Number.isFinite(maxFps) ? Math.min(maxFps, fps) : fps;
+    }
+
+    function recordGgCaptureSent(now) {
+        recordGgRateSample("captureTimes", "captureFps", now, GG_READER_BROWSER_FPS);
+    }
+
+    function recordGgParseResponse(now) {
+        recordGgRateSample("responseTimes", "parseFps", now, Infinity);
+        state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, state.ggReader.parseFps || 0);
+    }
+
+    function recordGgFrameTiming(now) {
+        recordGgRateSample("frameTimes", "actualFps", now, GG_READER_BROWSER_FPS);
+        recordGgParseResponse(now);
+    }
+
+    function recordGgRenderTiming(now) {
+        recordGgRateSample("renderTimes", "renderFps", now, Infinity);
     }
 
     function connectGgReaderSocket() {
@@ -3709,6 +3837,7 @@ function advanceActiveSlot(fromSlot) {
             state.ggReader.running = true;
             setGgReaderStatus("running", "קורא GG...");
             showError("קורא שולחן GG מהחלון הפעיל או מהמסך שנבחר.");
+            startGgRenderLoop();
         });
 
         socket.addEventListener("message", (event) => {
@@ -3727,6 +3856,7 @@ function advanceActiveSlot(fromSlot) {
         socket.addEventListener("close", () => {
             if (state.ggReader.running) {
                 state.ggReader.running = false;
+                stopGgRenderLoop();
                 setGgReaderStatus("error", "חיבור GG נסגר");
                 showError("חיבור GG נסגר. בדוק שה-backend עדיין רץ.");
             }
@@ -3734,13 +3864,20 @@ function advanceActiveSlot(fromSlot) {
 
         socket.addEventListener("error", () => {
             state.ggReader.running = false;
+            stopGgRenderLoop();
             setGgReaderStatus("error", "שגיאת GG");
             showError("שגיאה בחיבור WebSocket לקורא GG.");
         });
     }
 
-    function handleGgReaderSocketPayload(payload) {
+    function handleGgReaderSocketPayload(payload, options = {}) {
         if (!payload) {
+            return;
+        }
+        const payloadSeq = getGgPayloadFrameSeq(payload, options);
+        if (Number.isFinite(payloadSeq) && payloadSeq < state.ggReader.latestSnapshotSeq) {
+            state.ggReader.staleResponsesIgnored += 1;
+            renderGgReaderStatus();
             return;
         }
         updateGgReaderRuntimeMetrics(payload);
@@ -3758,6 +3895,7 @@ function advanceActiveSlot(fromSlot) {
                 state.ggReader.running = false;
                 const connection = state.ggReader.connection;
                 state.ggReader.connection = null;
+                stopGgRenderLoop();
                 if (connection && connection.readyState <= WebSocket.OPEN) {
                     connection.close();
                 }
@@ -3776,7 +3914,7 @@ function advanceActiveSlot(fromSlot) {
         if (payload.captureSource !== "browser") {
             recordGgFrameTiming(performance.now());
         }
-        applyGgSnapshot(payload, { source: "socket" });
+        storeLatestGgSnapshot(payload, { seq: payloadSeq });
     }
 
     function updateGgReaderRuntimeMetrics(payload) {
@@ -3784,14 +3922,206 @@ function advanceActiveSlot(fromSlot) {
         if (Number.isFinite(frameMs)) {
             state.ggReader.lastFrameMs = frameMs;
         }
+        const decodeMs = Number(payload.decodeMs);
+        if (Number.isFinite(decodeMs)) {
+            state.ggReader.lastDecodeMs = decodeMs;
+        }
+        const cropMs = Number(payload.cropMs);
+        if (Number.isFinite(cropMs)) {
+            state.ggReader.lastCropMs = cropMs;
+        }
         const parseMs = Number(payload.parseMs || payload.readerParseMs);
         if (Number.isFinite(parseMs)) {
             state.ggReader.lastParseMs = parseMs;
+        }
+        const readerParseMs = Number(payload.readerParseMs);
+        if (Number.isFinite(readerParseMs)) {
+            state.ggReader.lastReaderParseMs = readerParseMs;
+        }
+        const frameBytes = Number(payload.frameBytes);
+        if (Number.isFinite(frameBytes) && frameBytes >= 0) {
+            state.ggReader.lastFrameBytes = frameBytes;
         }
         const readerFps = Number(payload.actualReaderFps);
         if (Number.isFinite(readerFps) && readerFps > 0) {
             state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, readerFps);
         }
+    }
+
+    function getGgPayloadFrameSeq(payload, options = {}) {
+        const rawSeq = payload?.frameSeq ?? payload?.seq ?? options.sentSeq;
+        const seq = Number(rawSeq);
+        return Number.isFinite(seq) && seq > 0 ? seq : null;
+    }
+
+    function storeLatestGgSnapshot(payload, options = {}) {
+        if (!payload || payload.source !== "ggclub") {
+            saveGgHistoryEvent({
+                type: "warning",
+                message: "Snapshot GG נדחה: מקור לא תקין"
+            });
+            return false;
+        }
+
+        const seq = Number.isFinite(options.seq)
+            ? Number(options.seq)
+            : state.ggReader.latestSnapshotSeq + 1;
+        if (seq < state.ggReader.latestSnapshotSeq) {
+            state.ggReader.staleResponsesIgnored += 1;
+            renderGgReaderStatus();
+            return false;
+        }
+        if (
+            state.ggReader.latestSnapshot
+            && state.ggReader.latestSnapshotSeq !== state.ggReader.lastRenderedSnapshotSeq
+            && seq > state.ggReader.latestSnapshotSeq
+        ) {
+            state.ggReader.droppedFrames += 1;
+        }
+
+        payload.frameSeq = seq;
+        state.ggReader.latestSnapshot = payload;
+        state.ggReader.latestSnapshotSeq = seq;
+        state.ggReader.lastSnapshotReceivedAt = performance.now();
+        renderGgReaderStatus();
+        return true;
+    }
+
+    function startGgRenderLoop() {
+        stopGgRenderLoop();
+        state.ggReader.renderTimer = window.setInterval(runGgRenderTick, GG_READER_RENDER_INTERVAL_MS);
+    }
+
+    function stopGgRenderLoop() {
+        if (state.ggReader.renderTimer) {
+            window.clearInterval(state.ggReader.renderTimer);
+        }
+        state.ggReader.renderTimer = null;
+    }
+
+    function runGgRenderTick() {
+        const snapshot = state.ggReader.latestSnapshot;
+        if (
+            snapshot
+            && state.ggReader.latestSnapshotSeq !== state.ggReader.lastRenderedSnapshotSeq
+        ) {
+            const started = performance.now();
+            const applied = applyGgSnapshot(snapshot, {
+                suppressProbability: true,
+                source: "render-loop"
+            });
+            state.ggReader.lastApplySnapshotMs = performance.now() - started;
+            if (applied) {
+                state.ggReader.lastRenderedSnapshotSeq = state.ggReader.latestSnapshotSeq;
+                state.ggReader.lastRenderAt = performance.now();
+                recordGgRenderTiming(state.ggReader.lastRenderAt);
+                scheduleProbabilityUpdateThrottled(state.ggReader.lastSnapshot || snapshot);
+            }
+        }
+        renderGgReaderStatus();
+        logGgReaderPipelineMetrics();
+    }
+
+    function scheduleProbabilityUpdateThrottled(snapshot) {
+        const signature = buildGgProbabilitySnapshotSignature(snapshot);
+        if (!signature || signature === state.ggReader.lastProbabilitySnapshotSignature) {
+            return;
+        }
+        const now = performance.now();
+        if (now - Number(state.ggReader.lastProbabilityUpdateAt || 0) < GG_READER_PROBABILITY_THROTTLE_MS) {
+            return;
+        }
+        state.ggReader.lastProbabilityUpdateAt = now;
+        const run = () => runProbabilityUpdateMeasured(snapshot, signature);
+        if (typeof window.requestIdleCallback === "function") {
+            window.requestIdleCallback(run, { timeout: 1000 });
+        } else {
+            window.setTimeout(run, 0);
+        }
+    }
+
+    function runProbabilityUpdateMeasured(snapshot, signature) {
+        const latestSignature = buildGgProbabilitySnapshotSignature(state.ggReader.lastSnapshot || state.ggReader.latestSnapshot);
+        if (!snapshot || signature !== buildGgProbabilitySnapshotSignature(snapshot) || signature !== latestSignature) {
+            return;
+        }
+        const started = performance.now();
+        try {
+            if (state.mode === "equity") {
+                updateWinProbabilities();
+            } else if (state.mode === "solver") {
+                updateSolverRecommendations();
+            }
+            state.ggReader.lastProbabilitySnapshotSignature = signature;
+        } finally {
+            state.ggReader.lastProbabilityMs = performance.now() - started;
+            renderGgReaderStatus();
+        }
+    }
+
+    function buildGgProbabilitySnapshotSignature(snapshot) {
+        if (!snapshot) {
+            return "";
+        }
+        const cardSignature = (card) => {
+            if (!card) {
+                return "";
+            }
+            if (card.hidden || card.visible === false) {
+                return card.display ? `hidden:${card.display}` : "hidden";
+            }
+            return getGgCardId(card);
+        };
+        const boardSignature = (Array.isArray(snapshot.board) ? snapshot.board : [])
+            .map(cardSignature)
+            .join(",");
+        const seatsSignature = (Array.isArray(snapshot.seats) ? snapshot.seats : [])
+            .map((seat) => {
+                const seatIndex = Number(seat?.physicalSeatIndex);
+                const cards = (Array.isArray(seat?.holeCards) ? seat.holeCards : [])
+                    .map(cardSignature)
+                    .join(",");
+                return `${Number.isFinite(seatIndex) ? seatIndex : ""}:${seat?.active !== false ? 1 : 0}:${seat?.status || ""}:${cards}`;
+            })
+            .join("|");
+        return `${boardSignature}#${seatsSignature}`;
+    }
+
+    function logGgReaderPipelineMetrics() {
+        if (!state.ggReader.running || typeof console === "undefined" || typeof console.debug !== "function") {
+            return;
+        }
+        const now = performance.now();
+        if (now - Number(state.ggReader.lastPipelineLogAt || 0) < GG_READER_STATUS_LOG_INTERVAL_MS) {
+            return;
+        }
+        state.ggReader.lastPipelineLogAt = now;
+        const lastRenderAgeMs = state.ggReader.lastRenderAt ? now - state.ggReader.lastRenderAt : null;
+        const lastSnapshotAgeMs = state.ggReader.lastSnapshotReceivedAt ? now - state.ggReader.lastSnapshotReceivedAt : null;
+        const inFlightMs = state.ggReader.browserFrameInFlight && state.ggReader.browserFrameInFlightStartedAt
+            ? now - state.ggReader.browserFrameInFlightStartedAt
+            : state.ggReader.lastInFlightMs;
+        console.debug("[GG Reader Pipeline]", {
+            captureSentPerSec: Number(state.ggReader.captureFps || 0).toFixed(2),
+            responsesPerSec: Number(state.ggReader.parseFps || state.ggReader.actualFps || 0).toFixed(2),
+            renderFps: Number(state.ggReader.renderFps || 0).toFixed(2),
+            latestSnapshotSeq: state.ggReader.latestSnapshotSeq,
+            lastRenderedSnapshotSeq: state.ggReader.lastRenderedSnapshotSeq,
+            lastRenderAgeMs: Number.isFinite(lastRenderAgeMs) ? Math.round(lastRenderAgeMs) : null,
+            lastSnapshotAgeMs: Number.isFinite(lastSnapshotAgeMs) ? Math.round(lastSnapshotAgeMs) : null,
+            browserFrameInFlight: state.ggReader.browserFrameInFlight,
+            browserFrameInFlightCount: state.ggReader.browserFrameInFlightCount || 0,
+            inFlightMs: Number.isFinite(inFlightMs) ? Math.round(inFlightMs) : null,
+            lastParseMs: state.ggReader.lastParseMs,
+            probabilityMs: Math.round(Number(state.ggReader.lastProbabilityMs) || 0),
+            imageBytes: state.ggReader.lastImageBytes,
+            frameBytes: state.ggReader.lastFrameBytes,
+            droppedFrames: state.ggReader.droppedFrames,
+            staleResponsesIgnored: state.ggReader.staleResponsesIgnored,
+            backendDecodeMs: state.ggReader.lastDecodeMs,
+            backendCropMs: state.ggReader.lastCropMs,
+            backendFrameMs: state.ggReader.lastFrameMs
+        });
     }
 
     function isGgMockMode() {
@@ -3847,9 +4177,9 @@ function advanceActiveSlot(fromSlot) {
             )
         );
 
+        const previousDefer = state.deferProbabilityUpdate;
         state.deferProbabilityUpdate = true;
         setPlayersCount(activeSeatCount);
-        state.deferProbabilityUpdate = true;
 
         clearGgInactiveUiSeats(activeSeatCount);
         state.ggReader.potOverride = sanitizeEconomyValue(Number(normalizedSnapshot.pot) || 0);
@@ -3862,14 +4192,16 @@ function advanceActiveSlot(fromSlot) {
         }
         applyGgPositionLabels(normalizedSnapshot);
 
-        state.deferProbabilityUpdate = false;
         state.ggReader.lastSnapshot = normalizedSnapshot;
         syncPlayerEconomyInputs();
         updateTablePotDisplay();
         updateSeatStates();
         applyGgPositionLabels(normalizedSnapshot);
         ensureActiveSlot("player");
-        scheduleGgProbabilityUpdate();
+        state.deferProbabilityUpdate = previousDefer;
+        if (!options.suppressProbability) {
+            scheduleGgProbabilityUpdate(normalizedSnapshot);
+        }
         if (options.source !== "mock") {
             setGgReaderStatus("running", "קורא GG...");
         }
@@ -3878,15 +4210,8 @@ function advanceActiveSlot(fromSlot) {
         return true;
     }
 
-    function scheduleGgProbabilityUpdate() {
-        const now = typeof performance !== "undefined" && typeof performance.now === "function"
-            ? performance.now()
-            : Date.now();
-        if (now - Number(state.ggReader.lastProbabilityUpdateAt || 0) < 1200) {
-            return;
-        }
-        state.ggReader.lastProbabilityUpdateAt = now;
-        scheduleImmediateProbabilityUpdate();
+    function scheduleGgProbabilityUpdate(snapshot = state.ggReader.lastSnapshot) {
+        scheduleProbabilityUpdateThrottled(snapshot);
     }
 
     function normalizeGgSnapshotForUi(snapshot) {
@@ -3960,8 +4285,12 @@ function advanceActiveSlot(fromSlot) {
         const previousDefer = state.deferProbabilityUpdate;
         state.deferProbabilityUpdate = true;
         state.ggReader.lastSnapshot = null;
+        state.ggReader.latestSnapshot = null;
+        state.ggReader.latestSnapshotSeq = 0;
+        state.ggReader.lastRenderedSnapshotSeq = 0;
         state.ggReader.pendingSnapshot = null;
         state.ggReader.potOverride = null;
+        state.ggReader.lastProbabilitySnapshotSignature = "";
 
         state.slotByKey.forEach((slot) => clearSlot(slot, { suppressUpdate: true }));
         for (let index = 0; index < MAX_PLAYERS; index += 1) {
@@ -4385,14 +4714,24 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderStatusText) {
             const parts = [state.ggReader.lastStatusText || "GG מנותק"];
             if (state.ggReader.running) {
-                const actualFps = Number(state.ggReader.actualFps);
-                parts.push(Number.isFinite(actualFps) && actualFps > 0
-                    ? `${actualFps.toFixed(1)}/${GG_READER_BROWSER_FPS}fps`
-                    : `${GG_READER_BROWSER_FPS}fps`);
-                const frameMs = Number(state.ggReader.lastFrameMs);
-                if (Number.isFinite(frameMs) && frameMs > 0) {
-                    parts.push(`${Math.round(frameMs)}ms`);
-                }
+                const now = performance.now();
+                const inFlightMs = state.ggReader.browserFrameInFlight && state.ggReader.browserFrameInFlightStartedAt
+                    ? now - state.ggReader.browserFrameInFlightStartedAt
+                    : state.ggReader.lastInFlightMs;
+                const lastRenderAgeMs = state.ggReader.lastRenderAt ? now - state.ggReader.lastRenderAt : null;
+                const lastSnapshotAgeMs = state.ggReader.lastSnapshotReceivedAt ? now - state.ggReader.lastSnapshotReceivedAt : null;
+                parts.push(`cap ${formatGgFps(state.ggReader.captureFps)}/${GG_READER_BROWSER_FPS}`);
+                parts.push(`parse ${formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps)}`);
+                parts.push(`render ${formatGgFps(state.ggReader.renderFps)}`);
+                parts.push(`snapAge ${formatGgMs(lastSnapshotAgeMs)}`);
+                parts.push(`renderAge ${formatGgMs(lastRenderAgeMs)}`);
+                parts.push(`flight ${state.ggReader.browserFrameInFlightCount || 0}/${GG_READER_MAX_IN_FLIGHT_FRAMES} ${formatGgMs(inFlightMs)}`);
+                parts.push(`img ${formatGgBytes(state.ggReader.lastImageBytes || state.ggReader.lastFrameBytes)}`);
+                parts.push(`drop ${state.ggReader.droppedFrames || 0}`);
+                parts.push(`stale ${state.ggReader.staleResponsesIgnored || 0}`);
+                parts.push(`apply ${formatGgMs(state.ggReader.lastApplySnapshotMs)}`);
+                parts.push(`prob ${formatGgMs(state.ggReader.lastProbabilityMs)}`);
+                parts.push(`be ${formatGgMs(state.ggReader.lastDecodeMs)}/${formatGgMs(state.ggReader.lastCropMs)}/${formatGgMs(state.ggReader.lastParseMs)}`);
             }
             const activeCount = Number(state.ggReader.lastSnapshot?.activePlayerCount);
             if (Number.isInteger(activeCount) && activeCount > 0) {
@@ -4413,6 +4752,27 @@ function advanceActiveSlot(fromSlot) {
             elements.readGgTable.textContent = state.ggReader.running ? "קורא GG..." : "קרא שולחן GG";
             elements.readGgTable.classList.toggle("is-active", state.ggReader.running);
         }
+    }
+
+    function formatGgFps(value) {
+        const fps = Number(value);
+        return Number.isFinite(fps) && fps > 0 ? `${fps.toFixed(1)}fps` : "0.0fps";
+    }
+
+    function formatGgMs(value) {
+        const ms = Number(value);
+        return Number.isFinite(ms) && ms >= 0 ? `${Math.round(ms)}ms` : "-";
+    }
+
+    function formatGgBytes(value) {
+        const bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes <= 0) {
+            return "-";
+        }
+        if (bytes >= 1024 * 1024) {
+            return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+        }
+        return `${Math.round(bytes / 1024)}KB`;
     }
 
     function renderGgReaderHistory() {

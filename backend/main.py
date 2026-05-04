@@ -57,8 +57,10 @@ last_crop_metrics: dict[str, Any] = {
 _last_cropped_frame_saved_at = 0.0
 _cropped_frame_save_task: asyncio.Task[Any] | None = None
 _CACHE_TTL_SECONDS = 1.0
+_CALIBRATION_CACHE_TTL_SECONDS = 2.0
 _cached_windows: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _cached_monitors: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_cached_calibration: tuple[float, dict[str, Any] | None] = (0.0, None)
 
 
 POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
@@ -267,6 +269,26 @@ def get_cached_monitors() -> list[dict[str, Any]]:
     return value
 
 
+def get_cached_calibration() -> dict[str, Any]:
+    global _cached_calibration
+
+    now = time.monotonic()
+    cached_at, cached_value = _cached_calibration
+    if cached_value is not None and now - cached_at <= _CALIBRATION_CACHE_TTL_SECONDS:
+        return cached_value
+    value = load_calibration()
+    _cached_calibration = (now, value)
+    return value
+
+
+def save_cached_calibration(data: dict[str, Any]) -> dict[str, Any]:
+    global _cached_calibration
+
+    value = save_calibration(data)
+    _cached_calibration = (time.monotonic(), value)
+    return value
+
+
 def crop_browser_frame_to_gg_window(frame: Any) -> Any:
     cropped, _metrics = crop_browser_frame_to_gg_window_with_metrics(frame)
     return cropped
@@ -384,14 +406,18 @@ def schedule_cropped_debug_frame_save(frame: Any) -> None:
 def _ignore_background_task_error(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
+    except asyncio.CancelledError:
+        pass
     except Exception:
         pass
 
 
 @app.post("/api/gg-reader/parse-frame")
-async def parse_browser_frame(request: Request) -> dict[str, Any]:
+async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[str, Any]:
     loop_started_at = time.perf_counter()
+    server_received_at = int(time.time() * 1000)
     body = await request.body()
+    frame_bytes = len(body)
     if not body:
         return {
             "type": "status",
@@ -399,16 +425,22 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
             "message": "לא התקבל פריים מהדפדפן.",
             "clearTable": False,
             "confidence": 0,
+            "captureSource": "browser",
+            "frameSeq": seq,
+            "serverReceivedAt": server_received_at,
+            "frameBytes": frame_bytes,
         }
 
     try:
         decode_started_at = time.perf_counter()
         frame = await asyncio.to_thread(decode_browser_frame, body)
-        frame, crop_metrics = await asyncio.to_thread(crop_browser_frame_to_gg_window_with_metrics, frame)
-        schedule_cropped_debug_frame_save(frame)
         decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
+        crop_started_at = time.perf_counter()
+        frame, crop_metrics = await asyncio.to_thread(crop_browser_frame_to_gg_window_with_metrics, frame)
+        crop_ms = round((time.perf_counter() - crop_started_at) * 1000, 2)
+        schedule_cropped_debug_frame_save(frame)
         parse_started_at = time.perf_counter()
-        snapshot = await asyncio.to_thread(parse_frame, frame, load_calibration(), FAST_GG_READER)
+        snapshot = await asyncio.to_thread(parse_frame, frame, get_cached_calibration(), FAST_GG_READER)
         backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
     except Exception as exc:
         return {
@@ -417,6 +449,10 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
             "message": f"לא ניתן לנתח פריים GG: {exc}",
             "clearTable": False,
             "confidence": 0,
+            "captureSource": "browser",
+            "frameSeq": seq,
+            "serverReceivedAt": server_received_at,
+            "frameBytes": frame_bytes,
         }
 
     frame_ms = round((time.perf_counter() - loop_started_at) * 1000, 2)
@@ -426,6 +462,11 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
     metrics.update(crop_metrics)
     metrics["readerParseMs"] = metrics.get("parseMs")
     metrics["parseMs"] = backend_parse_ms
+    metrics["cropMs"] = crop_ms
+    metrics["totalFrameMs"] = frame_ms
+    metrics["frameBytes"] = frame_bytes
+    metrics["frameSeq"] = seq
+    metrics["serverReceivedAt"] = server_received_at
     reader_state.framesRead += 1
     reader_state.lastFrameMs = frame_ms
     reader_state.captureSource = "browser"
@@ -438,8 +479,12 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
             "clearTable": False,
             "confidence": 0,
             "captureSource": "browser",
+            "frameSeq": seq,
+            "serverReceivedAt": server_received_at,
+            "frameBytes": frame_bytes,
             "frameMs": frame_ms,
             "decodeMs": decode_ms,
+            "cropMs": crop_ms,
             "parseMs": backend_parse_ms,
             **metrics,
         }
@@ -448,9 +493,14 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
     reader_state.lastSnapshotAt = snapshot.timestamp
     data = snapshot.model_dump()
     data["captureSource"] = "browser"
+    data["frameSeq"] = seq
+    data["serverReceivedAt"] = server_received_at
+    data["frameBytes"] = frame_bytes
     data["frameMs"] = frame_ms
     data["decodeMs"] = decode_ms
+    data["cropMs"] = crop_ms
     data["parseMs"] = backend_parse_ms
+    data["totalFrameMs"] = frame_ms
     data.update(metrics)
     data["events"] = events
     return data
@@ -468,12 +518,12 @@ async def get_hands(limit: int = 25) -> list[dict[str, Any]]:
 
 @app.get("/api/gg-reader/calibration")
 async def get_calibration() -> dict[str, Any]:
-    return load_calibration()
+    return get_cached_calibration()
 
 
 @app.post("/api/gg-reader/calibration")
 async def post_calibration(data: dict[str, Any]) -> dict[str, Any]:
-    return save_calibration(data)
+    return save_cached_calibration(data)
 
 
 def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str, Any]:
@@ -611,7 +661,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
         debug=reader_config.debug,
         capture_mode=reader_config.captureMode,
     )
-    calibration = load_calibration()
+    calibration = get_cached_calibration()
     try:
         while True:
             loop_started_at = time.perf_counter()
