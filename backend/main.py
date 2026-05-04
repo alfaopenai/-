@@ -286,8 +286,8 @@ async def get_monitors() -> list[dict[str, int]]:
 
 
 @app.get("/api/gg-reader/windows")
-async def get_windows() -> list[dict[str, Any]]:
-    return list_gg_windows()
+async def get_windows(includeRejected: bool = False) -> list[dict[str, Any]]:
+    return list_gg_windows(include_rejected=includeRejected)
 
 
 def decode_browser_frame(body: bytes) -> Any:
@@ -357,7 +357,12 @@ def crop_browser_frame_to_gg_window(frame: Any) -> Any:
 
 
 def refine_gg_table_crop(frame: Any, metrics: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
-    crop_result = detect_clubgg_table_crop(frame, {"source": metrics.get("cropSource")})
+    crop_result = detect_clubgg_table_crop(frame, {
+        **metrics,
+        "source": metrics.get("cropSource"),
+        "title": metrics.get("selectedWindowTitle"),
+        **(metrics.get("selectedWindow") if isinstance(metrics.get("selectedWindow"), dict) else {}),
+    })
     refined_metrics = dict(metrics)
     base_rect = metrics.get("cropRect") or {"left": 0, "top": 0, "width": frame.shape[1], "height": frame.shape[0]}
     local_rect = crop_result.crop_rect
@@ -387,7 +392,9 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         "croppedFrameWidth": int(frame_width),
         "croppedFrameHeight": int(frame_height),
         "cropSource": "browser-no-window",
+        "captureSource": "browser",
         "selectedWindowTitle": None,
+        "selectedWindow": None,
         "selectedWindowRect": None,
         "cropRect": {"left": 0, "top": 0, "width": int(frame_width), "height": int(frame_height)},
     }
@@ -396,6 +403,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         return refine_gg_table_crop(frame, metrics)
 
     window = windows[0]
+    metrics["selectedWindow"] = dict(window)
     metrics["selectedWindowTitle"] = str(window.get("title") or "")
     metrics["selectedWindowRect"] = {
         "left": int(window.get("left") or 0),
@@ -415,6 +423,15 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         return refine_gg_table_crop(frame, metrics)
 
     monitors = get_cached_monitors()
+    if not _browser_frame_looks_like_full_monitor(frame_width, frame_height, monitors):
+        metrics["cropSource"] = "browser-frame-not-full-monitor"
+        metrics["isRealClubGg"] = False
+        metrics["realClubGgScore"] = 0.0
+        metrics["rejectedReason"] = "browser-frame-not-full-monitor"
+        metrics["rejectedBrowserChrome"] = True
+        metrics["cropWarnings"] = ["browser-frame-not-full-monitor"]
+        return frame, metrics
+
     monitor = next(
         (
             item for item in monitors
@@ -440,7 +457,11 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     bottom = max(top, min(frame_height, bottom))
     if right - left < 320 or bottom - top < 240:
         metrics["cropSource"] = "browser-crop-too-small"
-        return refine_gg_table_crop(frame, metrics)
+        metrics["isRealClubGg"] = False
+        metrics["realClubGgScore"] = 0.0
+        metrics["rejectedReason"] = "browser-window-rect-outside-frame"
+        metrics["cropWarnings"] = ["browser-window-rect-outside-frame"]
+        return frame, metrics
     cropped = frame[top:bottom, left:right]
     metrics["croppedFrameWidth"] = int(right - left)
     metrics["croppedFrameHeight"] = int(bottom - top)
@@ -454,6 +475,25 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     return refine_gg_table_crop(cropped, metrics)
 
 
+def _browser_frame_looks_like_full_monitor(frame_width: int, frame_height: int, monitors: list[dict[str, Any]]) -> bool:
+    if not monitors:
+        return False
+    frame_aspect = frame_width / max(1, frame_height)
+    for monitor in monitors:
+        monitor_width = int(monitor.get("width") or 0)
+        monitor_height = int(monitor.get("height") or 0)
+        if monitor_width <= 0 or monitor_height <= 0:
+            continue
+        monitor_aspect = monitor_width / max(1, monitor_height)
+        if abs(frame_aspect - monitor_aspect) <= 0.08:
+            return True
+        scale_x = frame_width / monitor_width
+        scale_y = frame_height / monitor_height
+        if 0.25 <= scale_x <= 2.5 and abs(scale_x - scale_y) <= 0.08:
+            return True
+    return False
+
+
 def save_debug_image(path: Path, frame: Any) -> None:
     from PIL import Image
 
@@ -465,6 +505,33 @@ def save_debug_image(path: Path, frame: Any) -> None:
     else:
         image = Image.fromarray(frame)
     image.save(path)
+
+
+def _extract_crop_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "inputFrameWidth",
+        "inputFrameHeight",
+        "croppedFrameWidth",
+        "croppedFrameHeight",
+        "cropSource",
+        "captureSource",
+        "selectedWindowTitle",
+        "selectedWindowRect",
+        "selectedWindow",
+        "cropRect",
+        "innerTableRect",
+        "cropConfidence",
+        "cropWarnings",
+        "cropDiagnostics",
+        "isRealClubGg",
+        "realClubGgScore",
+        "clubggAnchorsFound",
+        "rejectedLocalhostTable",
+        "rejectedBrowserChrome",
+        "rejectedReason",
+        "selectedCropCandidate",
+    }
+    return {key: value for key, value in metrics.items() if key in keys}
 
 
 def save_cropped_debug_frame(frame: Any, *, force: bool = False) -> None:
@@ -525,8 +592,18 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
         crop_ms = round((time.perf_counter() - crop_started_at) * 1000, 2)
         schedule_cropped_debug_frame_save(frame)
         parse_started_at = time.perf_counter()
-        snapshot = await asyncio.to_thread(parse_frame, frame, get_cached_calibration(), FAST_GG_READER)
-        backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
+        if not bool(crop_metrics.get("isRealClubGg")):
+            snapshot = None
+            backend_parse_ms = 0.0
+        else:
+            snapshot = await asyncio.to_thread(
+                parse_frame,
+                frame,
+                get_cached_calibration(),
+                FAST_GG_READER,
+                {**crop_metrics, "source": crop_metrics.get("cropSource")},
+            )
+            backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
     except Exception as exc:
         return {
             "type": "status",
@@ -631,6 +708,8 @@ def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str
         "croppedFrameWidth": int(frame.shape[1]),
         "croppedFrameHeight": int(frame.shape[0]),
         "cropSource": capture_source,
+        "captureSource": capture_source,
+        "selectedWindow": captured_window,
         "selectedWindowTitle": str((captured_window or {}).get("title") or "") if captured_window else None,
         "selectedWindowRect": {
             "left": int((captured_window or {}).get("left") or 0),
@@ -814,7 +893,18 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                 else:
                     try:
                         frame = await asyncio.to_thread(capture.grab)
-                        snapshot = await asyncio.to_thread(parse_frame, frame, calibration, FAST_GG_READER)
+                        window_metadata = {
+                            **(capture.last_window or {}),
+                            "source": capture.last_source,
+                            "captureSource": capture.last_source,
+                        }
+                        snapshot = await asyncio.to_thread(
+                            parse_frame,
+                            frame,
+                            calibration,
+                            FAST_GG_READER,
+                            window_metadata,
+                        )
                     except Exception as exc:
                         await websocket.send_json({
                             "type": "status",
@@ -837,6 +927,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                                 "clearTable": False,
                                 "calibrationVerified": bool(calibration.get("verified")),
                                 "confidence": 0,
+                                **last_crop_metrics,
                             })
                             target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
                             elapsed = time.perf_counter() - loop_started_at
@@ -844,6 +935,10 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             continue
                         else:
                             snapshot, events = enrich_snapshot(snapshot)
+                            crop_metrics = _extract_crop_metrics(snapshot.metrics)
+                            if crop_metrics:
+                                last_crop_metrics.clear()
+                                last_crop_metrics.update(crop_metrics)
                             reader_state.lastSnapshotAt = snapshot.timestamp
                             data = snapshot.model_dump()
                             data["captureSource"] = capture.last_source

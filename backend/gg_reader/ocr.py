@@ -11,15 +11,19 @@ import numpy as np
 def normalize_amount(raw: str | None) -> float:
     if not raw:
         return 0.0
-    value = raw.strip().replace(",", "")
+    value = raw.strip()
     numeric_tokens = re.findall(r"(?i)(?:\d|[Oo])[\dOoIl.,]*(?:\s*(?:BB|B|K|M))?", value)
     if numeric_tokens:
         value = numeric_tokens[-1]
+    value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
     value_upper = value.upper()
     is_big_blind_value = "BB" in value_upper or bool(re.search(r"\d\s*B", value_upper))
+    if is_big_blind_value and "," in value and "." not in value:
+        value = re.sub(r"(\d+),(\d{1,2})(?=\s*B+\s*$)", r"\1.\2", value, flags=re.IGNORECASE)
+    else:
+        value = value.replace(",", "")
     if is_big_blind_value:
         value = re.sub(r"(?i)\s*B+\s*", "", value)
-    value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
     if is_big_blind_value and value.count(".") > 1:
         parts = [part for part in value.split(".") if part]
         if len(parts) >= 2:
@@ -195,11 +199,19 @@ def read_name(image: np.ndarray) -> tuple[str, float]:
             scaled = 255 - cv2.resize(tight, None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
             candidates.append(_run_tesseract(scaled, "--psm 7"))
             candidates.append(_run_tesseract(scaled, "--psm 8"))
+            if mask is white:
+                clean_scaled = cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC)
+                whitelist = "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
+                for processed in (clean_scaled, 255 - clean_scaled):
+                    for psm in (7, 8):
+                        raw = _run_tesseract_string(processed, f"--psm {psm} {whitelist}")
+                        if raw:
+                            candidates.append((raw, 0.72))
 
     cleaned_candidates = [
-        (text.strip(), confidence)
+        (_clean_ocr_name_candidate(text), confidence)
         for text, confidence in candidates
-        if text and text.strip()
+        if text and _clean_ocr_name_candidate(text)
     ]
     if not cleaned_candidates:
         return "", 0.0
@@ -223,6 +235,13 @@ def _tight_mask(mask: np.ndarray) -> np.ndarray | None:
     right = min(mask.shape[1], int(cols.max()) + 3)
     tight = mask[top:bottom, left:right]
     return tight if tight.size else None
+
+
+def _clean_ocr_name_candidate(text: str) -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"[^0-9A-Za-z\u0590-\u05ff_. -]+", " ", value)
+    value = " ".join(value.split())
+    return value.strip(" -_{}[]()\\/")
 
 
 def read_card(image: np.ndarray) -> dict[str, object]:

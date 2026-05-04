@@ -43,14 +43,17 @@ def parse_frame(
     frame: np.ndarray,
     calibration: dict[str, Any],
     fast_reader: Any | None = None,
+    window_metadata: dict[str, Any] | None = None,
 ) -> GgTableSnapshot | None:
-    crop_result = detect_clubgg_table_crop(frame)
+    crop_result = detect_clubgg_table_crop(frame, window_metadata)
     frame_for_reader = crop_result.cropped_frame
     crop_metrics = {
         "inputFrameWidth": int(frame.shape[1]) if frame is not None and frame.ndim >= 2 else 0,
         "inputFrameHeight": int(frame.shape[0]) if frame is not None and frame.ndim >= 2 else 0,
         **crop_result.metrics(),
     }
+    if not bool(crop_metrics.get("isRealClubGg")):
+        return None
     if fast_reader is not None:
         fast_snapshot = fast_reader.parse(frame_for_reader)
         if fast_snapshot and fast_snapshot.confidence >= 0.58:

@@ -14,8 +14,9 @@ if str(ROOT) not in sys.path:
 
 from backend.gg_reader.models import GgCard, GgSeat, GgTableSnapshot
 from backend.gg_reader.ocr import normalize_amount
+from backend.gg_reader.parser import parse_frame
 from backend.gg_reader.profile_matcher import choose_and_fit_profile
-from backend.gg_reader.table_crop import detect_clubgg_table_crop
+from backend.gg_reader.table_crop import detect_clubgg_table_crop, validate_real_clubgg_crop
 from backend.gg_reader.table_state import TableStateStabilizer
 from backend.main import infer_actions
 
@@ -35,6 +36,8 @@ class AmountNormalizationTest(unittest.TestCase):
             "1.5BB": 1.5,
             "207.5bb": 207.5,
             "110.5 BB": 110.5,
+            "192,1B": 192.1,
+            "195,17B": 195.17,
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
@@ -129,6 +132,9 @@ class DebugFrameCropProfileTest(unittest.TestCase):
 
     def test_profile_fitting_alignment_on_latest_cropped_frame(self) -> None:
         frame = _load_optional_image(ROOT / "backend" / "data" / "debug_last_cropped_frame.png")
+        validation = validate_real_clubgg_crop(frame)
+        if not validation.is_real_clubgg:
+            raise unittest.SkipTest(validation.rejected_reason or "latest debug crop is not a visible ClubGG table")
         profile = choose_and_fit_profile(frame)
         self.assertGreaterEqual(profile.fit_score, 0.25)
         self.assertIn(profile.name, {"clubgg_fixed_8max", "clubgg_compact_8max"})
@@ -142,6 +148,64 @@ class DebugFrameCropProfileTest(unittest.TestCase):
         assert snapshot is not None
         self.assertAlmostEqual(snapshot.pot, 1.5, delta=0.2)
         self.assertGreaterEqual(snapshot.activePlayerCount, 2)
+
+    def test_reject_localhost_app_table_source(self) -> None:
+        frame = _synthetic_localhost_table()
+        result = validate_real_clubgg_crop(frame, {
+            "title": "localhost:7000 - Google Chrome",
+            "processName": "chrome.exe",
+            "processExe": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "className": "Chrome_WidgetWin_1",
+        })
+        self.assertFalse(result.is_real_clubgg)
+        diagnostics = result.as_diagnostics()
+        self.assertTrue(diagnostics["rejectedLocalhostTable"])
+        self.assertTrue(diagnostics["rejectedBrowserChrome"])
+
+    def test_select_real_clubgg_when_two_tables_visible(self) -> None:
+        frame = _load_two_table_fixture_or_synthetic()
+        crop = detect_clubgg_table_crop(frame)
+        self.assertTrue(crop.diagnostics.get("isRealClubGg"), crop.diagnostics)
+        self.assertEqual(crop.source, "image-detected-table")
+        self.assertGreater(crop.crop_rect["left"], frame.shape[1] * 0.50)
+        self.assertLess(crop.crop_rect["width"], frame.shape[1] * 0.40)
+        self.assertFalse(crop.diagnostics.get("rejectedLocalhostTable"))
+
+    def test_no_snapshot_from_wrong_source(self) -> None:
+        from backend.gg_reader.fast_reader import FastGgReader
+
+        frame = _synthetic_localhost_table()
+        snapshot = parse_frame(
+            frame,
+            {},
+            FastGgReader(),
+            {
+                "title": "localhost:7000 - Google Chrome",
+                "processName": "chrome.exe",
+                "className": "Chrome_WidgetWin_1",
+            },
+        )
+        self.assertIsNone(snapshot)
+
+    def test_do_not_stabilize_wrong_source_after_good_snapshot(self) -> None:
+        from backend.gg_reader.fast_reader import FastGgReader
+
+        reader = FastGgReader()
+        good_frame = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_table_preflop.png")
+        good = parse_frame(good_frame, {}, reader, {"title": "NLH 2-4 - 2/4"})
+        self.assertIsNotNone(good)
+
+        bad = parse_frame(
+            _synthetic_localhost_table(),
+            {},
+            reader,
+            {
+                "title": "localhost:7000 - Google Chrome",
+                "processName": "chrome.exe",
+                "className": "Chrome_WidgetWin_1",
+            },
+        )
+        self.assertIsNone(bad)
 
 
 class ActionInferenceTest(unittest.TestCase):
@@ -236,6 +300,43 @@ def _load_optional_image(path: Path) -> np.ndarray:
     frame = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if frame is None:
         raise unittest.SkipTest(f"Could not load image: {path}")
+    return frame
+
+
+def _load_two_table_fixture_or_synthetic() -> np.ndarray:
+    fixture = ROOT / "tests" / "fixtures" / "two_tables_localhost_and_clubgg.png"
+    if fixture.exists():
+        return _load_optional_image(fixture)
+    return _synthetic_two_tables()
+
+
+def _synthetic_two_tables() -> np.ndarray:
+    clubgg = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_table_preflop.png")
+    if clubgg.ndim == 3 and clubgg.shape[2] >= 4:
+        clubgg = clubgg[:, :, :3]
+    canvas = np.zeros((550, 2048, 3), dtype=np.uint8) + 30
+    local = _synthetic_localhost_table(width=1180, height=450)
+    canvas[70:520, 90:1270] = local
+    resized = cv2.resize(clubgg, (460, 340), interpolation=cv2.INTER_AREA)
+    canvas[130:470, 1345:1805] = resized
+    return canvas
+
+
+def _synthetic_localhost_table(*, width: int = 1140, height: int = 450) -> np.ndarray:
+    frame = np.zeros((height, width, 3), dtype=np.uint8) + 22
+    frame[:, :] = (18, 95, 38)
+    center = (width // 2, int(height * 0.62))
+    cv2.ellipse(frame, center, (int(width * 0.36), int(height * 0.24)), 0, 0, 360, (8, 24, 22), -1)
+    cv2.ellipse(frame, center, (int(width * 0.30), int(height * 0.17)), 0, 0, 360, (25, 118, 48), -1)
+    cv2.putText(frame, "localhost:7000", (34, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (230, 230, 230), 2)
+    cv2.rectangle(frame, (int(width * 0.43), int(height * 0.48)), (int(width * 0.57), int(height * 0.56)), (15, 35, 25), -1)
+    cv2.putText(frame, "Pot 1.50", (int(width * 0.45), int(height * 0.535)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 220, 80), 2)
+    for x_ratio, y_ratio in ((0.50, 0.18), (0.76, 0.35), (0.84, 0.62), (0.50, 0.86), (0.18, 0.62), (0.24, 0.35)):
+        x = int(width * x_ratio)
+        y = int(height * y_ratio)
+        cv2.rectangle(frame, (x - 62, y - 38), (x + 62, y + 38), (10, 18, 18), -1)
+        cv2.putText(frame, "GG Seat", (x - 48, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (240, 240, 240), 1)
+        cv2.putText(frame, "1000", (x - 32, y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 235, 0), 2)
     return frame
 
 

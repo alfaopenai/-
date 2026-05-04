@@ -3459,7 +3459,7 @@ function advanceActiveSlot(fromSlot) {
                     monitorIndex,
                     fps: GG_READER_BROWSER_FPS,
                     profile: "ggclub_9max",
-                    captureMode: useBrowserCapture ? "browser" : "auto"
+                    captureMode: useBrowserCapture ? "browser" : "window"
                 })
             });
 
@@ -3534,13 +3534,16 @@ function advanceActiveSlot(fromSlot) {
     function shouldUseBrowserGgCapture() {
         try {
             const params = new URLSearchParams(window.location.search);
+            if (params.get("ggBrowser") === "1") {
+                return Boolean(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+            }
             if (params.get("ggNative") === "1" || params.get("ggBrowser") === "0") {
                 return false;
             }
         } catch (error) {
-            // Keep the default browser capture path.
+            return false;
         }
-        return Boolean(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+        return false;
     }
 
     function requestGgDisplayMedia() {
@@ -3582,7 +3585,7 @@ function advanceActiveSlot(fromSlot) {
 
         state.ggReader.running = true;
         setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
-        showError("קורא את שולחן GG 3 פעמים בשנייה.");
+        showError("קורא את שולחן GG מהשיתוף פעם בשנייה.");
         startGgRenderLoop();
         state.ggReader.browserFrameNextAt = performance.now();
         scheduleNextGgBrowserFrame(0);
@@ -3847,7 +3850,7 @@ function advanceActiveSlot(fromSlot) {
         socket.addEventListener("open", () => {
             state.ggReader.running = true;
             setGgReaderStatus("running", "קורא GG...");
-            showError("קורא שולחן GG מהחלון הפעיל או מהמסך שנבחר.");
+            showError("קורא שולחן GG מחלון ClubGG האמיתי בלבד.");
             startGgRenderLoop();
         });
 

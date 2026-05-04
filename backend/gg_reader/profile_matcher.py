@@ -14,6 +14,7 @@ from .fixed_profile import (
     NormRoi,
 )
 from .roi import crop_norm
+from .table_crop import validate_real_clubgg_crop
 
 
 @dataclass(frozen=True)
@@ -119,9 +120,20 @@ def choose_and_fit_profile(
     frame: np.ndarray,
     preferred: FixedGgProfile | FittedGgProfile | None = None,
 ) -> FittedGgProfile:
+    source_validation = validate_real_clubgg_crop(frame)
     preferred_base = preferred.base if isinstance(preferred, FittedGgProfile) else preferred
     preferred_name = preferred_base.name if preferred_base is not None else ""
     bases = _candidate_bases(preferred)
+    if not source_validation.is_real_clubgg:
+        base = preferred_base or bases[0]
+        return FittedGgProfile(
+            base=base,
+            fit_score=0.0,
+            diagnostics={
+                "fitError": "source-not-real-clubgg",
+                **source_validation.as_diagnostics(),
+            },
+        )
     best: FittedGgProfile | None = None
     best_score = -1.0
     best_diagnostics: dict[str, Any] = {}
@@ -151,7 +163,11 @@ def choose_and_fit_profile(
             if adjusted_score > best_score:
                 best_score = adjusted_score
                 best = candidate
-                best_diagnostics = {**diagnostics, "rawFitScore": round(score, 4)}
+                best_diagnostics = {
+                    **diagnostics,
+                    **source_validation.as_diagnostics(),
+                    "rawFitScore": round(score, 4),
+                }
 
     if best is None:
         base = bases[0]

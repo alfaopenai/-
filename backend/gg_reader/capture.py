@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from threading import Event, Lock
@@ -38,13 +39,34 @@ def resolve_monitor_index(requested: int) -> tuple[int, str | None]:
     return fallback, f"Monitor {requested} not found, using Monitor {fallback}."
 
 
-def list_gg_windows() -> list[dict[str, Any]]:
+BAD_WINDOW_PROCESS_NAMES = {
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "mremoteng.exe",
+}
+BAD_WINDOW_TITLE_TOKENS = (
+    "localhost",
+    "127.0.0.1",
+    "ask gemini",
+    "google translate",
+    "mremoteng",
+)
+
+
+def list_gg_windows(*, include_rejected: bool = False, allow_browser_fallback: bool = False) -> list[dict[str, Any]]:
     import ctypes
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
     enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
     windows: list[dict[str, Any]] = []
+    psutil_module = _load_psutil()
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
     def callback(hwnd: int, _lparam: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
@@ -57,8 +79,6 @@ def list_gg_windows() -> list[dict[str, Any]]:
         user32.GetWindowTextW(hwnd, title_buffer, title_length + 1)
         title = title_buffer.value.strip()
         title_lower = title.lower()
-        if not any(token in title_lower for token in ("nlh", "plo", "clubgg", "club gg")):
-            return True
 
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -67,20 +87,86 @@ def list_gg_windows() -> list[dict[str, Any]]:
         if width < 320 or height < 240:
             return True
 
+        class_buffer = ctypes.create_unicode_buffer(256)
+        try:
+            user32.GetClassNameW(hwnd, class_buffer, len(class_buffer))
+        except Exception:
+            pass
+        class_name = class_buffer.value.strip()
+
+        pid = wintypes.DWORD()
+        try:
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        except Exception:
+            pid.value = 0
+        process_info = _process_info(int(pid.value), psutil_module)
+
+        client_rect = wintypes.RECT()
+        client_payload: dict[str, int] | None = None
+        try:
+            if user32.GetClientRect(hwnd, ctypes.byref(client_rect)):
+                point = POINT(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(point))
+                client_payload = {
+                    "left": int(point.x),
+                    "top": int(point.y),
+                    "width": int(client_rect.right - client_rect.left),
+                    "height": int(client_rect.bottom - client_rect.top),
+                }
+        except Exception:
+            client_payload = None
+
+        has_table_title = any(token in title_lower for token in ("nlh", "plo", "clubgg", "club gg"))
+        reject_reason = _reject_window_reason(
+            title=title,
+            process_name=str(process_info.get("processName") or ""),
+            process_exe=str(process_info.get("processExe") or ""),
+            class_name=class_name,
+            allow_browser_fallback=allow_browser_fallback,
+        )
+        if not has_table_title:
+            reject_reason = reject_reason or "not-gg-table-title"
+        if not has_table_title and not include_rejected:
+            return True
+        if reject_reason and not include_rejected:
+            return True
+
         score = 0
         if "nlh" in title_lower or "plo" in title_lower:
             score += 100
+        if re.search(r"\b\d+(?:\.\d+)?\s*[-/]\s*\d+(?:\.\d+)?\b", title_lower):
+            score += 35
         if "clubgg" in title_lower or "club gg" in title_lower:
             score += 20
+        process_name = str(process_info.get("processName") or "").lower()
+        process_exe = str(process_info.get("processExe") or "").lower()
+        if "clubgg" in process_name or "clubgg" in process_exe:
+            score += 35
+        if any(token in process_name or token in process_exe for token in ("hd-player", "nox", "bluestacks", "ldplayer")):
+            score += 18
+        if reject_reason:
+            score -= 500
         score += min(width * height // 10000, 40)
         windows.append({
             "hwnd": int(hwnd),
             "title": title,
+            "className": class_name,
+            "pid": int(pid.value),
+            **process_info,
             "left": int(rect.left),
             "top": int(rect.top),
             "width": width,
             "height": height,
+            "rect": {
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "width": width,
+                "height": height,
+            },
+            "clientRect": client_payload,
             "score": score,
+            "rejected": bool(reject_reason),
+            "rejectReason": reject_reason,
         })
         return True
 
@@ -91,6 +177,51 @@ def list_gg_windows() -> list[dict[str, Any]]:
 def get_best_gg_window() -> dict[str, Any] | None:
     windows = list_gg_windows()
     return windows[0] if windows else None
+
+
+def _load_psutil() -> Any | None:
+    try:
+        import psutil
+
+        return psutil
+    except Exception:
+        return None
+
+
+def _process_info(pid: int, psutil_module: Any | None) -> dict[str, Any]:
+    if pid <= 0 or psutil_module is None:
+        return {"processName": "", "processExe": ""}
+    try:
+        process = psutil_module.Process(pid)
+        return {
+            "processName": str(process.name() or ""),
+            "processExe": str(process.exe() or ""),
+        }
+    except Exception:
+        return {"processName": "", "processExe": ""}
+
+
+def _reject_window_reason(
+    *,
+    title: str,
+    process_name: str,
+    process_exe: str,
+    class_name: str,
+    allow_browser_fallback: bool,
+) -> str:
+    title_lower = title.lower()
+    process_lower = process_name.lower()
+    exe_lower = process_exe.lower()
+    class_lower = class_name.lower()
+    if any(token in title_lower for token in ("localhost", "127.0.0.1")):
+        return "localhost-title"
+    if any(token in title_lower for token in ("ask gemini", "google translate")):
+        return "browser-title"
+    if "mremoteng" in title_lower or "mremoteng" in process_lower or "mremoteng" in exe_lower or "mremoteng" in class_lower:
+        return "remote-control-process"
+    if not allow_browser_fallback and (process_lower in BAD_WINDOW_PROCESS_NAMES or any(item in exe_lower for item in BAD_WINDOW_PROCESS_NAMES)):
+        return "browser-process"
+    return ""
 
 
 @dataclass

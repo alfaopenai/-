@@ -47,7 +47,12 @@ def amount_text_signal(image: np.ndarray) -> float:
     return float((mask > 0).sum() / max(1, image.shape[0] * image.shape[1]))
 
 
-def read_amount_tight_ocr(image: np.ndarray, *, squash_bb_suffix: bool = False) -> tuple[float, float, str]:
+def read_amount_tight_ocr(
+    image: np.ndarray,
+    *,
+    squash_bb_suffix: bool = False,
+    quick: bool = False,
+) -> tuple[float, float, str]:
     import cv2
 
     mask = _best_text_mask(image)
@@ -64,23 +69,41 @@ def read_amount_tight_ocr(image: np.ndarray, *, squash_bb_suffix: bool = False) 
     if tight.size == 0:
         return 0.0, 0.0, ""
     has_decimal_marker = _has_decimal_marker(tight)
-    processed = 255 - cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
     try:
         import pytesseract
 
         _configure_tesseract(pytesseract)
-        raw = pytesseract.image_to_string(
-            processed,
-            config="--psm 7 -c tessedit_char_whitelist=0123456789.,KMBBO",
-        ).strip()
     except Exception:
         return 0.0, 0.0, ""
-    if has_decimal_marker and re.fullmatch(r"\d{2,4}", raw or ""):
-        raw = f"{raw[:-1]}.{raw[-1]}"
-    amount = normalize_amount(raw)
-    if squash_bb_suffix:
-        amount = _squash_bb_noise(raw, amount)
-    confidence = 0.82 if amount > 0 else 0.0
+
+    candidates: list[tuple[float, float, str]] = []
+    variants = ((cv2.INTER_NEAREST, 7),) if quick else (
+        (cv2.INTER_NEAREST, 7),
+        (cv2.INTER_CUBIC, 7),
+        (cv2.INTER_CUBIC, 8),
+    )
+    for interpolation, psm in variants:
+        processed = cv2.resize(tight, None, fx=8, fy=8, interpolation=interpolation)
+        raw = pytesseract.image_to_string(
+            processed,
+            config=f"--psm {psm} -c tessedit_char_whitelist=0123456789.,KMBBO",
+        ).strip()
+        if not raw:
+            continue
+        normalized_raw = raw
+        if has_decimal_marker and re.fullmatch(r"\d{2,4}", normalized_raw or ""):
+            normalized_raw = f"{normalized_raw[:-1]}.{normalized_raw[-1]}"
+        amount = normalize_amount(normalized_raw)
+        if squash_bb_suffix:
+            amount = _squash_bb_noise(normalized_raw, amount)
+        if amount > 0:
+            candidates.append((amount, _tight_amount_score(normalized_raw, amount), normalized_raw))
+
+    if not candidates:
+        return 0.0, 0.0, ""
+    best = max(candidates, key=lambda candidate: candidate[1] + _cluster_bonus(candidate[0], candidates))
+    amount, score, raw = best
+    confidence = max(0.55, min(0.90, score + _cluster_bonus(amount, candidates)))
     return amount, confidence, raw
 
 
@@ -213,15 +236,47 @@ def _sanitize_amount_text(raw: str) -> str:
 
 
 def _squash_bb_noise(raw: str, amount: float) -> float:
-    value = (raw or "").replace(",", "").upper()
+    value = (raw or "").replace(" ", "").upper()
+    if "," in value and "." not in value:
+        value = re.sub(r"(\d+),(\d{1,2})(?=B*$)", r"\1.\2", value)
+    else:
+        value = value.replace(",", "")
     match = re.search(r"(\d+)\.(\d)(?:[568B]{1,3})$", value)
     if match:
         return float(f"{match.group(1)}.{match.group(2)}")
-    if amount >= 20 and re.fullmatch(r"\d{2,4}", value):
+    if amount >= 1000 and re.fullmatch(r"\d{4,5}", value):
         digits = re.sub(r"\D+", "", value)
-        if len(digits) >= 2:
+        if len(digits) >= 4:
             return float(f"{digits[:-1]}.{digits[-1]}")
     return amount
+
+
+def _tight_amount_score(raw: str, amount: float) -> float:
+    value = str(raw or "").upper()
+    score = 0.52
+    if "." in value or "," in value:
+        score += 0.16
+    if "B" in value:
+        score += 0.08
+    if 1.0 <= amount <= 999.9:
+        score += 0.12
+    elif amount > 999.9:
+        score -= 0.34
+    if 0 < amount < 2:
+        score -= 0.08
+    digits = re.sub(r"\D+", "", value)
+    if len(digits) >= 5 and amount > 999.9:
+        score -= 0.16
+    decimal_match = re.search(r"[.,](\d+)", value)
+    if decimal_match and len(decimal_match.group(1)) > 2:
+        score -= 0.08
+    return score
+
+
+def _cluster_bonus(amount: float, candidates: list[tuple[float, float, str]]) -> float:
+    tolerance = max(0.8, amount * 0.006)
+    matches = sum(1 for other, _score, _raw in candidates if abs(float(other) - float(amount)) <= tolerance)
+    return min(0.24, max(0, matches - 1) * 0.08)
 
 
 def _has_decimal_marker(mask: np.ndarray) -> bool:

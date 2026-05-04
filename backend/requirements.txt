@@ -7,3 +7,4 @@ pillow
 pytesseract
 pydantic
 windows-capture
+psutil

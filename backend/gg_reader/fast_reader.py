@@ -95,6 +95,15 @@ class FastGgReader:
 
             self._select_profile(frame)
             metrics = self._new_metrics()
+            if getattr(self.profile, "fit_score", 1.0) <= 0.0 and (
+                (getattr(self.profile, "diagnostics", None) or {}).get("fitError") == "source-not-real-clubgg"
+            ):
+                metrics["sourceRejected"] = True
+                metrics["rejectedReason"] = (getattr(self.profile, "diagnostics", None) or {}).get(
+                    "rejectedReason",
+                    "source-not-real-clubgg",
+                )
+                return self._held_snapshot(metrics, started_at)
             quick_hash = self._quick_frame_hash(frame)
             quick_reuse = self._quick_reuse_snapshot(quick_hash, metrics, started_at)
             if quick_reuse is not None:
@@ -201,6 +210,10 @@ class FastGgReader:
                 parsed_value = entry.value if entry else None
                 if hasattr(parsed_value, "model_dump"):
                     parsed_value = parsed_value.model_dump()
+                changed_since_cache = False
+                if entry and entry.image_hash is not None:
+                    changed_since_cache = roi_changed(entry.image_hash, downscale_hash(crop), TEXT_CHANGE_THRESHOLD)
+                accepted = bool(entry and entry.known and not changed_since_cache)
                 field_payload = {
                     "key": cache_key,
                     "label": label,
@@ -208,10 +221,14 @@ class FastGgReader:
                     "raw": str(entry.raw or "") if entry else "",
                     "parsedValue": parsed_value,
                     "confidence": round(float(entry.confidence or 0.0), 4) if entry else 0.0,
-                    "source": str(entry.source or "unread") if entry else "unread",
-                    "roiChanged": False,
-                    "accepted": bool(entry and entry.known),
-                    "rejectReason": "" if entry and entry.known else "not-read-yet",
+                    "source": "stale-cache" if changed_since_cache else (str(entry.source or "unread") if entry else "unread"),
+                    "roiChanged": bool(changed_since_cache),
+                    "accepted": accepted,
+                    "rejectReason": (
+                        ""
+                        if accepted
+                        else ("roi-changed-since-cache" if changed_since_cache else "not-read-yet")
+                    ),
                 }
                 fields.append(field_payload)
                 crops_by_key[cache_key] = field_payload
@@ -793,24 +810,43 @@ class FastGgReader:
                     metrics["fieldsUpdated"] += 1
                 else:
                     metrics["fieldsReused"] += 1
+            elif key != "pot" and signal >= 0.020 and not entry.known:
+                if entry.future is None and self._can_queue_ocr(now, priority=False):
+                    entry.future = self._executor.submit(_read_amount_source, crop.copy())
+                    entry.requested_at = now
+                    metrics["ocrQueued"] += 1
+                    entry.source = "queued_tight_ocr"
+                    entry.known = True
+                    entry.completed_at = now
+                    metrics["fieldsUpdated"] += 1
+                else:
+                    metrics["fieldsReused"] += 1
             elif key == "pot" and (not entry.known or float(entry.value or 0.0) <= 0.0):
                 tight_started_at = time.perf_counter()
-                value, tight_confidence, tight_raw, tight_source = _read_pot_amount_source(crop)
+                value, tight_confidence, tight_raw = read_amount_tight_ocr(
+                    crop,
+                    squash_bb_suffix=True,
+                    quick=True,
+                )
                 metrics["ocrMs"] += round((time.perf_counter() - tight_started_at) * 1000, 2)
                 suspicious_tight_pot = (
-                    key == "pot"
-                    and float(value or 0.0) > 20
+                    float(value or 0.0) > 20
                     and not re.search(r"(?i)[.KMB]|BB", str(tight_raw or ""))
                 )
-                if value > 0 and tight_confidence >= 0.40 and not suspicious_tight_pot:
-                    if self._apply_amount_candidate(entry, key, value, tight_confidence, tight_raw, tight_source, now):
+                if value > 0 and tight_confidence >= 0.65 and not suspicious_tight_pot:
+                    if self._apply_amount_candidate(entry, key, value, tight_confidence, tight_raw, "tight_ocr", now):
                         metrics["fieldsUpdated"] += 1
                     else:
                         metrics["fieldsReused"] += 1
-                else:
+                elif entry.future is None and self._can_queue_ocr(now, priority=True):
+                    entry.future = self._executor.submit(_read_pot_amount_source, crop.copy())
+                    entry.requested_at = now
+                    entry.source = "queued_tight_ocr"
                     entry.known = True
                     entry.completed_at = now
-                    entry.source = "tight_ocr_low_confidence"
+                    metrics["ocrQueued"] += 1
+                    metrics["fieldsUpdated"] += 1
+                else:
                     metrics["fieldsReused"] += 1
             elif entry.future is None and self._can_queue_ocr(now, priority=key == "pot"):
                 reader = _read_pot_amount_source if key == "pot" else _read_amount_source
