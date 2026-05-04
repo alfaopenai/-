@@ -146,7 +146,40 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
 )
 
 
-def get_fixed_profile(name: str | None = None) -> FixedGgProfile:
-    if not name or name in {"clubgg_fixed", "clubgg_fixed_8max", "ggclub_8max", "ggclub_9max"}:
+CLUBGG_COMPACT_8MAX = FixedGgProfile(
+    name="clubgg_compact_8max",
+    table_type="8max",
+    title_blinds=(0.002, 0.000, 0.220, 0.050),
+    pot=(0.435, 0.355, 0.155, 0.060),
+    board=(
+        (0.310, 0.418, 0.075, 0.145),
+        (0.387, 0.418, 0.075, 0.145),
+        (0.464, 0.418, 0.075, 0.145),
+        (0.541, 0.418, 0.075, 0.145),
+        (0.618, 0.418, 0.075, 0.145),
+    ),
+    seats=CLUBGG_FIXED_8MAX.seats,
+    small_blind=2.0,
+    big_blind=4.0,
+    hero_seat_index=4,
+)
+
+
+def get_fixed_profile(
+    name: str | None = None,
+    *,
+    frame_shape: tuple[int, ...] | None = None,
+) -> FixedGgProfile:
+    normalized_name = (name or "").lower()
+    if normalized_name in {"clubgg_compact", "clubgg_compact_8max", "ggclub_compact_8max"}:
+        return CLUBGG_COMPACT_8MAX
+    if normalized_name in {"clubgg_fixed", "clubgg_fixed_8max", "ggclub_8max", "ggclub_9max"}:
         return CLUBGG_FIXED_8MAX
+
+    if frame_shape:
+        height, width = frame_shape[:2]
+        # Browser/window captures of the compact ClubGG table arrive as the
+        # table window itself, or as a small cropped window from a desktop share.
+        if 420 <= width <= 1000 and 300 <= height <= 800:
+            return CLUBGG_COMPACT_8MAX
     return CLUBGG_FIXED_8MAX

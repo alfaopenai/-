@@ -191,14 +191,17 @@ def read_card(image: np.ndarray) -> dict[str, object]:
     red = float(np.mean(channels[:, :, 2]))
     brightness = (blue + green + red) / 3
     bright_ratio = _bright_ratio(channels)
+    white_ratio = _white_card_ratio(channels)
 
-    if blue > red * 1.12 and blue > green * 1.05 and brightness > 35:
+    if white_ratio < 0.35 and blue > red * 1.12 and blue > green * 1.05 and brightness > 35:
         return {"hidden": True, "display": "X", "visible": False, "confidence": 0.78}
     if bright_ratio < 0.12:
         return {"hidden": False, "visible": False, "confidence": 0.0}
     if _looks_like_card_back(channels):
         return {"hidden": True, "display": "X", "visible": False, "confidence": 0.82}
     if bright_ratio < 0.30:
+        return {"hidden": False, "visible": False, "confidence": 0.0}
+    if white_ratio < 0.62:
         return {"hidden": False, "visible": False, "confidence": 0.0}
 
     visible = _read_visible_card(image)
@@ -357,10 +360,19 @@ def _looks_like_card_back(channels: np.ndarray) -> bool:
     bright_ratio = float((gray > 135).mean())
     if bright_ratio < 0.35:
         return False
+    if _white_card_ratio(channels) > 0.45:
+        return False
     edges = cv2.Canny(gray, 80, 160)
     edge_ratio = float((edges > 0).mean())
     color_std = float(np.std(channels[:, :, :3]))
     return edge_ratio > 0.08 or color_std < 42
+
+
+def _white_card_ratio(channels: np.ndarray) -> float:
+    if channels.size == 0:
+        return 0.0
+    white = (channels[:, :, 0] > 210) & (channels[:, :, 1] > 210) & (channels[:, :, 2] > 210)
+    return float(white.mean())
 
 
 def _bright_ratio(channels: np.ndarray) -> float:

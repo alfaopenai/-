@@ -31,6 +31,7 @@ class _FieldCache:
     value: Any = None
     confidence: float = 0.0
     raw: str = ""
+    source: str = "unknown"
     image_hash: np.ndarray | None = None
     future: Future[Any] | None = None
     requested_at: float = 0.0
@@ -41,6 +42,7 @@ class _FieldCache:
 class FastGgReader:
     def __init__(self, profile: FixedGgProfile | None = None, *, ocr_workers: int = 1) -> None:
         self.profile = profile or get_fixed_profile()
+        self._profile_locked = profile is not None
         self._executor = ThreadPoolExecutor(max_workers=ocr_workers, thread_name_prefix="fast-gg-ocr")
         self._lock = RLock()
         self._fields: dict[str, _FieldCache] = {}
@@ -52,6 +54,7 @@ class FastGgReader:
         self._last_dealer_at = 0.0
         self._parse_timestamps: deque[float] = deque(maxlen=240)
         self._parse_durations_ms: deque[float] = deque(maxlen=240)
+        self._last_amount_fields: list[dict[str, Any]] = []
         self._last_metrics: dict[str, Any] = {
             "reader": "fast_roi",
             "actualReaderFps": 0.0,
@@ -67,10 +70,12 @@ class FastGgReader:
     def parse(self, frame: np.ndarray) -> GgTableSnapshot | None:
         started_at = time.perf_counter()
         with self._lock:
-            metrics = self._new_metrics()
             if frame is None or frame.size == 0 or frame.ndim < 2:
+                metrics = self._new_metrics()
                 return self._held_snapshot(metrics, started_at)
 
+            self._select_profile(frame)
+            metrics = self._new_metrics()
             quick_hash = self._quick_frame_hash(frame)
             quick_reuse = self._quick_reuse_snapshot(quick_hash, metrics, started_at)
             if quick_reuse is not None:
@@ -183,7 +188,17 @@ class FastGgReader:
             "ocrCompleted": 0,
             "ocrPending": 0,
             "confidence": 0.0,
+            "amountFields": [],
         }
+
+    def _select_profile(self, frame: np.ndarray) -> None:
+        if self._profile_locked:
+            return
+        selected = get_fixed_profile(frame_shape=frame.shape)
+        if selected.name == self.profile.name:
+            return
+        self.profile = selected
+        self._last_quick_hash = None
 
     def _finish_metrics(self, metrics: dict[str, Any], started_at: float, confidence: float) -> None:
         parse_ms = round((time.perf_counter() - started_at) * 1000, 2)
@@ -194,7 +209,28 @@ class FastGgReader:
         metrics["actualReaderFps"] = self._actual_fps()
         metrics["ocrPending"] = self._pending_ocr_count()
         metrics["confidence"] = round(float(confidence), 4)
+        if not metrics.get("amountFields"):
+            metrics["amountFields"] = self._amount_field_cache_debug()
+        if isinstance(metrics.get("amountFields"), list) and metrics["amountFields"]:
+            self._last_amount_fields = [dict(item) for item in metrics["amountFields"]]
+        else:
+            metrics["amountFields"] = list(self._last_amount_fields)
         self._last_metrics = dict(metrics)
+
+    def _amount_field_cache_debug(self) -> list[dict[str, Any]]:
+        fields: list[dict[str, Any]] = []
+        for key, entry in self._fields.items():
+            if key != "pot" and "-stack" not in key and "-bet" not in key:
+                continue
+            fields.append({
+                "key": key,
+                "raw": str(entry.raw or ""),
+                "value": round(float(entry.value or 0.0), 4),
+                "confidence": round(float(entry.confidence or 0.0), 4),
+                "source": str(entry.source or "cache"),
+                "roiChanged": False,
+            })
+        return fields[:64]
 
     def _held_snapshot(self, metrics: dict[str, Any], started_at: float) -> GgTableSnapshot | None:
         now = time.monotonic()
@@ -465,6 +501,7 @@ class FastGgReader:
         if entry.future is not None:
             metrics["fieldsReused"] += 1
             entry.image_hash = new_hash
+            self._record_amount_debug(metrics, key, entry, changed, "cache_pending")
             return float(entry.value or 0.0), float(entry.confidence or 0.0), str(entry.raw or "")
         retry_window_due = (
             entry.future is None
@@ -474,6 +511,7 @@ class FastGgReader:
         if not changed and entry.known and not retry_window_due:
             metrics["fieldsReused"] += 1
             entry.image_hash = new_hash
+            self._record_amount_debug(metrics, key, entry, changed, "cache")
             return float(entry.value or 0.0), float(entry.confidence or 0.0), str(entry.raw or "")
 
         signal = amount_text_signal(crop)
@@ -482,12 +520,14 @@ class FastGgReader:
                 entry.value = 0.0
                 entry.confidence = 0.92
                 entry.raw = ""
+                entry.source = "empty"
                 entry.known = True
                 entry.completed_at = now
                 metrics["fieldsUpdated"] += 1
             else:
                 metrics["fieldsReused"] += 1
             entry.image_hash = new_hash
+            self._record_amount_debug(metrics, key, entry, changed, "empty")
             return 0.0, 0.92, ""
 
         retry_due = retry_window_due and signal >= 0.008
@@ -501,14 +541,34 @@ class FastGgReader:
                 entry.value = amount
                 entry.confidence = confidence
                 entry.raw = raw
+                entry.source = "fast_amount"
                 entry.known = True
                 entry.completed_at = now
                 metrics["fieldsUpdated"] += 1
+            elif key == "pot" and (not entry.known or float(entry.value or 0.0) <= 0.0):
+                tight_started_at = time.perf_counter()
+                value, tight_confidence, tight_raw, tight_source = _read_pot_amount_source(crop)
+                metrics["ocrMs"] += round((time.perf_counter() - tight_started_at) * 1000, 2)
+                if value > 0 and tight_confidence >= 0.40:
+                    entry.value = value
+                    entry.confidence = tight_confidence
+                    entry.raw = tight_raw
+                    entry.source = tight_source
+                    entry.known = True
+                    entry.completed_at = now
+                    metrics["fieldsUpdated"] += 1
+                else:
+                    entry.known = True
+                    entry.completed_at = now
+                    entry.source = "tight_ocr_low_confidence"
+                    metrics["fieldsReused"] += 1
             elif entry.future is None and self._can_queue_ocr(now, priority=key == "pot"):
-                reader = _read_pot_amount if key == "pot" else read_amount
+                reader = _read_pot_amount_source if key == "pot" else _read_amount_source
                 entry.future = self._executor.submit(reader, crop.copy())
                 entry.requested_at = now
                 metrics["ocrQueued"] += 1
+                if not entry.source or entry.source == "unknown":
+                    entry.source = "queued_tight_ocr" if key == "pot" else "queued_tesseract"
                 if not entry.known:
                     entry.known = True
                     entry.completed_at = now
@@ -519,11 +579,12 @@ class FastGgReader:
                 if not entry.known:
                     entry.known = True
                     entry.completed_at = now
-                    entry.requested_at = now
+                    entry.source = "fast_amount_low_confidence"
                 metrics["fieldsReused"] += 1
         else:
             metrics["fieldsReused"] += 1
         entry.image_hash = new_hash
+        self._record_amount_debug(metrics, key, entry, changed, entry.source or "cache")
         return float(entry.value or 0.0), float(entry.confidence or 0.0), str(entry.raw or "")
 
     def _consume_amount_future(self, key: str, entry: _FieldCache, metrics: dict[str, Any]) -> None:
@@ -531,19 +592,45 @@ class FastGgReader:
         if future is None or not future.done():
             return
         try:
-            value, confidence, raw = future.result()
+            result = future.result()
         except Exception:
-            value, confidence, raw = 0.0, 0.0, ""
+            result = (0.0, 0.0, "", "tesseract_error")
+        if isinstance(result, tuple) and len(result) >= 4:
+            value, confidence, raw, source = result[:4]
+        else:
+            value, confidence, raw = result
+            source = "tesseract"
         entry.future = None
         suspicious_pot = key == "pot" and float(value or 0.0) > 20 and not re.search(r"(?i)[.KMB]|BB", str(raw or ""))
         if value > 0 and confidence >= 0.40 and not suspicious_pot:
             entry.value = float(value)
             entry.confidence = float(confidence)
             entry.raw = str(raw or "")
+            entry.source = str(source or "tesseract")
             entry.known = True
             entry.completed_at = time.monotonic()
             metrics["fieldsUpdated"] += 1
         metrics["ocrCompleted"] += 1
+
+    def _record_amount_debug(
+        self,
+        metrics: dict[str, Any],
+        key: str,
+        entry: _FieldCache,
+        roi_changed_value: bool,
+        source: str,
+    ) -> None:
+        amount_fields = metrics.get("amountFields")
+        if not isinstance(amount_fields, list) or len(amount_fields) >= 64:
+            return
+        amount_fields.append({
+            "key": key,
+            "raw": str(entry.raw or ""),
+            "value": round(float(entry.value or 0.0), 4),
+            "confidence": round(float(entry.confidence or 0.0), 4),
+            "source": source,
+            "roiChanged": bool(roi_changed_value),
+        })
 
     def _read_name_cached(
         self,
@@ -658,6 +745,8 @@ class FastGgReader:
         cutoff = now - 5.0
         while self._parse_timestamps and self._parse_timestamps[0] < cutoff:
             self._parse_timestamps.popleft()
+            if self._parse_durations_ms:
+                self._parse_durations_ms.popleft()
         if len(self._parse_timestamps) < 2:
             return 0.0
         span = max(0.25, self._parse_timestamps[-1] - self._parse_timestamps[0])
@@ -703,11 +792,17 @@ def _cyan_signal(image: np.ndarray) -> float:
     return float(mask.mean())
 
 
-def _read_pot_amount(image: np.ndarray) -> tuple[float, float, str]:
+def _read_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
+    amount, confidence, raw = read_amount(image)
+    return amount, confidence, raw, "tesseract"
+
+
+def _read_pot_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
     amount, confidence, raw = read_amount_tight_ocr(image, squash_bb_suffix=True)
     if amount > 0 and confidence > 0:
-        return amount, confidence, raw
-    return read_amount(image)
+        return amount, confidence, raw, "tight_ocr"
+    amount, confidence, raw = read_amount(image)
+    return amount, confidence, raw, "tesseract"
 
 
 def _active_signal(image: np.ndarray) -> float:

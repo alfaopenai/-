@@ -20,6 +20,7 @@ from .gg_reader.parser import load_mock_snapshot, parse_frame
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEBUG_FRAME_PATH = DATA_DIR / "debug_last_frame.png"
+DEBUG_CROPPED_FRAME_PATH = DATA_DIR / "debug_last_cropped_frame.png"
 DEBUG_ROI_OVERLAY_PATH = DATA_DIR / "debug_roi_overlay.png"
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -43,6 +44,17 @@ reader_config = GgReaderStartRequest()
 last_snapshot = None
 current_hand_id: str | None = None
 FAST_GG_READER = FastGgReader()
+last_crop_metrics: dict[str, Any] = {
+    "inputFrameWidth": None,
+    "inputFrameHeight": None,
+    "croppedFrameWidth": None,
+    "croppedFrameHeight": None,
+    "cropSource": "none",
+    "selectedWindowTitle": None,
+    "selectedWindowRect": None,
+    "cropRect": None,
+}
+_last_cropped_frame_saved_at = 0.0
 
 
 POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
@@ -220,20 +232,44 @@ def decode_browser_frame(body: bytes) -> Any:
 
 
 def crop_browser_frame_to_gg_window(frame: Any) -> Any:
+    cropped, _metrics = crop_browser_frame_to_gg_window_with_metrics(frame)
+    return cropped
+
+
+def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[str, Any]]:
+    frame_height, frame_width = frame.shape[:2]
+    metrics: dict[str, Any] = {
+        "inputFrameWidth": int(frame_width),
+        "inputFrameHeight": int(frame_height),
+        "croppedFrameWidth": int(frame_width),
+        "croppedFrameHeight": int(frame_height),
+        "cropSource": "browser-no-window",
+        "selectedWindowTitle": None,
+        "selectedWindowRect": None,
+        "cropRect": {"left": 0, "top": 0, "width": int(frame_width), "height": int(frame_height)},
+    }
     windows = list_gg_windows()
     if not windows:
-        return frame
+        return frame, metrics
 
-    frame_height, frame_width = frame.shape[:2]
     window = windows[0]
+    metrics["selectedWindowTitle"] = str(window.get("title") or "")
+    metrics["selectedWindowRect"] = {
+        "left": int(window.get("left") or 0),
+        "top": int(window.get("top") or 0),
+        "width": int(window.get("width") or 0),
+        "height": int(window.get("height") or 0),
+    }
     window_width = int(window.get("width") or 0)
     window_height = int(window.get("height") or 0)
     if window_width <= 0 or window_height <= 0:
-        return frame
+        metrics["cropSource"] = "browser-invalid-window"
+        return frame, metrics
 
     # If the browser shared only the GG window, keep the frame as-is.
     if frame_width <= window_width * 1.35 and frame_height <= window_height * 1.35:
-        return frame
+        metrics["cropSource"] = "browser-window-direct"
+        return frame, metrics
 
     monitors = list_monitors()
     monitor = next(
@@ -245,7 +281,8 @@ def crop_browser_frame_to_gg_window(frame: Any) -> Any:
         monitors[0] if monitors else None,
     )
     if not monitor:
-        return frame
+        metrics["cropSource"] = "browser-monitor-unavailable"
+        return frame, metrics
 
     scale_x = frame_width / max(1, int(monitor["width"]))
     scale_y = frame_height / max(1, int(monitor["height"]))
@@ -259,8 +296,42 @@ def crop_browser_frame_to_gg_window(frame: Any) -> Any:
     right = max(left, min(frame_width, right))
     bottom = max(top, min(frame_height, bottom))
     if right - left < 320 or bottom - top < 240:
-        return frame
-    return frame[top:bottom, left:right]
+        metrics["cropSource"] = "browser-crop-too-small"
+        return frame, metrics
+    cropped = frame[top:bottom, left:right]
+    metrics["croppedFrameWidth"] = int(right - left)
+    metrics["croppedFrameHeight"] = int(bottom - top)
+    metrics["cropSource"] = "browser-fullscreen-window-crop"
+    metrics["cropRect"] = {
+        "left": int(left),
+        "top": int(top),
+        "width": int(right - left),
+        "height": int(bottom - top),
+    }
+    return cropped, metrics
+
+
+def save_debug_image(path: Path, frame: Any) -> None:
+    from PIL import Image
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if frame.ndim == 3 and frame.shape[2] >= 4:
+        image = Image.fromarray(frame[:, :, [2, 1, 0, 3]], "RGBA")
+    elif frame.ndim == 3 and frame.shape[2] == 3:
+        image = Image.fromarray(frame[:, :, [2, 1, 0]], "RGB")
+    else:
+        image = Image.fromarray(frame)
+    image.save(path)
+
+
+def save_cropped_debug_frame(frame: Any, *, force: bool = False) -> None:
+    global _last_cropped_frame_saved_at
+
+    now = time.monotonic()
+    if not force and now - _last_cropped_frame_saved_at < 1.0:
+        return
+    save_debug_image(DEBUG_CROPPED_FRAME_PATH, frame)
+    _last_cropped_frame_saved_at = now
 
 
 @app.post("/api/gg-reader/parse-frame")
@@ -279,7 +350,8 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
     try:
         decode_started_at = time.perf_counter()
         frame = await asyncio.to_thread(decode_browser_frame, body)
-        frame = await asyncio.to_thread(crop_browser_frame_to_gg_window, frame)
+        frame, crop_metrics = await asyncio.to_thread(crop_browser_frame_to_gg_window_with_metrics, frame)
+        await asyncio.to_thread(save_cropped_debug_frame, frame)
         decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
         parse_started_at = time.perf_counter()
         snapshot = await asyncio.to_thread(parse_frame, frame, load_calibration(), FAST_GG_READER)
@@ -294,7 +366,10 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
         }
 
     frame_ms = round((time.perf_counter() - loop_started_at) * 1000, 2)
+    last_crop_metrics.clear()
+    last_crop_metrics.update(crop_metrics)
     metrics = FAST_GG_READER.get_metrics()
+    metrics.update(crop_metrics)
     metrics["readerParseMs"] = metrics.get("parseMs")
     metrics["parseMs"] = backend_parse_ms
     reader_state.framesRead += 1
@@ -348,7 +423,7 @@ async def post_calibration(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str, Any]:
-    from PIL import Image
+    global last_crop_metrics
 
     capture = ScreenCapture(monitor_index=monitor_index, capture_mode=capture_mode)
     try:
@@ -360,19 +435,32 @@ def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str
         capture.close()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    if frame.ndim == 3 and frame.shape[2] >= 4:
-        image = Image.fromarray(frame[:, :, [2, 1, 0, 3]], "RGBA")
-    elif frame.ndim == 3 and frame.shape[2] == 3:
-        image = Image.fromarray(frame[:, :, [2, 1, 0]], "RGB")
-    else:
-        image = Image.fromarray(frame)
-    image.save(DEBUG_FRAME_PATH)
+    save_debug_image(DEBUG_FRAME_PATH, frame)
+    save_cropped_debug_frame(frame, force=True)
 
     height, width = frame.shape[:2]
+    last_crop_metrics = {
+        "inputFrameWidth": int(width),
+        "inputFrameHeight": int(height),
+        "croppedFrameWidth": int(width),
+        "croppedFrameHeight": int(height),
+        "cropSource": capture_source,
+        "selectedWindowTitle": str((captured_window or {}).get("title") or "") if captured_window else None,
+        "selectedWindowRect": {
+            "left": int((captured_window or {}).get("left") or 0),
+            "top": int((captured_window or {}).get("top") or 0),
+            "width": int((captured_window or {}).get("width") or width),
+            "height": int((captured_window or {}).get("height") or height),
+        } if captured_window else None,
+        "cropRect": {"left": 0, "top": 0, "width": int(width), "height": int(height)},
+    }
     return {
         "path": str(DEBUG_FRAME_PATH),
+        "croppedPath": str(DEBUG_CROPPED_FRAME_PATH),
         "width": int(width),
         "height": int(height),
+        "croppedWidth": int(width),
+        "croppedHeight": int(height),
         "monitorIndex": resolved_index,
         "captureSource": capture_source,
         "window": captured_window,
@@ -400,12 +488,17 @@ async def get_debug_frame_info() -> dict[str, Any]:
         return {
             "exists": False,
             "path": str(DEBUG_FRAME_PATH),
+            "croppedPath": str(DEBUG_CROPPED_FRAME_PATH),
+            "croppedExists": DEBUG_CROPPED_FRAME_PATH.exists(),
             "monitorIndex": reader_config.monitorIndex,
         }
     return {
         "exists": True,
         "path": str(DEBUG_FRAME_PATH),
         "bytes": DEBUG_FRAME_PATH.stat().st_size,
+        "croppedPath": str(DEBUG_CROPPED_FRAME_PATH),
+        "croppedExists": DEBUG_CROPPED_FRAME_PATH.exists(),
+        "croppedBytes": DEBUG_CROPPED_FRAME_PATH.stat().st_size if DEBUG_CROPPED_FRAME_PATH.exists() else 0,
         "monitorIndex": reader_config.monitorIndex,
     }
 
@@ -414,6 +507,7 @@ async def get_debug_frame_info() -> dict[str, Any]:
 async def get_debug_metrics() -> dict[str, Any]:
     return {
         **FAST_GG_READER.get_metrics(),
+        **last_crop_metrics,
         "running": reader_state.running,
         "framesRead": reader_state.framesRead,
         "lastFrameMs": reader_state.lastFrameMs,
@@ -427,23 +521,24 @@ async def get_debug_roi_overlay() -> dict[str, Any]:
     try:
         metadata = FAST_GG_READER.save_roi_overlay(DEBUG_ROI_OVERLAY_PATH)
     except Exception:
-        if not DEBUG_FRAME_PATH.exists():
+        source_path = DEBUG_CROPPED_FRAME_PATH if DEBUG_CROPPED_FRAME_PATH.exists() else DEBUG_FRAME_PATH
+        if not source_path.exists():
             return {
                 "ok": False,
-                "error": "No parsed frame or debug_last_frame.png is available.",
+                "error": "No parsed frame or debug_last_cropped_frame.png is available.",
                 "path": str(DEBUG_ROI_OVERLAY_PATH),
             }
         import cv2
 
-        frame = cv2.imread(str(DEBUG_FRAME_PATH), cv2.IMREAD_UNCHANGED)
+        frame = cv2.imread(str(source_path), cv2.IMREAD_UNCHANGED)
         if frame is None:
             return {
                 "ok": False,
-                "error": "Could not load debug_last_frame.png.",
+                "error": f"Could not load {source_path.name}.",
                 "path": str(DEBUG_ROI_OVERLAY_PATH),
             }
         metadata = FAST_GG_READER.save_roi_overlay(DEBUG_ROI_OVERLAY_PATH, frame=frame)
-    return {"ok": True, **metadata}
+    return {"ok": True, "croppedFramePath": str(DEBUG_CROPPED_FRAME_PATH), **metadata}
 
 
 @app.websocket("/ws/gg-reader")
