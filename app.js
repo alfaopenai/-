@@ -327,6 +327,7 @@
             browserCrop: null,
             browserFrameTimer: null,
             browserFrameInFlight: false,
+            browserFrameNextAt: 0,
             frameTimes: [],
             actualFps: 0,
             lastFrameMs: null,
@@ -3518,19 +3519,17 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.running = true;
         setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
         showError("קורא את שולחן GG 3 פעמים בשנייה.");
-        captureGgBrowserFrame();
-        state.ggReader.browserFrameTimer = window.setInterval(
-            captureGgBrowserFrame,
-            GG_READER_BROWSER_FRAME_INTERVAL_MS
-        );
+        state.ggReader.browserFrameNextAt = performance.now();
+        scheduleNextGgBrowserFrame(0);
     }
 
     function stopGgBrowserCapture() {
         if (state.ggReader.browserFrameTimer) {
-            window.clearInterval(state.ggReader.browserFrameTimer);
+            window.clearTimeout(state.ggReader.browserFrameTimer);
         }
         state.ggReader.browserFrameTimer = null;
         state.ggReader.browserFrameInFlight = false;
+        state.ggReader.browserFrameNextAt = 0;
         state.ggReader.browserCrop = null;
         state.ggReader.frameTimes = [];
         state.ggReader.actualFps = 0;
@@ -3602,18 +3601,36 @@ function advanceActiveSlot(fromSlot) {
         return { left, top, width, height };
     }
 
+    function scheduleNextGgBrowserFrame(delayMs = GG_READER_BROWSER_FRAME_INTERVAL_MS) {
+        if (!state.ggReader.running) {
+            return;
+        }
+        if (state.ggReader.browserFrameTimer) {
+            window.clearTimeout(state.ggReader.browserFrameTimer);
+        }
+        state.ggReader.browserFrameTimer = window.setTimeout(
+            captureGgBrowserFrame,
+            Math.max(0, Number(delayMs) || 0)
+        );
+    }
+
     async function captureGgBrowserFrame() {
         const video = state.ggReader.browserVideo;
         const canvas = state.ggReader.browserCanvas;
         const crop = state.ggReader.browserCrop;
         if (!state.ggReader.running || !video || !canvas || state.ggReader.browserFrameInFlight) {
+            if (state.ggReader.running && state.ggReader.browserFrameInFlight) {
+                scheduleNextGgBrowserFrame(20);
+            }
             return;
         }
         if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
+            scheduleNextGgBrowserFrame(50);
             return;
         }
 
         state.ggReader.browserFrameInFlight = true;
+        const frameStartedAt = performance.now();
         let timeoutId = null;
         try {
             canvas.width = crop ? crop.width : video.videoWidth;
@@ -3658,6 +3675,11 @@ function advanceActiveSlot(fromSlot) {
                 window.clearTimeout(timeoutId);
             }
             state.ggReader.browserFrameInFlight = false;
+            if (state.ggReader.running) {
+                const nextFrameAt = frameStartedAt + GG_READER_BROWSER_FRAME_INTERVAL_MS;
+                state.ggReader.browserFrameNextAt = nextFrameAt;
+                scheduleNextGgBrowserFrame(nextFrameAt - performance.now());
+            }
         }
     }
 
@@ -4170,6 +4192,10 @@ function advanceActiveSlot(fromSlot) {
 
     function shouldApplyGgSnapshot(snapshot) {
         const confidence = Number(snapshot.confidence ?? 1);
+        if (isFastGgReaderSnapshot(snapshot) && confidence >= GG_READER_CONFIDENCE_MIN) {
+            state.ggReader.pendingSnapshot = null;
+            return true;
+        }
         if (!Number.isFinite(confidence) || confidence >= GG_READER_CONFIDENCE_DIRECT) {
             state.ggReader.pendingSnapshot = null;
             return true;
@@ -4186,6 +4212,15 @@ function advanceActiveSlot(fromSlot) {
         }
         state.ggReader.pendingSnapshot = signature;
         return false;
+    }
+
+    function isFastGgReaderSnapshot(snapshot) {
+        return snapshot
+            && (
+                snapshot.reader === "fast_roi"
+                || snapshot.metrics?.reader === "fast_roi"
+                || String(snapshot.profile || snapshot.metrics?.profile || "").startsWith("clubgg_")
+            );
     }
 
     function buildGgSnapshotSignature(snapshot) {
