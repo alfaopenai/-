@@ -16,12 +16,14 @@ from .gg_reader.fast_reader import FastGgReader
 from .gg_reader.history_store import append_event, read_hands, read_history, record_snapshot
 from .gg_reader.models import GgReaderStartRequest, GgReaderStatus, GgTableSnapshot
 from .gg_reader.parser import load_mock_snapshot, parse_frame
+from .gg_reader.table_crop import detect_clubgg_table_crop
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEBUG_FRAME_PATH = DATA_DIR / "debug_last_frame.png"
 DEBUG_CROPPED_FRAME_PATH = DATA_DIR / "debug_last_cropped_frame.png"
 DEBUG_ROI_OVERLAY_PATH = DATA_DIR / "debug_roi_overlay.png"
+DEBUG_FIELD_CROPS_DIR = DATA_DIR / "field_crops"
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
@@ -53,6 +55,9 @@ last_crop_metrics: dict[str, Any] = {
     "selectedWindowTitle": None,
     "selectedWindowRect": None,
     "cropRect": None,
+    "innerTableRect": None,
+    "cropConfidence": 0.0,
+    "cropWarnings": [],
 }
 _last_cropped_frame_saved_at = 0.0
 _cropped_frame_save_task: asyncio.Task[Any] | None = None
@@ -143,11 +148,19 @@ def assign_positions(snapshot: GgTableSnapshot, active_indexes: list[int]) -> No
 
 def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -> None:
     previous_seats = {seat.physicalSeatIndex: seat for seat in previous.seats} if previous else {}
+    previous_max_bet = max(
+        [round(float(seat.currentBet or 0), 2) for seat in previous.seats if seat.active] or [0.0]
+    ) if previous else 0.0
+    current_max_bet = max(
+        [round(float(seat.currentBet or 0), 2) for seat in snapshot.seats if seat.active] or [0.0]
+    )
+    now_ms = int(snapshot.timestamp or time.time() * 1000)
 
     for seat in snapshot.seats:
         if not seat.active:
             seat.action = "none"
             seat.actionAmount = 0
+            seat.actionSource = "empty"
             seat.status = "empty"
             continue
 
@@ -156,28 +169,77 @@ def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -
         before_bet = round(float(before.currentBet or 0), 2) if before else 0.0
         had_cards = bool(before and before.holeCards)
         has_cards = bool(seat.holeCards)
+        explicit_action = seat.action if seat.action in {"check", "call", "bet", "raise", "fold", "all-in", "waiting"} else "none"
+
+        if explicit_action not in {"none"} and float(seat.actionConfidence or 0.0) >= 0.45:
+            if not seat.actionSource:
+                seat.actionSource = "label_ocr" if explicit_action != "bet" else "visible_bet"
+            if explicit_action == "fold":
+                seat.holeCards = []
+                seat.status = "folded"
+                seat.actionAmount = 0
+                seat.actionSource = seat.actionSource or "label_ocr"
+            elif explicit_action in {"call", "bet", "raise", "all-in"}:
+                seat.actionAmount = current_bet or float(seat.actionAmount or 0)
+            continue
 
         if before and before.active and had_cards and not has_cards:
             seat.action = "fold"
             seat.actionAmount = 0
             seat.actionConfidence = max(float(seat.actionConfidence or 0), 0.90)
+            seat.actionSource = "cards_disappeared"
             seat.status = "folded"
             continue
 
+        if float(seat.stack or 0.0) <= 0.05 and (current_bet > 0 or float(seat.committed or 0) > 0):
+            seat.action = "all-in"
+            seat.actionAmount = max(current_bet, float(seat.committed or 0))
+            seat.actionConfidence = max(float(seat.actionConfidence or 0), 0.82)
+            seat.actionSource = "stack_zero"
+            continue
+
         if current_bet > before_bet + 0.01:
-            seat.action = "raise" if before_bet > 0 else "bet"
+            if current_bet > max(previous_max_bet, before_bet) + 0.01 and previous_max_bet > 0:
+                seat.action = "raise"
+                seat.actionSource = "bet_delta"
+            elif previous_max_bet > 0 and current_bet >= previous_max_bet - 0.01:
+                seat.action = "call"
+                seat.actionSource = "bet_delta"
+            else:
+                seat.action = "bet"
+                seat.actionSource = "bet_delta"
             seat.actionAmount = current_bet
             seat.actionConfidence = max(float(seat.betConfidence or 0), 0.80)
+            continue
+
+        if current_bet > 0 and current_bet >= current_max_bet - 0.01 and previous_max_bet > 0 and before_bet < current_bet:
+            seat.action = "call"
+            seat.actionAmount = current_bet
+            seat.actionConfidence = max(float(seat.betConfidence or 0), 0.72)
+            seat.actionSource = "bet_delta"
             continue
 
         if current_bet > 0:
             if seat.action not in {"bet", "raise", "call", "all-in"}:
                 seat.action = "bet"
             seat.actionAmount = current_bet
+            seat.actionSource = seat.actionSource or "visible_bet"
             continue
 
+        if before and before.action in {"check", "fold", "call", "bet", "raise", "all-in"}:
+            age_ms = max(0, now_ms - int(previous.timestamp or now_ms))
+            if age_ms <= 2000:
+                seat.action = before.action
+                seat.actionAmount = float(before.actionAmount or 0)
+                seat.actionConfidence = min(float(before.actionConfidence or 0.0), 0.55)
+                seat.actionSource = before.actionSource or "held"
+                if before.status == "folded":
+                    seat.status = "folded"
+                continue
+
         if seat.action not in {"check", "fold", "waiting"}:
-            seat.action = before.action if before and before.action in {"check", "fold"} else "none"
+            seat.action = "none"
+            seat.actionSource = "none"
         seat.actionAmount = 0
 
 
@@ -294,6 +356,29 @@ def crop_browser_frame_to_gg_window(frame: Any) -> Any:
     return cropped
 
 
+def refine_gg_table_crop(frame: Any, metrics: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    crop_result = detect_clubgg_table_crop(frame, {"source": metrics.get("cropSource")})
+    refined_metrics = dict(metrics)
+    base_rect = metrics.get("cropRect") or {"left": 0, "top": 0, "width": frame.shape[1], "height": frame.shape[0]}
+    local_rect = crop_result.crop_rect
+    combined_rect = {
+        "left": int(base_rect.get("left") or 0) + int(local_rect.get("left") or 0),
+        "top": int(base_rect.get("top") or 0) + int(local_rect.get("top") or 0),
+        "width": int(local_rect.get("width") or 0),
+        "height": int(local_rect.get("height") or 0),
+    }
+    refined_metrics.update(crop_result.metrics())
+    refined_metrics["cropSource"] = (
+        str(metrics.get("cropSource") or "browser")
+        if crop_result.source in {"window-client", "browser-window-direct"}
+        else f"{metrics.get('cropSource') or 'browser'}+{crop_result.source}"
+    )
+    refined_metrics["cropRect"] = combined_rect
+    refined_metrics["inputFrameWidth"] = int(metrics.get("inputFrameWidth") or frame.shape[1])
+    refined_metrics["inputFrameHeight"] = int(metrics.get("inputFrameHeight") or frame.shape[0])
+    return crop_result.cropped_frame, refined_metrics
+
+
 def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[str, Any]]:
     frame_height, frame_width = frame.shape[:2]
     metrics: dict[str, Any] = {
@@ -308,7 +393,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     }
     windows = get_cached_gg_windows()
     if not windows:
-        return frame, metrics
+        return refine_gg_table_crop(frame, metrics)
 
     window = windows[0]
     metrics["selectedWindowTitle"] = str(window.get("title") or "")
@@ -322,12 +407,12 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     window_height = int(window.get("height") or 0)
     if window_width <= 0 or window_height <= 0:
         metrics["cropSource"] = "browser-invalid-window"
-        return frame, metrics
+        return refine_gg_table_crop(frame, metrics)
 
     # If the browser shared only the GG window, keep the frame as-is.
     if frame_width <= window_width * 1.35 and frame_height <= window_height * 1.35:
         metrics["cropSource"] = "browser-window-direct"
-        return frame, metrics
+        return refine_gg_table_crop(frame, metrics)
 
     monitors = get_cached_monitors()
     monitor = next(
@@ -340,7 +425,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     )
     if not monitor:
         metrics["cropSource"] = "browser-monitor-unavailable"
-        return frame, metrics
+        return refine_gg_table_crop(frame, metrics)
 
     scale_x = frame_width / max(1, int(monitor["width"]))
     scale_y = frame_height / max(1, int(monitor["height"]))
@@ -355,7 +440,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     bottom = max(top, min(frame_height, bottom))
     if right - left < 320 or bottom - top < 240:
         metrics["cropSource"] = "browser-crop-too-small"
-        return frame, metrics
+        return refine_gg_table_crop(frame, metrics)
     cropped = frame[top:bottom, left:right]
     metrics["croppedFrameWidth"] = int(right - left)
     metrics["croppedFrameHeight"] = int(bottom - top)
@@ -366,7 +451,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         "width": int(right - left),
         "height": int(bottom - top),
     }
-    return cropped, metrics
+    return refine_gg_table_crop(cropped, metrics)
 
 
 def save_debug_image(path: Path, frame: Any) -> None:
@@ -540,34 +625,36 @@ def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     save_debug_image(DEBUG_FRAME_PATH, frame)
-    save_cropped_debug_frame(frame, force=True)
-
-    height, width = frame.shape[:2]
-    last_crop_metrics = {
-        "inputFrameWidth": int(width),
-        "inputFrameHeight": int(height),
-        "croppedFrameWidth": int(width),
-        "croppedFrameHeight": int(height),
+    cropped_frame, crop_metrics = refine_gg_table_crop(frame, {
+        "inputFrameWidth": int(frame.shape[1]),
+        "inputFrameHeight": int(frame.shape[0]),
+        "croppedFrameWidth": int(frame.shape[1]),
+        "croppedFrameHeight": int(frame.shape[0]),
         "cropSource": capture_source,
         "selectedWindowTitle": str((captured_window or {}).get("title") or "") if captured_window else None,
         "selectedWindowRect": {
             "left": int((captured_window or {}).get("left") or 0),
             "top": int((captured_window or {}).get("top") or 0),
-            "width": int((captured_window or {}).get("width") or width),
-            "height": int((captured_window or {}).get("height") or height),
+            "width": int((captured_window or {}).get("width") or frame.shape[1]),
+            "height": int((captured_window or {}).get("height") or frame.shape[0]),
         } if captured_window else None,
-        "cropRect": {"left": 0, "top": 0, "width": int(width), "height": int(height)},
-    }
+        "cropRect": {"left": 0, "top": 0, "width": int(frame.shape[1]), "height": int(frame.shape[0])},
+    })
+    save_cropped_debug_frame(cropped_frame, force=True)
+
+    height, width = frame.shape[:2]
+    last_crop_metrics = crop_metrics
     return {
         "path": str(DEBUG_FRAME_PATH),
         "croppedPath": str(DEBUG_CROPPED_FRAME_PATH),
         "width": int(width),
         "height": int(height),
-        "croppedWidth": int(width),
-        "croppedHeight": int(height),
+        "croppedWidth": int(cropped_frame.shape[1]),
+        "croppedHeight": int(cropped_frame.shape[0]),
         "monitorIndex": resolved_index,
         "captureSource": capture_source,
         "window": captured_window,
+        **crop_metrics,
     }
 
 
@@ -653,6 +740,57 @@ async def get_debug_roi_overlay() -> dict[str, Any]:
     }
 
 
+@app.get("/api/gg-reader/debug/field-crops")
+async def get_debug_field_crops() -> dict[str, Any]:
+    try:
+        metadata = FAST_GG_READER.save_field_crops(DEBUG_FIELD_CROPS_DIR)
+    except Exception:
+        source_path = DEBUG_CROPPED_FRAME_PATH if DEBUG_CROPPED_FRAME_PATH.exists() else DEBUG_FRAME_PATH
+        if not source_path.exists():
+            return {
+                "ok": False,
+                "error": "No parsed frame or debug frame is available.",
+                "path": str(DEBUG_FIELD_CROPS_DIR),
+            }
+        import cv2
+
+        frame = cv2.imread(str(source_path), cv2.IMREAD_UNCHANGED)
+        if frame is None:
+            return {
+                "ok": False,
+                "error": f"Could not load {source_path.name}.",
+                "path": str(DEBUG_FIELD_CROPS_DIR),
+            }
+        metadata = FAST_GG_READER.save_field_crops(DEBUG_FIELD_CROPS_DIR, frame=frame)
+    return {
+        "ok": True,
+        "croppedFramePath": str(DEBUG_CROPPED_FRAME_PATH),
+        "cropSource": last_crop_metrics.get("cropSource"),
+        **metadata,
+    }
+
+
+@app.get("/api/gg-reader/debug/last-snapshot-detailed")
+async def get_debug_last_snapshot_detailed() -> dict[str, Any]:
+    if last_snapshot is None:
+        return {
+            "ok": False,
+            "snapshot": None,
+            "metrics": {
+                **FAST_GG_READER.get_metrics(),
+                **last_crop_metrics,
+            },
+        }
+    return {
+        "ok": True,
+        "snapshot": last_snapshot.model_dump(),
+        "metrics": {
+            **FAST_GG_READER.get_metrics(),
+            **last_crop_metrics,
+        },
+    }
+
+
 @app.websocket("/ws/gg-reader")
 async def gg_reader_socket(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -686,7 +824,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             "fatal": False,
                             "confidence": 0,
                         })
-                        target_interval = 1 / max(reader_config.fps, 0.1) if reader_state.running else 0.1
+                        target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
                         elapsed = time.perf_counter() - loop_started_at
                         await asyncio.sleep(max(0.0, target_interval - elapsed))
                         continue
@@ -700,7 +838,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                                 "calibrationVerified": bool(calibration.get("verified")),
                                 "confidence": 0,
                             })
-                            target_interval = 1 / max(reader_config.fps, 0.1) if reader_state.running else 0.1
+                            target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
                             elapsed = time.perf_counter() - loop_started_at
                             await asyncio.sleep(max(0.0, target_interval - elapsed))
                             continue
@@ -720,7 +858,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             reader_state.lastFrameMs = data["frameMs"]
                             reader_state.captureSource = capture.last_source
                             await websocket.send_json(data)
-            target_interval = 1 / max(reader_config.fps, 0.1) if reader_state.running else 0.1
+            target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
             elapsed = time.perf_counter() - loop_started_at
             await asyncio.sleep(max(0.0, target_interval - elapsed))
     except WebSocketDisconnect:

@@ -170,8 +170,40 @@ def read_amount(image: np.ndarray) -> tuple[float, float, str]:
 
 
 def read_name(image: np.ndarray) -> tuple[str, float]:
+    import cv2
+
+    if image.size == 0:
+        return "", 0.0
+    candidates: list[tuple[str, float]] = []
     processed = preprocess_for_text(image)
-    return _run_tesseract(processed, "--psm 7")
+    candidates.append(_run_tesseract(processed, "--psm 7"))
+    candidates.append(_run_tesseract(processed, "--psm 8"))
+
+    if image.ndim == 3 and image.shape[2] >= 3:
+        channels = image[:, :, :3].astype(np.int16)
+        blue = channels[:, :, 0]
+        green = channels[:, :, 1]
+        red = channels[:, :, 2]
+        white = ((red > 145) & (green > 145) & (blue > 145)).astype(np.uint8) * 255
+        cyan = ((blue > 90) & (green > 90) & (red < 145)).astype(np.uint8) * 255
+        for mask in (white, cyan):
+            if int((mask > 0).sum()) < 4:
+                continue
+            tight = _tight_mask(mask)
+            if tight is None:
+                continue
+            scaled = 255 - cv2.resize(tight, None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
+            candidates.append(_run_tesseract(scaled, "--psm 7"))
+            candidates.append(_run_tesseract(scaled, "--psm 8"))
+
+    cleaned_candidates = [
+        (text.strip(), confidence)
+        for text, confidence in candidates
+        if text and text.strip()
+    ]
+    if not cleaned_candidates:
+        return "", 0.0
+    return max(cleaned_candidates, key=lambda item: (item[1], len(item[0])))
 
 
 def read_text(image: np.ndarray, *, mode: str = "name") -> tuple[str, float]:
@@ -179,6 +211,18 @@ def read_text(image: np.ndarray, *, mode: str = "name") -> tuple[str, float]:
         amount, confidence, raw = read_amount(image)
         return (raw or str(amount)), confidence
     return read_name(image)
+
+
+def _tight_mask(mask: np.ndarray) -> np.ndarray | None:
+    rows, cols = np.where(mask > 0)
+    if len(cols) == 0:
+        return None
+    top = max(0, int(rows.min()) - 2)
+    bottom = min(mask.shape[0], int(rows.max()) + 3)
+    left = max(0, int(cols.min()) - 2)
+    right = min(mask.shape[1], int(cols.max()) + 3)
+    tight = mask[top:bottom, left:right]
+    return tight if tight.size else None
 
 
 def read_card(image: np.ndarray) -> dict[str, object]:

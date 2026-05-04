@@ -17,6 +17,7 @@ class FixedSeatProfile:
     cards: tuple[NormRoi, NormRoi]
     active: NormRoi
     dealer: NormRoi
+    action: NormRoi | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class FixedGgProfile:
             yield f"seat-{seat.index}:{seat.label}:name", seat.name
             yield f"seat-{seat.index}:{seat.label}:stack", seat.stack
             yield f"seat-{seat.index}:{seat.label}:bet", seat.bet
+            yield f"seat-{seat.index}:{seat.label}:action", seat.action or seat.bet
             yield f"seat-{seat.index}:{seat.label}:dealer", seat.dealer
             yield f"seat-{seat.index}:{seat.label}:card-1", seat.cards[0]
             yield f"seat-{seat.index}:{seat.label}:card-2", seat.cards[1]
@@ -71,6 +73,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.450, 0.105, 0.050, 0.105), (0.497, 0.105, 0.050, 0.105)),
             active=(0.430, 0.100, 0.155, 0.185),
             dealer=(0.400, 0.265, 0.045, 0.055),
+            action=(0.375, 0.255, 0.145, 0.095),
         ),
         FixedSeatProfile(
             index=1,
@@ -81,6 +84,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.775, 0.190, 0.052, 0.110), (0.822, 0.190, 0.052, 0.110)),
             active=(0.755, 0.185, 0.150, 0.190),
             dealer=(0.720, 0.360, 0.050, 0.060),
+            action=(0.700, 0.350, 0.140, 0.095),
         ),
         FixedSeatProfile(
             index=2,
@@ -91,6 +95,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.865, 0.445, 0.050, 0.100), (0.910, 0.445, 0.050, 0.100)),
             active=(0.850, 0.440, 0.150, 0.190),
             dealer=(0.790, 0.455, 0.055, 0.065),
+            action=(0.760, 0.485, 0.125, 0.105),
         ),
         FixedSeatProfile(
             index=3,
@@ -101,6 +106,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.735, 0.675, 0.055, 0.115), (0.790, 0.675, 0.055, 0.115)),
             active=(0.720, 0.665, 0.165, 0.215),
             dealer=(0.720, 0.710, 0.055, 0.065),
+            action=(0.640, 0.585, 0.155, 0.095),
         ),
         FixedSeatProfile(
             index=4,
@@ -111,6 +117,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.438, 0.700, 0.057, 0.118), (0.493, 0.700, 0.057, 0.118)),
             active=(0.420, 0.690, 0.185, 0.265),
             dealer=(0.410, 0.805, 0.060, 0.070),
+            action=(0.435, 0.590, 0.150, 0.100),
         ),
         FixedSeatProfile(
             index=5,
@@ -121,6 +128,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.160, 0.675, 0.057, 0.115), (0.215, 0.675, 0.057, 0.115)),
             active=(0.150, 0.665, 0.190, 0.210),
             dealer=(0.245, 0.705, 0.060, 0.070),
+            action=(0.215, 0.585, 0.155, 0.095),
         ),
         FixedSeatProfile(
             index=6,
@@ -131,6 +139,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.035, 0.445, 0.055, 0.110), (0.088, 0.445, 0.055, 0.110)),
             active=(0.030, 0.435, 0.165, 0.205),
             dealer=(0.170, 0.500, 0.060, 0.070),
+            action=(0.115, 0.475, 0.150, 0.100),
         ),
         FixedSeatProfile(
             index=7,
@@ -141,6 +150,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.125, 0.165, 0.052, 0.115), (0.170, 0.165, 0.052, 0.115)),
             active=(0.120, 0.160, 0.160, 0.215),
             dealer=(0.135, 0.385, 0.060, 0.070),
+            action=(0.200, 0.325, 0.135, 0.105),
         ),
     ),
 )
@@ -168,6 +178,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.448, 0.105, 0.052, 0.115), (0.498, 0.105, 0.052, 0.115)),
             active=(0.420, 0.090, 0.180, 0.220),
             dealer=(0.400, 0.270, 0.055, 0.065),
+            action=(0.430, 0.270, 0.145, 0.095),
         ),
         FixedSeatProfile(
             index=1,
@@ -178,6 +189,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.775, 0.185, 0.052, 0.115), (0.828, 0.185, 0.052, 0.115)),
             active=(0.760, 0.175, 0.160, 0.225),
             dealer=(0.720, 0.360, 0.050, 0.060),
+            action=(0.700, 0.350, 0.140, 0.095),
         ),
         FixedSeatProfile(
             index=2,
@@ -188,6 +200,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.865, 0.445, 0.052, 0.110), (0.918, 0.445, 0.052, 0.110)),
             active=(0.850, 0.435, 0.150, 0.205),
             dealer=(0.805, 0.455, 0.055, 0.065),
+            action=(0.760, 0.485, 0.130, 0.105),
         ),
         FixedSeatProfile(
             index=3,
@@ -198,6 +211,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.735, 0.675, 0.055, 0.115), (0.790, 0.675, 0.055, 0.115)),
             active=(0.720, 0.665, 0.165, 0.215),
             dealer=(0.700, 0.708, 0.055, 0.065),
+            action=(0.640, 0.585, 0.155, 0.095),
         ),
         FixedSeatProfile(
             index=4,
@@ -208,6 +222,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.438, 0.735, 0.057, 0.118), (0.493, 0.735, 0.057, 0.118)),
             active=(0.420, 0.720, 0.185, 0.265),
             dealer=(0.410, 0.805, 0.060, 0.070),
+            action=(0.435, 0.615, 0.150, 0.100),
         ),
         FixedSeatProfile(
             index=5,
@@ -218,6 +233,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.160, 0.675, 0.057, 0.115), (0.215, 0.675, 0.057, 0.115)),
             active=(0.150, 0.665, 0.190, 0.210),
             dealer=(0.245, 0.705, 0.060, 0.070),
+            action=(0.215, 0.585, 0.155, 0.095),
         ),
         FixedSeatProfile(
             index=6,
@@ -228,6 +244,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.035, 0.445, 0.055, 0.110), (0.088, 0.445, 0.055, 0.110)),
             active=(0.030, 0.435, 0.165, 0.205),
             dealer=(0.150, 0.505, 0.060, 0.070),
+            action=(0.115, 0.475, 0.150, 0.100),
         ),
         FixedSeatProfile(
             index=7,
@@ -238,6 +255,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.125, 0.185, 0.052, 0.115), (0.178, 0.185, 0.052, 0.115)),
             active=(0.105, 0.175, 0.175, 0.225),
             dealer=(0.135, 0.385, 0.060, 0.070),
+            action=(0.200, 0.325, 0.135, 0.105),
         ),
     ),
     small_blind=2.0,

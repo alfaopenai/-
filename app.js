@@ -165,12 +165,12 @@
     const GG_READER_CONFIDENCE_MIN = 0.75;
     const GG_READER_CONFIDENCE_DIRECT = 0.9;
     const GG_READER_HISTORY_LIMIT = 80;
-    const GG_READER_BROWSER_FPS = 3;
+    const GG_READER_BROWSER_FPS = 1;
     const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
-    const GG_READER_RENDER_INTERVAL_MS = GG_READER_BROWSER_FRAME_INTERVAL_MS;
-    const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1280;
-    const GG_READER_BROWSER_JPEG_QUALITY = 0.58;
-    const GG_READER_MAX_IN_FLIGHT_FRAMES = 2;
+    const GG_READER_RENDER_INTERVAL_MS = 1000;
+    const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1920;
+    const GG_READER_BROWSER_JPEG_QUALITY = 0.9;
+    const GG_READER_MAX_IN_FLIGHT_FRAMES = 1;
     const GG_READER_PROBABILITY_THROTTLE_MS = 5000;
     const GG_READER_STATUS_LOG_INTERVAL_MS = 1000;
     const GG_READER_LIVE_ENUMERATION_LIMIT = 50000;
@@ -362,6 +362,7 @@
             lastFrameBytes: 0,
             lastInFlightMs: 0,
             lastSnapshotReceivedAt: 0,
+            latestServerReceivedAt: 0,
             lastResponseAt: 0,
             lastRenderAt: 0,
             lastApplySnapshotMs: 0,
@@ -3880,6 +3881,17 @@ function advanceActiveSlot(fromSlot) {
             renderGgReaderStatus();
             return;
         }
+        const serverReceivedAt = Number(payload.serverReceivedAt || 0);
+        if (
+            Number.isFinite(serverReceivedAt)
+            && serverReceivedAt > 0
+            && Number(state.ggReader.latestServerReceivedAt || 0) > 0
+            && serverReceivedAt < Number(state.ggReader.latestServerReceivedAt || 0)
+        ) {
+            state.ggReader.staleResponsesIgnored += 1;
+            renderGgReaderStatus();
+            return;
+        }
         updateGgReaderRuntimeMetrics(payload);
 
         if (payload.type === "status") {
@@ -3980,6 +3992,13 @@ function advanceActiveSlot(fromSlot) {
         }
 
         payload.frameSeq = seq;
+        const serverReceivedAt = Number(payload.serverReceivedAt || 0);
+        if (Number.isFinite(serverReceivedAt) && serverReceivedAt > 0) {
+            state.ggReader.latestServerReceivedAt = Math.max(
+                Number(state.ggReader.latestServerReceivedAt || 0),
+                serverReceivedAt
+            );
+        }
         state.ggReader.latestSnapshot = payload;
         state.ggReader.latestSnapshotSeq = seq;
         state.ggReader.lastSnapshotReceivedAt = performance.now();
@@ -4287,6 +4306,7 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.lastSnapshot = null;
         state.ggReader.latestSnapshot = null;
         state.ggReader.latestSnapshotSeq = 0;
+        state.ggReader.latestServerReceivedAt = 0;
         state.ggReader.lastRenderedSnapshotSeq = 0;
         state.ggReader.pendingSnapshot = null;
         state.ggReader.potOverride = null;

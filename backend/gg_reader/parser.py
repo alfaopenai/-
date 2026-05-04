@@ -13,6 +13,7 @@ import numpy as np
 
 from .models import GgCard, GgSeat, GgTableSnapshot
 from .ocr import read_amount, read_card, read_name
+from .table_crop import detect_clubgg_table_crop
 
 
 MOCK_SNAPSHOT_PATH = Path(__file__).resolve().parents[2] / "mock" / "gg_snapshot_example.json"
@@ -43,13 +44,22 @@ def parse_frame(
     calibration: dict[str, Any],
     fast_reader: Any | None = None,
 ) -> GgTableSnapshot | None:
+    crop_result = detect_clubgg_table_crop(frame)
+    frame_for_reader = crop_result.cropped_frame
+    crop_metrics = {
+        "inputFrameWidth": int(frame.shape[1]) if frame is not None and frame.ndim >= 2 else 0,
+        "inputFrameHeight": int(frame.shape[0]) if frame is not None and frame.ndim >= 2 else 0,
+        **crop_result.metrics(),
+    }
     if fast_reader is not None:
-        fast_snapshot = fast_reader.parse(frame)
+        fast_snapshot = fast_reader.parse(frame_for_reader)
         if fast_snapshot and fast_snapshot.confidence >= 0.58:
+            fast_snapshot.metrics = {**fast_snapshot.metrics, **crop_metrics}
             return fast_snapshot
 
-    auto_snapshot = parse_auto_gg_frame(frame)
+    auto_snapshot = parse_auto_gg_frame(frame_for_reader)
     if auto_snapshot:
+        auto_snapshot.metrics = {**auto_snapshot.metrics, **crop_metrics}
         return auto_snapshot
 
     if not calibration.get("verified"):
@@ -58,13 +68,13 @@ def parse_frame(
         return None
 
     visible_ids: set[str] = set()
-    pot, pot_confidence, _raw_pot = read_amount(crop_roi(frame, calibration, calibration.get("potRoi", {})))
-    board = parse_board(frame, calibration, visible_ids)
-    seats = parse_seats(frame, calibration, visible_ids)
+    pot, pot_confidence, _raw_pot = read_amount(crop_roi(frame_for_reader, calibration, calibration.get("potRoi", {})))
+    board = parse_board(frame_for_reader, calibration, visible_ids)
+    seats = parse_seats(frame_for_reader, calibration, visible_ids)
     if not board and not any(seat.active for seat in seats):
         return None
 
-    dealer_index = detect_dealer_index(frame, calibration, seats)
+    dealer_index = detect_dealer_index(frame_for_reader, calibration, seats)
     confidence = estimate_snapshot_confidence([
         0.90 if board else 0.0,
         pot_confidence,
@@ -73,7 +83,7 @@ def parse_frame(
     if board or sum(1 for seat in seats if seat.active) >= 2:
         confidence = max(confidence, 0.91)
 
-    return GgTableSnapshot(
+    snapshot = GgTableSnapshot(
         timestamp=int(time.time() * 1000),
         tableType="9max" if len(seats) > 6 else "6max",
         street=street_from_board(board),
@@ -85,6 +95,8 @@ def parse_frame(
         seats=seats,
         confidence=confidence,
     )
+    snapshot.metrics = crop_metrics
+    return snapshot
 
 
 AUTO_SEAT_ROIS: dict[int, dict[str, Any]] = {
@@ -450,7 +462,8 @@ def parse_auto_seats(frame: np.ndarray, visible_ids: set[str]) -> list[GgSeat]:
             or hole_cards
         )
         if active and (not name or name_confidence < 0.25):
-            name = f"GG Seat {index + 1}"
+            name = ""
+            name_confidence = 0.0
         confidence = estimate_snapshot_confidence([
             stack_confidence,
             min(0.85, cyan_signal * 12),
@@ -460,6 +473,7 @@ def parse_auto_seats(frame: np.ndarray, visible_ids: set[str]) -> list[GgSeat]:
         ])
         current_bet = current_bet if bet_confidence >= 0.70 else 0.0
         action = detected_action if action_confidence >= 0.25 else ("bet" if current_bet > 0 else "none")
+        action_source = "label_ocr" if action_confidence >= 0.25 and detected_action != "none" else ("visible_bet" if current_bet > 0 else "none")
         action_amount = current_bet if action in {"bet", "raise", "call", "all-in"} else 0.0
         status = "folded" if action == "fold" else ("active" if active else "empty")
         if action == "fold":
@@ -476,6 +490,7 @@ def parse_auto_seats(frame: np.ndarray, visible_ids: set[str]) -> list[GgSeat]:
             action=action,
             actionAmount=action_amount,
             actionConfidence=action_confidence if action != "none" else (bet_confidence if current_bet > 0 else 0),
+            actionSource=action_source,
             status=status,
             isHero=index == 4 and active,
             holeCards=hole_cards,
@@ -670,6 +685,7 @@ def parse_seats(frame: np.ndarray, calibration: dict[str, Any], visible_ids: set
         if action == "fold":
             hole_cards = []
 
+        parsed_action = action if action_confidence >= 0.25 else ("bet" if bet_confidence >= MIN_FIELD_CONFIDENCE and bet > 0 else "none")
         seats.append(GgSeat(
             physicalSeatIndex=index,
             active=active,
@@ -679,9 +695,10 @@ def parse_seats(frame: np.ndarray, calibration: dict[str, Any], visible_ids: set
             stackConfidence=stack_confidence,
             currentBet=bet if bet_confidence >= MIN_FIELD_CONFIDENCE else 0,
             betConfidence=bet_confidence,
-            action=action if action_confidence >= 0.25 else ("bet" if bet_confidence >= MIN_FIELD_CONFIDENCE and bet > 0 else "none"),
+            action=parsed_action,
             actionAmount=bet if bet_confidence >= MIN_FIELD_CONFIDENCE and bet > 0 else 0,
             actionConfidence=action_confidence,
+            actionSource="label_ocr" if action_confidence >= 0.25 and action != "none" else ("visible_bet" if bet_confidence >= MIN_FIELD_CONFIDENCE and bet > 0 else "none"),
             status="folded" if action == "fold" else ("active" if active else "empty"),
             holeCards=hole_cards,
             confidence=confidence,

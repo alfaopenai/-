@@ -41,6 +41,7 @@ class GgSeat(BaseModel):
     action: SeatAction = "none"
     actionAmount: float = 0
     actionConfidence: float | None = Field(default=None, ge=0, le=1)
+    actionSource: str | None = None
     status: SeatStatus = "active"
     isDealer: bool = False
     isHero: bool = False

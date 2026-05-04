@@ -15,7 +15,9 @@ from .fast_amount import amount_text_signal, read_amount_fast, read_amount_tight
 from .fixed_profile import FixedGgProfile, FixedSeatProfile, get_fixed_profile
 from .models import GgCard, GgSeat, GgTableSnapshot
 from .ocr import normalize_amount, read_amount, read_card, read_name
+from .profile_matcher import FittedGgProfile, choose_and_fit_profile
 from .roi import crop_norm, downscale_hash, draw_roi_overlay, roi_changed, roi_mean_abs_diff
+from .table_state import TableStateStabilizer
 
 
 MIN_FAST_CONFIDENCE = 0.58
@@ -23,8 +25,9 @@ CARD_CHANGE_THRESHOLD = 3.5
 TEXT_CHANGE_THRESHOLD = 4.0
 DEALER_HOLD_SECONDS = 1.5
 BAD_FRAME_HOLD_SECONDS = 1.2
-MAX_PENDING_OCR = 1
+MAX_PENDING_OCR = 8
 QUICK_REUSE_MIN_FPS = 2.5
+PROFILE_REFIT_SECONDS = 30.0
 
 
 @dataclass
@@ -38,10 +41,16 @@ class _FieldCache:
     requested_at: float = 0.0
     completed_at: float = 0.0
     known: bool = False
+    consecutive_hits: int = 0
+    consecutive_misses: int = 0
+    candidate_value: Any = None
+    candidate_raw: str = ""
+    candidate_confidence: float = 0.0
+    kind: str = "generic"
 
 
 class FastGgReader:
-    def __init__(self, profile: FixedGgProfile | None = None, *, ocr_workers: int = 1) -> None:
+    def __init__(self, profile: FixedGgProfile | None = None, *, ocr_workers: int = 5) -> None:
         self.profile = profile or get_fixed_profile()
         self._profile_locked = profile is not None
         self._executor = ThreadPoolExecutor(max_workers=ocr_workers, thread_name_prefix="fast-gg-ocr")
@@ -57,6 +66,10 @@ class FastGgReader:
         self._parse_durations_ms: deque[float] = deque(maxlen=240)
         self._last_amount_fields: list[dict[str, Any]] = []
         self._last_board_card_debug: list[dict[str, Any]] = []
+        self._profile_shape: tuple[int, int] | None = None
+        self._profile_fit_signature: tuple[str, float, float, float, float] | None = None
+        self._last_profile_fit_at = 0.0
+        self._stabilizer = TableStateStabilizer()
         self._last_metrics: dict[str, Any] = {
             "reader": "fast_roi",
             "actualReaderFps": 0.0,
@@ -76,6 +89,10 @@ class FastGgReader:
                 metrics = self._new_metrics()
                 return self._held_snapshot(metrics, started_at)
 
+            metrics = self._new_metrics()
+            if not self._looks_like_fixed_gg_frame(frame):
+                return self._held_snapshot(metrics, started_at)
+
             self._select_profile(frame)
             metrics = self._new_metrics()
             quick_hash = self._quick_frame_hash(frame)
@@ -84,8 +101,6 @@ class FastGgReader:
                 return quick_reuse
 
             self._last_frame = frame
-            if not self._looks_like_fixed_gg_frame(frame):
-                return self._held_snapshot(metrics, started_at)
             self._last_quick_hash = quick_hash
 
             now = time.monotonic()
@@ -131,12 +146,15 @@ class FastGgReader:
                 seats=seats,
                 confidence=confidence,
             )
-            self._finish_metrics(metrics, started_at, confidence)
             snapshot.metrics = dict(metrics)
+            snapshot = self._stabilizer.stabilize(snapshot, now=now)
+            metrics["stabilizer"] = self._stabilizer.get_metrics()
+            self._finish_metrics(metrics, started_at, snapshot.confidence)
+            snapshot.metrics = {**snapshot.metrics, **metrics}
 
             if confidence >= MIN_FAST_CONFIDENCE and active_count >= 2:
                 self._last_snapshot = snapshot.model_copy(deep=True)
-                self._last_snapshot_at = now
+                self._last_snapshot_at = time.monotonic()
             return snapshot if confidence >= MIN_FAST_CONFIDENCE else None
 
     def get_metrics(self) -> dict[str, Any]:
@@ -144,6 +162,7 @@ class FastGgReader:
             pending = self._pending_ocr_count()
             metrics = dict(self._last_metrics)
             metrics["ocrPending"] = pending
+            metrics["ocrPendingByKind"] = self._pending_ocr_by_kind()
             metrics["cacheFields"] = len(self._fields)
             metrics["lastSnapshotAgeMs"] = (
                 round((time.monotonic() - self._last_snapshot_at) * 1000, 2)
@@ -161,6 +180,138 @@ class FastGgReader:
                 raise RuntimeError("No GG frame has been parsed yet.")
             return draw_roi_overlay(source, self.profile, output_path)
 
+    def save_field_crops(self, output_dir: str | Path, frame: np.ndarray | None = None) -> dict[str, Any]:
+        import cv2
+
+        with self._lock:
+            source = frame if frame is not None else self._last_frame
+            if source is None:
+                raise RuntimeError("No GG frame has been parsed yet.")
+            output = Path(output_dir)
+            output.mkdir(parents=True, exist_ok=True)
+            fields: list[dict[str, Any]] = []
+            crops_by_key: dict[str, dict[str, Any]] = {}
+            for label, roi in self.profile.all_rois():
+                crop = crop_norm(source, roi)
+                safe_label = re.sub(r"[^0-9A-Za-z_.-]+", "_", label).strip("_") or "field"
+                path = output / f"{safe_label}.png"
+                cv2.imwrite(str(path), crop)
+                cache_key = _label_to_cache_key(label)
+                entry = self._fields.get(cache_key) or self._fields.get(label)
+                parsed_value = entry.value if entry else None
+                if hasattr(parsed_value, "model_dump"):
+                    parsed_value = parsed_value.model_dump()
+                field_payload = {
+                    "key": cache_key,
+                    "label": label,
+                    "path": str(path),
+                    "raw": str(entry.raw or "") if entry else "",
+                    "parsedValue": parsed_value,
+                    "confidence": round(float(entry.confidence or 0.0), 4) if entry else 0.0,
+                    "source": str(entry.source or "unread") if entry else "unread",
+                    "roiChanged": False,
+                    "accepted": bool(entry and entry.known),
+                    "rejectReason": "" if entry and entry.known else "not-read-yet",
+                }
+                fields.append(field_payload)
+                crops_by_key[cache_key] = field_payload
+            seats = self._field_crop_seat_debug(crops_by_key)
+            return {
+                "path": str(output),
+                "profile": self.profile.name,
+                "profileFitScore": round(float(getattr(self.profile, "fit_score", 0.0) or 0.0), 4),
+                "fieldCount": len(fields),
+                "fields": fields,
+                "seats": seats,
+            }
+
+    def _field_crop_seat_debug(self, crops_by_key: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        snapshot = self._last_snapshot
+        seat_by_index = {int(seat.physicalSeatIndex): seat for seat in snapshot.seats} if snapshot else {}
+        seats: list[dict[str, Any]] = []
+        for seat_profile in self.profile.seats:
+            index = int(seat_profile.index)
+            seat = seat_by_index.get(index)
+            name = crops_by_key.get(f"seat-{index}-name", {})
+            stack = crops_by_key.get(f"seat-{index}-stack", {})
+            bet = crops_by_key.get(f"seat-{index}-bet", {})
+            action = crops_by_key.get(f"seat-{index}-action", {})
+            card1 = self._card_field_debug(index, 0, crops_by_key)
+            card2 = self._card_field_debug(index, 1, crops_by_key)
+            seats.append({
+                "seatIndex": index,
+                "state": str(seat.status if seat else "unknown"),
+                "active": bool(seat.active) if seat else False,
+                "folded": bool(seat and seat.status == "folded"),
+                "name": {
+                    "path": name.get("path"),
+                    "raw": name.get("raw", ""),
+                    "parsedName": seat.name if seat else name.get("parsedValue"),
+                    "confidence": seat.nameConfidence if seat else name.get("confidence", 0.0),
+                    "source": name.get("source", "unread"),
+                    "accepted": bool(name.get("accepted")),
+                    "rejectReason": name.get("rejectReason", ""),
+                },
+                "stack": {
+                    "path": stack.get("path"),
+                    "raw": stack.get("raw", ""),
+                    "parsedBbAmount": seat.stack if seat else stack.get("parsedValue"),
+                    "confidence": seat.stackConfidence if seat else stack.get("confidence", 0.0),
+                    "source": stack.get("source", "unread"),
+                    "accepted": bool(stack.get("accepted")),
+                    "rejectReason": stack.get("rejectReason", ""),
+                },
+                "bet": {
+                    "path": bet.get("path"),
+                    "raw": bet.get("raw", ""),
+                    "parsedBbAmount": seat.currentBet if seat else bet.get("parsedValue"),
+                    "confidence": seat.betConfidence if seat else bet.get("confidence", 0.0),
+                    "source": bet.get("source", "unread"),
+                    "accepted": bool(bet.get("accepted")),
+                    "rejectReason": bet.get("rejectReason", ""),
+                },
+                "action": {
+                    "path": action.get("path"),
+                    "raw": action.get("raw", ""),
+                    "parsedAction": seat.action if seat else action.get("parsedValue"),
+                    "actionAmount": seat.actionAmount if seat else None,
+                    "confidence": seat.actionConfidence if seat else action.get("confidence", 0.0),
+                    "source": seat.actionSource if seat and seat.actionSource else action.get("source", "state_inference"),
+                    "accepted": bool(action.get("accepted")) or bool(seat and seat.action != "none"),
+                    "rejectReason": action.get("rejectReason", ""),
+                },
+                "card1": card1,
+                "card2": card2,
+            })
+        return seats
+
+    def _card_field_debug(
+        self,
+        seat_index: int,
+        card_index: int,
+        crops_by_key: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        key = f"seat-{seat_index}-card-{card_index}"
+        crop = crops_by_key.get(key, {})
+        entry = self._fields.get(key)
+        card = entry.value if entry else None
+        result = "none"
+        if isinstance(card, GgCard):
+            if card.hidden:
+                result = "hidden"
+            elif card.visible and card.rank and card.suit:
+                result = f"{card.rank}{card.suit}"
+        return {
+            "path": crop.get("path"),
+            "result": result,
+            "hidden": bool(isinstance(card, GgCard) and card.hidden),
+            "visible": bool(isinstance(card, GgCard) and card.visible and not card.hidden),
+            "confidence": round(float(card.confidence if isinstance(card, GgCard) else entry.confidence if entry else 0.0), 4),
+            "source": crop.get("source", "visual_card_detection"),
+            "accepted": bool(crop.get("accepted")),
+            "rejectReason": crop.get("rejectReason", ""),
+        }
+
     def _warm_fast_paths(self) -> None:
         try:
             import cv2
@@ -176,9 +327,19 @@ class FastGgReader:
             return
 
     def _new_metrics(self) -> dict[str, Any]:
+        profile_fit_score = float(getattr(self.profile, "fit_score", 0.0) or 0.0)
+        profile_diagnostics = getattr(self.profile, "diagnostics", None) or {}
         return {
             "reader": "fast_roi",
             "profile": self.profile.name,
+            "profileFitScore": round(profile_fit_score, 4),
+            "profileOffset": {
+                "x": round(float(getattr(self.profile, "offset_x", 0.0) or 0.0), 4),
+                "y": round(float(getattr(self.profile, "offset_y", 0.0) or 0.0), 4),
+                "scaleX": round(float(getattr(self.profile, "scale_x", 1.0) or 1.0), 4),
+                "scaleY": round(float(getattr(self.profile, "scale_y", 1.0) or 1.0), 4),
+            },
+            "profileDiagnostics": profile_diagnostics,
             "parseMs": 0.0,
             "ocrMs": 0.0,
             "actualReaderFps": self._actual_fps(),
@@ -192,15 +353,31 @@ class FastGgReader:
             "confidence": 0.0,
             "amountFields": [],
             "boardCardDebug": [],
+            "seatDebug": [],
         }
 
     def _select_profile(self, frame: np.ndarray) -> None:
-        if self._profile_locked:
+        now = time.monotonic()
+        shape = tuple(int(value) for value in frame.shape[:2])
+        if (
+            self._profile_shape == shape
+            and now - self._last_profile_fit_at < PROFILE_REFIT_SECONDS
+            and isinstance(self.profile, FittedGgProfile)
+        ):
             return
-        selected = get_fixed_profile(frame_shape=frame.shape)
-        if selected.name == self.profile.name:
+        if self._profile_locked:
+            selected = choose_and_fit_profile(frame, self.profile)
+        else:
+            preferred = get_fixed_profile(frame_shape=frame.shape)
+            selected = choose_and_fit_profile(frame, preferred)
+        signature = selected.fit_signature
+        self._profile_shape = shape
+        self._last_profile_fit_at = now
+        if signature == self._profile_fit_signature:
+            self.profile = selected
             return
         self.profile = selected
+        self._profile_fit_signature = signature
         self._last_quick_hash = None
         self._last_snapshot = None
         self._last_snapshot_at = 0.0
@@ -365,6 +542,11 @@ class FastGgReader:
                     continue
                 visible_ids.add(card_id)
             hole_cards.append(card)
+        if len(hole_cards) == 1 and hole_cards[0].hidden:
+            # Opponent hole cards are rendered as a pair of backs. If one back
+            # is strong and the neighboring ROI is slightly blurred, keep the
+            # semantic table state as X/X instead of flickering to a one-card hand.
+            hole_cards.append(GgCard(hidden=True, visible=False, display="X", confidence=min(0.72, hole_cards[0].confidence)))
 
         stack_crop = crop_norm(frame, seat_profile.stack)
         bet_crop = crop_norm(frame, seat_profile.bet)
@@ -394,6 +576,8 @@ class FastGgReader:
         bet_confidence = 0.0
         name = ""
         name_confidence = 0.0
+        detected_action = "none"
+        action_confidence = 0.0
         if likely_active:
             stack, stack_confidence, _raw_stack = self._read_amount_cached(
                 f"seat-{seat_profile.index}-stack",
@@ -419,6 +603,14 @@ class FastGgReader:
                 stale_seconds=20.0,
                 min_confidence=0.18,
             )
+            action_roi = seat_profile.action or seat_profile.bet
+            detected_action, action_confidence = self._read_action_cached(
+                f"seat-{seat_profile.index}-action",
+                crop_norm(frame, action_roi),
+                now=now,
+                metrics=metrics,
+                stale_seconds=1.0,
+            )
 
         name_with_money = bool(name_confidence >= 0.25 and (stack_confidence >= 0.50 or bet_confidence >= 0.50))
         active = bool(
@@ -432,12 +624,18 @@ class FastGgReader:
                 or current_bet > 0
             )
         )
-        if active and not name:
-            name = f"GG Seat {seat_profile.index + 1}"
 
         current_bet = current_bet if bet_confidence >= 0.50 else 0.0
         stack = stack if stack_confidence >= 0.50 else 0.0
-        action = "bet" if current_bet > 0 else "none"
+        if detected_action != "none" and action_confidence >= 0.25:
+            action = detected_action
+            action_source = "label_ocr"
+        elif current_bet > 0:
+            action = "bet"
+            action_source = "visible_bet"
+        else:
+            action = "none"
+            action_source = "none"
         confidence = _estimate_confidence([
             min(0.90, stack_signal * 16),
             min(0.90, stack_text_signal * 10),
@@ -445,12 +643,28 @@ class FastGgReader:
             stack_confidence,
             bet_confidence,
             name_confidence,
+            action_confidence,
             *[card.confidence for card in hole_cards],
         ])
         if active and confidence < 0.72:
             confidence = 0.72
         if empty_take_seat:
             metrics["emptyTakeSeats"] = int(metrics.get("emptyTakeSeats") or 0) + 1
+        seat_debug = metrics.get("seatDebug")
+        if isinstance(seat_debug, list):
+            seat_debug.append({
+                "index": seat_profile.index,
+                "activeSignal": round(float(_active_signal(active_crop)), 4),
+                "emptyTakeSeat": bool(empty_take_seat),
+                "stackTextSignal": round(float(stack_text_signal), 4),
+                "stackCyanSignal": round(float(stack_signal), 4),
+                "betTextSignal": round(float(bet_text_signal), 4),
+                "card0Present": bool(len(hole_cards) >= 1),
+                "card1Present": bool(len(hole_cards) >= 2),
+                "nameUnknown": bool(active and not name),
+                "actionRaw": detected_action,
+                "actionConfidence": round(float(action_confidence), 4),
+            })
 
         return GgSeat(
             physicalSeatIndex=seat_profile.index,
@@ -464,6 +678,7 @@ class FastGgReader:
             action=action,
             actionAmount=current_bet if current_bet > 0 else 0.0,
             actionConfidence=bet_confidence if current_bet > 0 else 0.0,
+            actionSource=action_source,
             status="active" if active else "empty",
             isHero=bool(active and self.profile.hero_seat_index == seat_profile.index),
             holeCards=hole_cards if active else [],
@@ -544,6 +759,13 @@ class FastGgReader:
 
         signal = amount_text_signal(crop)
         if empty_is_zero and signal < 0.008:
+            entry.consecutive_misses += 1
+            if float(entry.value or 0.0) > 0.0 and entry.consecutive_misses < 2:
+                metrics["fieldsReused"] += 1
+                entry.image_hash = new_hash
+                entry.source = "held_empty_pending"
+                self._record_amount_debug(metrics, key, entry, changed, "held_empty_pending")
+                return float(entry.value or 0.0), min(float(entry.confidence or 0.0), 0.62), str(entry.raw or "")
             if changed or not entry.known or float(entry.value or 0.0) != 0.0:
                 entry.value = 0.0
                 entry.confidence = 0.92
@@ -557,6 +779,7 @@ class FastGgReader:
             entry.image_hash = new_hash
             self._record_amount_debug(metrics, key, entry, changed, "empty")
             return 0.0, 0.92, ""
+        entry.consecutive_misses = 0
 
         retry_due = retry_window_due and signal >= 0.008
         should_refresh = changed or not entry.known or retry_due
@@ -566,13 +789,10 @@ class FastGgReader:
             metrics["ocrMs"] += round((time.perf_counter() - fast_started_at) * 1000, 2)
             fast_accept_confidence = 0.80 if key == "pot" else 0.88
             if amount > 0 and confidence >= fast_accept_confidence:
-                entry.value = amount
-                entry.confidence = confidence
-                entry.raw = raw
-                entry.source = "fast_amount"
-                entry.known = True
-                entry.completed_at = now
-                metrics["fieldsUpdated"] += 1
+                if self._apply_amount_candidate(entry, key, amount, confidence, raw, "fast_amount", now):
+                    metrics["fieldsUpdated"] += 1
+                else:
+                    metrics["fieldsReused"] += 1
             elif key == "pot" and (not entry.known or float(entry.value or 0.0) <= 0.0):
                 tight_started_at = time.perf_counter()
                 value, tight_confidence, tight_raw, tight_source = _read_pot_amount_source(crop)
@@ -583,13 +803,10 @@ class FastGgReader:
                     and not re.search(r"(?i)[.KMB]|BB", str(tight_raw or ""))
                 )
                 if value > 0 and tight_confidence >= 0.40 and not suspicious_tight_pot:
-                    entry.value = value
-                    entry.confidence = tight_confidence
-                    entry.raw = tight_raw
-                    entry.source = tight_source
-                    entry.known = True
-                    entry.completed_at = now
-                    metrics["fieldsUpdated"] += 1
+                    if self._apply_amount_candidate(entry, key, value, tight_confidence, tight_raw, tight_source, now):
+                        metrics["fieldsUpdated"] += 1
+                    else:
+                        metrics["fieldsReused"] += 1
                 else:
                     entry.known = True
                     entry.completed_at = now
@@ -636,14 +853,62 @@ class FastGgReader:
         entry.future = None
         suspicious_pot = key == "pot" and float(value or 0.0) > 20 and not re.search(r"(?i)[.KMB]|BB", str(raw or ""))
         if value > 0 and confidence >= 0.40 and not suspicious_pot:
-            entry.value = float(value)
-            entry.confidence = float(confidence)
-            entry.raw = str(raw or "")
-            entry.source = str(source or "tesseract")
-            entry.known = True
-            entry.completed_at = time.monotonic()
-            metrics["fieldsUpdated"] += 1
+            if self._apply_amount_candidate(
+                entry,
+                key,
+                float(value),
+                float(confidence),
+                str(raw or ""),
+                str(source or "tesseract"),
+                time.monotonic(),
+            ):
+                metrics["fieldsUpdated"] += 1
+            else:
+                metrics["fieldsReused"] += 1
         metrics["ocrCompleted"] += 1
+
+    def _apply_amount_candidate(
+        self,
+        entry: _FieldCache,
+        key: str,
+        value: float,
+        confidence: float,
+        raw: str,
+        source: str,
+        now: float,
+    ) -> bool:
+        previous = float(entry.value or 0.0)
+        field_is_stack = "-stack" in key
+        field_is_pot = key == "pot"
+        if value <= 0 or confidence <= 0:
+            return False
+        if field_is_pot and value > 500 and not re.search(r"(?i)[.KMB]|BB", raw or ""):
+            return False
+        if previous > 0 and (field_is_stack or field_is_pot):
+            ratio = value / max(previous, 0.01)
+            suspicious_jump = ratio < 0.35 or ratio > 2.8
+            if suspicious_jump and confidence < 0.92:
+                candidate_matches = (
+                    entry.candidate_value is not None
+                    and _close_amount(float(entry.candidate_value), value)
+                )
+                entry.candidate_value = value
+                entry.candidate_raw = raw
+                entry.candidate_confidence = confidence
+                if not candidate_matches:
+                    entry.source = f"{source}_candidate"
+                    return False
+        entry.value = float(value)
+        entry.confidence = float(confidence)
+        entry.raw = str(raw or "")
+        entry.source = str(source or "tesseract")
+        entry.known = True
+        entry.completed_at = now
+        entry.consecutive_hits += 1
+        entry.candidate_value = None
+        entry.candidate_raw = ""
+        entry.candidate_confidence = 0.0
+        return True
 
     def _record_amount_debug(
         self,
@@ -682,7 +947,9 @@ class FastGgReader:
         changed = diff > TEXT_CHANGE_THRESHOLD if entry.image_hash is not None else True
         if changed:
             self._mark_changed(metrics, key)
-        should_refresh = changed or not entry.known or (now - entry.completed_at >= stale_seconds and bool(entry.value))
+        missing_retry_due = not entry.value and now - float(entry.requested_at or 0.0) >= 1.0
+        stale_known_due = bool(entry.value) and now - entry.completed_at >= stale_seconds
+        should_refresh = changed or not entry.known or missing_retry_due or stale_known_due
         if should_refresh and entry.future is None and self._can_queue_ocr(now):
             entry.future = self._executor.submit(read_name, crop.copy())
             entry.requested_at = now
@@ -714,6 +981,60 @@ class FastGgReader:
             entry.known = True
             entry.completed_at = time.monotonic()
             metrics["fieldsUpdated"] += 1
+        else:
+            entry.completed_at = time.monotonic()
+        metrics["ocrCompleted"] += 1
+
+    def _read_action_cached(
+        self,
+        key: str,
+        crop: np.ndarray,
+        *,
+        now: float,
+        metrics: dict[str, Any],
+        stale_seconds: float,
+    ) -> tuple[str, float]:
+        entry = self._fields.setdefault(key, _FieldCache(value="none"))
+        self._consume_action_future(entry, metrics)
+        new_hash = downscale_hash(crop)
+        changed = roi_changed(entry.image_hash, new_hash, TEXT_CHANGE_THRESHOLD) if entry.image_hash is not None else True
+        if changed:
+            self._mark_changed(metrics, key)
+        should_refresh = changed or not entry.known or now - entry.completed_at >= stale_seconds
+        if should_refresh and entry.future is None and self._can_queue_ocr(now):
+            entry.future = self._executor.submit(read_name, crop.copy())
+            entry.requested_at = now
+            metrics["ocrQueued"] += 1
+            metrics["fieldsReused"] += 1 if entry.known else 0
+            if not entry.known:
+                entry.known = True
+                entry.completed_at = now
+                metrics["fieldsUpdated"] += 1
+        else:
+            metrics["fieldsReused"] += 1
+        entry.image_hash = new_hash
+        return str(entry.value or "none"), float(entry.confidence or 0.0)
+
+    def _consume_action_future(self, entry: _FieldCache, metrics: dict[str, Any]) -> None:
+        future = entry.future
+        if future is None or not future.done():
+            return
+        try:
+            value, confidence = future.result()
+        except Exception:
+            value, confidence = "", 0.0
+        entry.future = None
+        action = _normalize_action_text(value)
+        if action != "none" and confidence >= 0.18:
+            entry.value = action
+            entry.confidence = float(confidence)
+            entry.known = True
+            entry.completed_at = time.monotonic()
+            metrics["fieldsUpdated"] += 1
+        else:
+            entry.value = "none"
+            entry.confidence = 0.0
+            entry.completed_at = time.monotonic()
         metrics["ocrCompleted"] += 1
 
     def _detect_dealer(
@@ -791,7 +1112,7 @@ class FastGgReader:
         if priority:
             return True
         if not self._parse_timestamps:
-            return False
+            return True
         current_fps = self._actual_fps()
         if current_fps and current_fps > 4.5:
             return False
@@ -799,6 +1120,23 @@ class FastGgReader:
 
     def _pending_ocr_count(self) -> int:
         return sum(1 for entry in self._fields.values() if entry.future is not None)
+
+    def _pending_ocr_by_kind(self) -> dict[str, int]:
+        counts = {"amount": 0, "name": 0, "action": 0, "card": 0, "other": 0}
+        for key, entry in self._fields.items():
+            if entry.future is None:
+                continue
+            if key == "pot" or "-stack" in key or "-bet" in key:
+                counts["amount"] += 1
+            elif "-name" in key or key == "title/blinds":
+                counts["name"] += 1
+            elif "-action" in key:
+                counts["action"] += 1
+            elif "-card-" in key or key.startswith("board-"):
+                counts["card"] += 1
+            else:
+                counts["other"] += 1
+        return counts
 
     def _percentile(self, values: deque[float], percentile: float) -> float:
         if not values:
@@ -899,6 +1237,42 @@ def _clean_player_name(name: str | None) -> str:
     return cleaned
 
 
+def _normalize_action_text(text: str | None) -> str:
+    if not text:
+        return "none"
+    value = str(text).strip().lower()
+    value = re.sub(r"[^a-z\u0590-\u05ff +'-]+", " ", value)
+    value = " ".join(value.split())
+    checks = {
+        "check": "check",
+        "checked": "check",
+        "fold": "fold",
+        "folded": "fold",
+        "call": "call",
+        "called": "call",
+        "bet": "bet",
+        "bets": "bet",
+        "raise": "raise",
+        "raises": "raise",
+        "raised": "raise",
+        "all in": "all-in",
+        "all-in": "all-in",
+        "waiting": "waiting",
+        "sit out": "waiting",
+        "פולד": "fold",
+        "צק": "check",
+        "צ'ק": "check",
+        "קול": "call",
+        "הימור": "bet",
+        "רייז": "raise",
+        "אול אין": "all-in",
+    }
+    for token, action in checks.items():
+        if token in value:
+            return action
+    return "none"
+
+
 def _street_from_board(board: list[GgCard]) -> str:
     visible = len([card for card in board if card.visible and not card.hidden])
     if visible >= 5:
@@ -929,8 +1303,27 @@ def _card_debug_payload(index: int, card: GgCard | None, confidence: float, roi_
     }
 
 
+def _label_to_cache_key(label: str) -> str:
+    if label == "pot" or label == "title/blinds":
+        return label
+    board_match = re.search(r"board-(\d+)", label)
+    if board_match:
+        return f"board-{int(board_match.group(1)) - 1}"
+    seat_match = re.search(r"seat-(\d+):.*:(name|stack|bet|action)", label)
+    if seat_match:
+        return f"seat-{seat_match.group(1)}-{seat_match.group(2)}"
+    card_match = re.search(r"seat-(\d+):.*:card-(\d+)", label)
+    if card_match:
+        return f"seat-{card_match.group(1)}-card-{int(card_match.group(2)) - 1}"
+    return label
+
+
 def _estimate_confidence(values: list[float]) -> float:
     usable = [float(value) for value in values if value and value > 0]
     if not usable:
         return 0.0
     return max(0.0, min(1.0, sum(usable) / len(usable)))
+
+
+def _close_amount(left: float, right: float) -> bool:
+    return abs(float(left) - float(right)) <= max(0.15, abs(float(left)), abs(float(right))) * 0.05
