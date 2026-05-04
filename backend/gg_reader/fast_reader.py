@@ -55,6 +55,7 @@ class FastGgReader:
         self._parse_timestamps: deque[float] = deque(maxlen=240)
         self._parse_durations_ms: deque[float] = deque(maxlen=240)
         self._last_amount_fields: list[dict[str, Any]] = []
+        self._last_board_card_debug: list[dict[str, Any]] = []
         self._last_metrics: dict[str, Any] = {
             "reader": "fast_roi",
             "actualReaderFps": 0.0,
@@ -189,6 +190,7 @@ class FastGgReader:
             "ocrPending": 0,
             "confidence": 0.0,
             "amountFields": [],
+            "boardCardDebug": [],
         }
 
     def _select_profile(self, frame: np.ndarray) -> None:
@@ -199,6 +201,11 @@ class FastGgReader:
             return
         self.profile = selected
         self._last_quick_hash = None
+        self._last_snapshot = None
+        self._last_snapshot_at = 0.0
+        self._last_amount_fields = []
+        self._last_board_card_debug = []
+        self._fields.clear()
 
     def _finish_metrics(self, metrics: dict[str, Any], started_at: float, confidence: float) -> None:
         parse_ms = round((time.perf_counter() - started_at) * 1000, 2)
@@ -215,6 +222,12 @@ class FastGgReader:
             self._last_amount_fields = [dict(item) for item in metrics["amountFields"]]
         else:
             metrics["amountFields"] = list(self._last_amount_fields)
+        if not metrics.get("boardCardDebug"):
+            metrics["boardCardDebug"] = self._board_card_cache_debug()
+        if isinstance(metrics.get("boardCardDebug"), list) and metrics["boardCardDebug"]:
+            self._last_board_card_debug = [dict(item) for item in metrics["boardCardDebug"]]
+        else:
+            metrics["boardCardDebug"] = list(self._last_board_card_debug)
         self._last_metrics = dict(metrics)
 
     def _amount_field_cache_debug(self) -> list[dict[str, Any]]:
@@ -231,6 +244,14 @@ class FastGgReader:
                 "roiChanged": False,
             })
         return fields[:64]
+
+    def _board_card_cache_debug(self) -> list[dict[str, Any]]:
+        cards: list[dict[str, Any]] = []
+        for index in range(len(self.profile.board)):
+            entry = self._fields.get(f"board-{index}")
+            card = entry.value if entry else None
+            cards.append(_card_debug_payload(index, card, float(entry.confidence or 0.0) if entry else 0.0, False))
+        return cards
 
     def _held_snapshot(self, metrics: dict[str, Any], started_at: float) -> GgTableSnapshot | None:
         now = time.monotonic()
@@ -296,6 +317,7 @@ class FastGgReader:
                 crop_norm(frame, roi),
                 allow_hidden=False,
                 metrics=metrics,
+                board_index=index,
             )
             if not card:
                 continue
@@ -454,6 +476,7 @@ class FastGgReader:
         *,
         allow_hidden: bool,
         metrics: dict[str, Any],
+        board_index: int | None = None,
     ) -> GgCard | None:
         entry = self._fields.setdefault(key, _FieldCache())
         new_hash = downscale_hash(crop)
@@ -470,6 +493,10 @@ class FastGgReader:
             metrics["fieldsUpdated"] += 1
         else:
             metrics["fieldsReused"] += 1
+        if board_index is not None:
+            board_debug = metrics.get("boardCardDebug")
+            if isinstance(board_debug, list):
+                board_debug.append(_card_debug_payload(board_index, entry.value, float(entry.confidence or 0.0), changed))
         return entry.value
 
     def _card_from_data(self, data: dict[str, object], *, allow_hidden: bool) -> GgCard | None:
@@ -549,7 +576,12 @@ class FastGgReader:
                 tight_started_at = time.perf_counter()
                 value, tight_confidence, tight_raw, tight_source = _read_pot_amount_source(crop)
                 metrics["ocrMs"] += round((time.perf_counter() - tight_started_at) * 1000, 2)
-                if value > 0 and tight_confidence >= 0.40:
+                suspicious_tight_pot = (
+                    key == "pot"
+                    and float(value or 0.0) > 20
+                    and not re.search(r"(?i)[.KMB]|BB", str(tight_raw or ""))
+                )
+                if value > 0 and tight_confidence >= 0.40 and not suspicious_tight_pot:
                     entry.value = value
                     entry.confidence = tight_confidence
                     entry.raw = tight_raw
@@ -793,6 +825,9 @@ def _cyan_signal(image: np.ndarray) -> float:
 
 
 def _read_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
+    amount, confidence, raw = read_amount_tight_ocr(image, squash_bb_suffix=True)
+    if amount > 0 and confidence > 0:
+        return amount, confidence, raw, "tight_ocr"
     amount, confidence, raw = read_amount(image)
     return amount, confidence, raw, "tesseract"
 
@@ -880,6 +915,17 @@ def _card_id(card: GgCard) -> str:
     if card.hidden or not card.rank or not card.suit:
         return ""
     return f"{card.rank}{card.suit}".upper()
+
+
+def _card_debug_payload(index: int, card: GgCard | None, confidence: float, roi_changed_value: bool) -> dict[str, Any]:
+    return {
+        "index": int(index),
+        "detected": bool(card and card.visible and not card.hidden and card.rank and card.suit),
+        "rank": card.rank if card else None,
+        "suit": card.suit if card else None,
+        "confidence": round(float(card.confidence if card else confidence or 0.0), 4),
+        "roiChanged": bool(roi_changed_value),
+    }
 
 
 def _estimate_confidence(values: list[float]) -> float:

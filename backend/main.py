@@ -55,6 +55,10 @@ last_crop_metrics: dict[str, Any] = {
     "cropRect": None,
 }
 _last_cropped_frame_saved_at = 0.0
+_cropped_frame_save_task: asyncio.Task[Any] | None = None
+_CACHE_TTL_SECONDS = 1.0
+_cached_windows: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_cached_monitors: tuple[float, list[dict[str, Any]]] = (0.0, [])
 
 
 POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
@@ -223,12 +227,44 @@ async def get_windows() -> list[dict[str, Any]]:
 
 
 def decode_browser_frame(body: bytes) -> Any:
+    import cv2
     import numpy as np
-    from PIL import Image
 
+    buffer = np.frombuffer(body, dtype=np.uint8)
+    decoded = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
+    if decoded is not None and decoded.size:
+        if decoded.ndim == 2:
+            return cv2.cvtColor(decoded, cv2.COLOR_GRAY2BGR)
+        return decoded
+
+    from PIL import Image
     image = Image.open(BytesIO(body)).convert("RGBA")
     rgba = np.array(image)
     return rgba[:, :, [2, 1, 0, 3]]
+
+
+def get_cached_gg_windows() -> list[dict[str, Any]]:
+    global _cached_windows
+
+    now = time.monotonic()
+    cached_at, cached_value = _cached_windows
+    if now - cached_at <= _CACHE_TTL_SECONDS:
+        return cached_value
+    value = list_gg_windows()
+    _cached_windows = (now, value)
+    return value
+
+
+def get_cached_monitors() -> list[dict[str, Any]]:
+    global _cached_monitors
+
+    now = time.monotonic()
+    cached_at, cached_value = _cached_monitors
+    if now - cached_at <= _CACHE_TTL_SECONDS:
+        return cached_value
+    value = list_monitors()
+    _cached_monitors = (now, value)
+    return value
 
 
 def crop_browser_frame_to_gg_window(frame: Any) -> Any:
@@ -248,7 +284,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         "selectedWindowRect": None,
         "cropRect": {"left": 0, "top": 0, "width": int(frame_width), "height": int(frame_height)},
     }
-    windows = list_gg_windows()
+    windows = get_cached_gg_windows()
     if not windows:
         return frame, metrics
 
@@ -271,7 +307,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         metrics["cropSource"] = "browser-window-direct"
         return frame, metrics
 
-    monitors = list_monitors()
+    monitors = get_cached_monitors()
     monitor = next(
         (
             item for item in monitors
@@ -334,6 +370,24 @@ def save_cropped_debug_frame(frame: Any, *, force: bool = False) -> None:
     _last_cropped_frame_saved_at = now
 
 
+def schedule_cropped_debug_frame_save(frame: Any) -> None:
+    global _cropped_frame_save_task
+
+    if _cropped_frame_save_task is not None and not _cropped_frame_save_task.done():
+        return
+    if time.monotonic() - _last_cropped_frame_saved_at < 1.0:
+        return
+    _cropped_frame_save_task = asyncio.create_task(asyncio.to_thread(save_cropped_debug_frame, frame))
+    _cropped_frame_save_task.add_done_callback(_ignore_background_task_error)
+
+
+def _ignore_background_task_error(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except Exception:
+        pass
+
+
 @app.post("/api/gg-reader/parse-frame")
 async def parse_browser_frame(request: Request) -> dict[str, Any]:
     loop_started_at = time.perf_counter()
@@ -351,7 +405,7 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
         decode_started_at = time.perf_counter()
         frame = await asyncio.to_thread(decode_browser_frame, body)
         frame, crop_metrics = await asyncio.to_thread(crop_browser_frame_to_gg_window_with_metrics, frame)
-        await asyncio.to_thread(save_cropped_debug_frame, frame)
+        schedule_cropped_debug_frame_save(frame)
         decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
         parse_started_at = time.perf_counter()
         snapshot = await asyncio.to_thread(parse_frame, frame, load_calibration(), FAST_GG_READER)
@@ -538,7 +592,15 @@ async def get_debug_roi_overlay() -> dict[str, Any]:
                 "path": str(DEBUG_ROI_OVERLAY_PATH),
             }
         metadata = FAST_GG_READER.save_roi_overlay(DEBUG_ROI_OVERLAY_PATH, frame=frame)
-    return {"ok": True, "croppedFramePath": str(DEBUG_CROPPED_FRAME_PATH), **metadata}
+    return {
+        "ok": True,
+        "croppedFramePath": str(DEBUG_CROPPED_FRAME_PATH),
+        "croppedFrameWidth": last_crop_metrics.get("croppedFrameWidth") or metadata.get("width"),
+        "croppedFrameHeight": last_crop_metrics.get("croppedFrameHeight") or metadata.get("height"),
+        "profile": FAST_GG_READER.get_metrics().get("profile"),
+        "cropSource": last_crop_metrics.get("cropSource"),
+        **metadata,
+    }
 
 
 @app.websocket("/ws/gg-reader")

@@ -115,6 +115,11 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertIsNotNone(pot_debug)
         assert pot_debug is not None
         self.assertIn(pot_debug.get("source"), {"fast_amount", "tight_ocr", "cache"})
+        board_debug = snapshot.metrics.get("boardCardDebug") or []
+        self.assertEqual(
+            [(item.get("rank"), item.get("suit"), bool(item.get("detected"))) for item in board_debug[:5]],
+            [("9", "D", True), ("J", "H", True), ("7", "D", True), ("5", "H", True), ("K", "H", True)],
+        )
 
     def test_compact_flop_fixture_snapshot(self) -> None:
         if not COMPACT_FLOP_FIXTURE.exists():
