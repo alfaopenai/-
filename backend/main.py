@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .gg_reader.calibration import load_calibration, save_calibration
 from .gg_reader.capture import ScreenCapture, list_gg_windows, list_monitors, resolve_monitor_index
+from .gg_reader.fast_reader import FastGgReader
 from .gg_reader.history_store import append_event, read_hands, read_history, record_snapshot
 from .gg_reader.models import GgReaderStartRequest, GgReaderStatus, GgTableSnapshot
 from .gg_reader.parser import load_mock_snapshot, parse_frame
@@ -18,6 +20,9 @@ from .gg_reader.parser import load_mock_snapshot, parse_frame
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEBUG_FRAME_PATH = DATA_DIR / "debug_last_frame.png"
+DEBUG_ROI_OVERLAY_PATH = DATA_DIR / "debug_roi_overlay.png"
+
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 app = FastAPI(title="Alpha Poker GG Reader")
 app.add_middleware(
@@ -37,6 +42,7 @@ reader_state = GgReaderStatus()
 reader_config = GgReaderStartRequest()
 last_snapshot = None
 current_hand_id: str | None = None
+FAST_GG_READER = FastGgReader()
 
 
 POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
@@ -271,9 +277,13 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
         }
 
     try:
+        decode_started_at = time.perf_counter()
         frame = await asyncio.to_thread(decode_browser_frame, body)
         frame = await asyncio.to_thread(crop_browser_frame_to_gg_window, frame)
-        snapshot = await asyncio.to_thread(parse_frame, frame, load_calibration())
+        decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
+        parse_started_at = time.perf_counter()
+        snapshot = await asyncio.to_thread(parse_frame, frame, load_calibration(), FAST_GG_READER)
+        backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
     except Exception as exc:
         return {
             "type": "status",
@@ -284,6 +294,9 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
         }
 
     frame_ms = round((time.perf_counter() - loop_started_at) * 1000, 2)
+    metrics = FAST_GG_READER.get_metrics()
+    metrics["readerParseMs"] = metrics.get("parseMs")
+    metrics["parseMs"] = backend_parse_ms
     reader_state.framesRead += 1
     reader_state.lastFrameMs = frame_ms
     reader_state.captureSource = "browser"
@@ -297,6 +310,9 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
             "confidence": 0,
             "captureSource": "browser",
             "frameMs": frame_ms,
+            "decodeMs": decode_ms,
+            "parseMs": backend_parse_ms,
+            **metrics,
         }
 
     snapshot, events = enrich_snapshot(snapshot)
@@ -304,6 +320,9 @@ async def parse_browser_frame(request: Request) -> dict[str, Any]:
     data = snapshot.model_dump()
     data["captureSource"] = "browser"
     data["frameMs"] = frame_ms
+    data["decodeMs"] = decode_ms
+    data["parseMs"] = backend_parse_ms
+    data.update(metrics)
     data["events"] = events
     return data
 
@@ -391,6 +410,42 @@ async def get_debug_frame_info() -> dict[str, Any]:
     }
 
 
+@app.get("/api/gg-reader/debug/metrics")
+async def get_debug_metrics() -> dict[str, Any]:
+    return {
+        **FAST_GG_READER.get_metrics(),
+        "running": reader_state.running,
+        "framesRead": reader_state.framesRead,
+        "lastFrameMs": reader_state.lastFrameMs,
+        "captureSource": reader_state.captureSource,
+        "lastSnapshotAt": reader_state.lastSnapshotAt,
+    }
+
+
+@app.get("/api/gg-reader/debug/roi-overlay")
+async def get_debug_roi_overlay() -> dict[str, Any]:
+    try:
+        metadata = FAST_GG_READER.save_roi_overlay(DEBUG_ROI_OVERLAY_PATH)
+    except Exception:
+        if not DEBUG_FRAME_PATH.exists():
+            return {
+                "ok": False,
+                "error": "No parsed frame or debug_last_frame.png is available.",
+                "path": str(DEBUG_ROI_OVERLAY_PATH),
+            }
+        import cv2
+
+        frame = cv2.imread(str(DEBUG_FRAME_PATH), cv2.IMREAD_UNCHANGED)
+        if frame is None:
+            return {
+                "ok": False,
+                "error": "Could not load debug_last_frame.png.",
+                "path": str(DEBUG_ROI_OVERLAY_PATH),
+            }
+        metadata = FAST_GG_READER.save_roi_overlay(DEBUG_ROI_OVERLAY_PATH, frame=frame)
+    return {"ok": True, **metadata}
+
+
 @app.websocket("/ws/gg-reader")
 async def gg_reader_socket(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -414,7 +469,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                 else:
                     try:
                         frame = await asyncio.to_thread(capture.grab)
-                        snapshot = await asyncio.to_thread(parse_frame, frame, calibration)
+                        snapshot = await asyncio.to_thread(parse_frame, frame, calibration, FAST_GG_READER)
                     except Exception as exc:
                         await websocket.send_json({
                             "type": "status",
@@ -428,14 +483,6 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                         elapsed = time.perf_counter() - loop_started_at
                         await asyncio.sleep(max(0.0, target_interval - elapsed))
                         continue
-                        await websocket.send_json({
-                            "type": "status",
-                            "status": "warning",
-                            "message": f"לא ניתן לצלם את Monitor {reader_config.monitorIndex}: {exc}",
-                            "clearTable": False,
-                            "fatal": False,
-                            "confidence": 0,
-                        })
                     else:
                         if snapshot is None:
                             await websocket.send_json({
@@ -450,14 +497,6 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             elapsed = time.perf_counter() - loop_started_at
                             await asyncio.sleep(max(0.0, target_interval - elapsed))
                             continue
-                            await websocket.send_json({
-                                "type": "status",
-                                "status": "waiting",
-                                "message": "מחובר, ממתין לזיהוי שולחן GG",
-                                "clearTable": False,
-                                "calibrationVerified": bool(calibration.get("verified")),
-                                "confidence": 0,
-                            })
                         else:
                             snapshot, events = enrich_snapshot(snapshot)
                             reader_state.lastSnapshotAt = snapshot.timestamp
@@ -465,6 +504,10 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             data["captureSource"] = capture.last_source
                             data["window"] = capture.last_window
                             data["frameMs"] = round((time.perf_counter() - loop_started_at) * 1000, 2)
+                            metrics = FAST_GG_READER.get_metrics()
+                            metrics["readerParseMs"] = metrics.get("parseMs")
+                            metrics["parseMs"] = data["frameMs"]
+                            data.update(metrics)
                             data["events"] = events
                             reader_state.framesRead += 1
                             reader_state.lastFrameMs = data["frameMs"]

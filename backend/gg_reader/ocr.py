@@ -12,11 +12,14 @@ def normalize_amount(raw: str | None) -> float:
     if not raw:
         return 0.0
     value = raw.strip().replace(",", "")
+    numeric_tokens = re.findall(r"(?i)(?:\d|[Oo])[\dOoIl.,]*(?:\s*(?:BB|B|K|M))?", value)
+    if numeric_tokens:
+        value = numeric_tokens[-1]
     value_upper = value.upper()
     is_big_blind_value = "BB" in value_upper or bool(re.search(r"\d\s*B", value_upper))
     if is_big_blind_value:
         value = re.sub(r"(?i)\s*B+\s*", "", value)
-    value = value.replace("O", "0").replace("o", "0")
+    value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
     if is_big_blind_value and value.count(".") > 1:
         parts = [part for part in value.split(".") if part]
         if len(parts) >= 2:

@@ -329,6 +329,8 @@
             browserFrameInFlight: false,
             frameTimes: [],
             actualFps: 0,
+            lastFrameMs: null,
+            lastParseMs: null,
             lastProbabilityUpdateAt: 0,
             errors: [],
             potOverride: null,
@@ -3532,6 +3534,8 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.browserCrop = null;
         state.ggReader.frameTimes = [];
         state.ggReader.actualFps = 0;
+        state.ggReader.lastFrameMs = null;
+        state.ggReader.lastParseMs = null;
         if (state.ggReader.browserVideo) {
             state.ggReader.browserVideo.pause();
             state.ggReader.browserVideo.srcObject = null;
@@ -3623,7 +3627,7 @@ function advanceActiveSlot(fromSlot) {
             } else {
                 context.drawImage(video, 0, 0, canvas.width, canvas.height);
             }
-            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
             if (!blob) {
                 throw new Error("Browser frame encoding failed");
             }
@@ -3717,6 +3721,7 @@ function advanceActiveSlot(fromSlot) {
         if (!payload) {
             return;
         }
+        updateGgReaderRuntimeMetrics(payload);
 
         if (payload.type === "status") {
             const previousStatusText = state.ggReader.lastStatusText;
@@ -3750,6 +3755,21 @@ function advanceActiveSlot(fromSlot) {
             recordGgFrameTiming(performance.now());
         }
         applyGgSnapshot(payload, { source: "socket" });
+    }
+
+    function updateGgReaderRuntimeMetrics(payload) {
+        const frameMs = Number(payload.frameMs);
+        if (Number.isFinite(frameMs)) {
+            state.ggReader.lastFrameMs = frameMs;
+        }
+        const parseMs = Number(payload.parseMs || payload.readerParseMs);
+        if (Number.isFinite(parseMs)) {
+            state.ggReader.lastParseMs = parseMs;
+        }
+        const readerFps = Number(payload.actualReaderFps);
+        if (Number.isFinite(readerFps) && readerFps > 0) {
+            state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, readerFps);
+        }
     }
 
     function isGgMockMode() {
@@ -4330,7 +4350,14 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderStatusText) {
             const parts = [state.ggReader.lastStatusText || "GG מנותק"];
             if (state.ggReader.running) {
-                parts.push(`${GG_READER_BROWSER_FPS}fps`);
+                const actualFps = Number(state.ggReader.actualFps);
+                parts.push(Number.isFinite(actualFps) && actualFps > 0
+                    ? `${actualFps.toFixed(1)}/${GG_READER_BROWSER_FPS}fps`
+                    : `${GG_READER_BROWSER_FPS}fps`);
+                const frameMs = Number(state.ggReader.lastFrameMs);
+                if (Number.isFinite(frameMs) && frameMs > 0) {
+                    parts.push(`${Math.round(frameMs)}ms`);
+                }
             }
             const activeCount = Number(state.ggReader.lastSnapshot?.activePlayerCount);
             if (Number.isInteger(activeCount) && activeCount > 0) {

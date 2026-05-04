@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,7 @@ class GgTableSnapshot(BaseModel):
     handId: str | None = None
     street: Street = "unknown"
     pot: float = 0
+    smallBlind: float = 0.5
     activePlayerCount: int = 0
     bigBlind: float = 1
     dealerSeatIndex: int = 0
@@ -62,6 +63,7 @@ class GgTableSnapshot(BaseModel):
     board: list[GgCard] = Field(default_factory=list)
     seats: list[GgSeat] = Field(default_factory=list)
     confidence: float = Field(default=1, ge=0, le=1)
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class GgReaderStatus(BaseModel):
