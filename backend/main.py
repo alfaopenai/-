@@ -530,6 +530,7 @@ def _extract_crop_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "rejectedBrowserChrome",
         "rejectedReason",
         "selectedCropCandidate",
+        "cropCandidates",
     }
     return {key: value for key, value in metrics.items() if key in keys}
 
@@ -868,6 +869,16 @@ async def get_debug_last_snapshot_detailed() -> dict[str, Any]:
             **last_crop_metrics,
         },
     }
+
+
+@app.get("/api/gg-reader/debug/last-snapshot")
+async def get_debug_last_snapshot() -> dict[str, Any]:
+    detailed = await get_debug_last_snapshot_detailed()
+    detailed["rawFramePath"] = str(DEBUG_FRAME_PATH)
+    detailed["croppedFramePath"] = str(DEBUG_CROPPED_FRAME_PATH)
+    detailed["roiOverlayPath"] = str(DEBUG_ROI_OVERLAY_PATH)
+    detailed["fieldCropsPath"] = str(DEBUG_FIELD_CROPS_DIR)
+    return detailed
 
 
 @app.websocket("/ws/gg-reader")

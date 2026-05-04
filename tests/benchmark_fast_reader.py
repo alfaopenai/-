@@ -22,15 +22,28 @@ def main() -> int:
         raise SystemExit(f"Could not load fixture: {fixture}")
 
     reader = FastGgReader()
-    for _index in range(30):
-        reader.parse(frame)
+    try:
+        warmup_frames = 90
+        for index in range(90):
+            reader.parse(frame)
+            time.sleep(0.02)
+        warmup_deadline = time.perf_counter() + 20.0
+        while time.perf_counter() < warmup_deadline:
+            metrics = reader.get_metrics()
+            if int(metrics.get("ocrPending") or 0) == 0 and not metrics.get("retryableMissingNames"):
+                break
+            reader.parse(frame)
+            warmup_frames += 1
+            time.sleep(0.02)
 
-    times_ms: list[float] = []
-    snapshot = None
-    for _index in range(300):
-        started_at = time.perf_counter()
-        snapshot = reader.parse(frame)
-        times_ms.append((time.perf_counter() - started_at) * 1000)
+        times_ms: list[float] = []
+        snapshot = None
+        for _index in range(300):
+            started_at = time.perf_counter()
+            snapshot = reader.parse(frame)
+            times_ms.append((time.perf_counter() - started_at) * 1000)
+    finally:
+        reader.close()
 
     ordered = sorted(times_ms)
     p95 = ordered[int(0.95 * (len(ordered) - 1))]
@@ -38,7 +51,7 @@ def main() -> int:
     metrics = reader.get_metrics()
     print(
         "frames=300 "
-        "warmup=30 "
+        f"warmup={warmup_frames} "
         f"avgParseMs={avg:.2f} "
         f"p95ParseMs={p95:.2f} "
         f"maxParseMs={max(times_ms):.2f} "

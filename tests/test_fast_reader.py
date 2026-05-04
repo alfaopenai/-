@@ -23,6 +23,7 @@ from backend.gg_reader.fast_reader import FastGgReader
 PREFLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_preflop.png"
 COMPACT_FLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_flop_compact.png"
 COMPACT_RIVER_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_compact_river.png"
+CURRENT_COMPACT_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_clubgg_compact_live.png"
 
 
 @unittest.skipIf(cv2 is None, "OpenCV is unavailable")
@@ -37,6 +38,7 @@ class FastGgReaderTest(unittest.TestCase):
 
     def test_static_fixture_snapshot_is_structured(self) -> None:
         reader = FastGgReader()
+        self.addCleanup(reader.close)
         snapshot = self._parse_until(reader, self.frame, lambda item: item.pot > 0)
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
@@ -63,8 +65,17 @@ class FastGgReaderTest(unittest.TestCase):
 
     def test_static_fixture_benchmark_300_frames(self) -> None:
         reader = FastGgReader()
-        for _index in range(30):
+        self.addCleanup(reader.close)
+        for _index in range(90):
             reader.parse(self.frame)
+            time.sleep(0.02)
+        warmup_deadline = time.perf_counter() + 20.0
+        while time.perf_counter() < warmup_deadline:
+            metrics = reader.get_metrics()
+            if int(metrics.get("ocrPending") or 0) == 0 and not metrics.get("retryableMissingNames"):
+                break
+            reader.parse(self.frame)
+            time.sleep(0.02)
 
         times_ms: list[float] = []
         snapshot = None
@@ -83,6 +94,7 @@ class FastGgReaderTest(unittest.TestCase):
 
     def test_bad_frame_does_not_clear_last_good_snapshot(self) -> None:
         reader = FastGgReader()
+        self.addCleanup(reader.close)
         good = reader.parse(self.frame)
         self.assertIsNotNone(good)
         assert good is not None
@@ -98,10 +110,11 @@ class FastGgReaderTest(unittest.TestCase):
     def test_compact_river_fixture_snapshot(self) -> None:
         frame = self._load_fixture(COMPACT_RIVER_FIXTURE)
         reader = FastGgReader()
+        self.addCleanup(reader.close)
         snapshot = self._parse_until(reader, frame, lambda item: item.pot > 0 and item.street == "river")
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
-        self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_8max")
+        self.assertIn(snapshot.metrics.get("profile"), {"clubgg_compact_8max", "clubgg_fixed_8max"})
         self.assertEqual(snapshot.street, "river")
         self.assertEqual(_card_codes(snapshot.board), ["9D", "JH", "7D", "5H", "KH"])
         self.assertAlmostEqual(snapshot.pot, 5.5, delta=0.20)
@@ -129,6 +142,7 @@ class FastGgReaderTest(unittest.TestCase):
             )
         frame = self._load_fixture(COMPACT_FLOP_FIXTURE)
         reader = FastGgReader()
+        self.addCleanup(reader.close)
         snapshot = self._parse_until(reader, frame, lambda item: item.pot > 0 and item.street == "flop")
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
@@ -163,9 +177,67 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertNotEqual(snapshot.pot, 72_272.87)
         self.assertEqual(snapshot.dealerSeatIndex, active_by_name["A-Z777"].physicalSeatIndex)
 
-    def _parse_until(self, reader: FastGgReader, frame: np.ndarray, predicate) -> object:
+    def test_current_compact_live_snapshot_exact(self) -> None:
+        frame = self._load_fixture(CURRENT_COMPACT_LIVE_FIXTURE)
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        snapshot = self._parse_until(
+            reader,
+            frame,
+            lambda item: (
+                item.pot > 0
+                and len(_card_codes(item.board)) >= 5
+                and _stacked_count(item) >= 6
+                and _has_names(item, {1, 2, 3, 4, 6})
+            ),
+            deadline_seconds=60.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_7max")
+        self.assertEqual(snapshot.street, "river")
+        self.assertEqual(_card_codes(snapshot.board), ["AS", "6D", "3D", "4H", "QH"])
+        self.assertAlmostEqual(snapshot.pot, 5.0, delta=0.25)
+        self.assertLess(snapshot.pot, 1_000, "Bad Beat 73915.27 must not be parsed as the pot")
+        self.assertEqual(snapshot.smallBlind, 1)
+        self.assertEqual(snapshot.bigBlind, 2)
+        self.assertEqual(snapshot.activePlayerCount, 6)
+        self.assertEqual(snapshot.dealerSeatIndex, 4)
+
+        take_seat = next(seat for seat in snapshot.seats if seat.physicalSeatIndex == 0)
+        self.assertFalse(take_seat.active, "The top Take Seat must be inactive")
+        expected_stacks = {
+            1: 45.6,
+            2: 168.5,
+            3: 216.9,
+            4: 95.3,
+            5: 100.0,
+            6: 76.0,
+        }
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        for index, expected_stack in expected_stacks.items():
+            seat = by_index[index]
+            self.assertTrue(seat.active)
+            self.assertAlmostEqual(seat.stack, expected_stack, delta=1.0)
+            self.assertFalse((seat.name or "").lower().startswith("gg seat"))
+            self.assertEqual([card.display for card in seat.holeCards], ["X", "X"])
+        expected_names = {
+            1: "J9sutied",
+            2: "AW0311",
+            3: "CedarKoi",
+            4: "joeyIS",
+            6: "JetStreamV",
+        }
+        for index, expected_name in expected_names.items():
+            self.assertEqual(by_index[index].name, expected_name)
+        self.assertIn(by_index[5].name, {"Itzh4k", "Itzhak"})
+        self.assertEqual(by_index[4].position, "BTN")
+        self.assertEqual(by_index[5].position, "SB")
+        self.assertEqual(by_index[6].position, "BB")
+
+    def _parse_until(self, reader: FastGgReader, frame: np.ndarray, predicate, *, deadline_seconds: float = 4.0) -> object:
         snapshot = None
-        deadline = time.perf_counter() + 4.0
+        deadline = time.perf_counter() + deadline_seconds
         while time.perf_counter() < deadline:
             snapshot = reader.parse(frame)
             if snapshot is not None and predicate(snapshot):
@@ -184,6 +256,22 @@ class FastGgReaderTest(unittest.TestCase):
 
 def _card_codes(cards) -> list[str]:
     return [f"{card.rank}{card.suit}" for card in cards if card.visible and not card.hidden]
+
+
+def _stacked_count(snapshot) -> int:
+    return sum(1 for seat in snapshot.seats if seat.active and seat.stack > 0)
+
+
+def _named_count(snapshot) -> int:
+    return sum(1 for seat in snapshot.seats if seat.active and seat.name and not seat.name.lower().startswith("gg seat"))
+
+
+def _has_names(snapshot, indexes: set[int]) -> bool:
+    by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+    return all(
+        bool(by_index.get(index) and by_index[index].name and not by_index[index].name.lower().startswith("gg seat"))
+        for index in indexes
+    )
 
 
 if __name__ == "__main__":

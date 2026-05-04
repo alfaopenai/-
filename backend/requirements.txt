@@ -8,3 +8,4 @@ pytesseract
 pydantic
 windows-capture
 psutil
+rapidocr_onnxruntime

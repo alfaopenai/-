@@ -28,9 +28,14 @@ class FixedGgProfile:
     pot: NormRoi
     board: tuple[NormRoi, ...]
     seats: tuple[FixedSeatProfile, ...]
+    seat_order_clockwise: tuple[int, ...] = ()
     small_blind: float = 2.0
     big_blind: float = 4.0
     hero_seat_index: int | None = 4
+
+    def __post_init__(self) -> None:
+        if not self.seat_order_clockwise:
+            object.__setattr__(self, "seat_order_clockwise", tuple(seat.index for seat in self.seats))
 
     def all_rois(self) -> Iterable[tuple[str, NormRoi]]:
         yield "title/blinds", self.title_blinds
@@ -153,6 +158,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             action=(0.200, 0.325, 0.135, 0.105),
         ),
     ),
+    seat_order_clockwise=(0, 1, 2, 3, 4, 5, 6, 7),
 )
 
 
@@ -258,8 +264,121 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             action=(0.200, 0.325, 0.135, 0.105),
         ),
     ),
+    seat_order_clockwise=(0, 1, 2, 3, 4, 5, 6, 7),
     small_blind=2.0,
     big_blind=4.0,
+    hero_seat_index=4,
+)
+
+
+CLUBGG_COMPACT_7MAX = FixedGgProfile(
+    name="clubgg_compact_7max",
+    table_type="7max",
+    title_blinds=(0.000, 0.000, 0.330, 0.052),
+    pot=(0.445, 0.338, 0.145, 0.060),
+    board=(
+        (0.310, 0.418, 0.075, 0.145),
+        (0.387, 0.418, 0.075, 0.145),
+        (0.464, 0.418, 0.075, 0.145),
+        (0.541, 0.418, 0.075, 0.145),
+        (0.618, 0.418, 0.075, 0.145),
+    ),
+    seats=(
+        FixedSeatProfile(
+            index=0,
+            label="top",
+            name=(0.318, 0.185, 0.145, 0.045),
+            stack=(0.318, 0.225, 0.145, 0.052),
+            bet=(0.470, 0.285, 0.080, 0.065),
+            cards=((0.338, 0.090, 0.055, 0.120), (0.390, 0.090, 0.055, 0.120)),
+            active=(0.315, 0.075, 0.150, 0.230),
+            dealer=(0.455, 0.250, 0.060, 0.070),
+            action=(0.430, 0.270, 0.145, 0.095),
+        ),
+        FixedSeatProfile(
+            index=1,
+            label="upper-right",
+            name=(0.575, 0.205, 0.125, 0.045),
+            stack=(0.575, 0.245, 0.125, 0.055),
+            bet=(0.610, 0.330, 0.090, 0.070),
+            cards=((0.585, 0.110, 0.055, 0.120), (0.638, 0.110, 0.055, 0.120)),
+            active=(0.565, 0.090, 0.150, 0.225),
+            dealer=(0.535, 0.305, 0.060, 0.070),
+            action=(0.580, 0.300, 0.140, 0.095),
+        ),
+        FixedSeatProfile(
+            index=2,
+            label="right",
+            name=(0.840, 0.390, 0.130, 0.040),
+            stack=(0.840, 0.425, 0.130, 0.045),
+            bet=(0.745, 0.485, 0.100, 0.080),
+            cards=((0.842, 0.250, 0.055, 0.120), (0.895, 0.250, 0.055, 0.120)),
+            active=(0.830, 0.235, 0.160, 0.240),
+            dealer=(0.760, 0.480, 0.060, 0.070),
+            action=(0.730, 0.465, 0.140, 0.105),
+        ),
+        FixedSeatProfile(
+            index=3,
+            label="bottom-right",
+            name=(0.755, 0.775, 0.140, 0.040),
+            stack=(0.755, 0.815, 0.140, 0.050),
+            bet=(0.630, 0.635, 0.110, 0.075),
+            cards=((0.750, 0.655, 0.058, 0.120), (0.805, 0.655, 0.058, 0.120)),
+            active=(0.735, 0.640, 0.175, 0.230),
+            dealer=(0.610, 0.670, 0.060, 0.070),
+            action=(0.610, 0.610, 0.155, 0.100),
+        ),
+        FixedSeatProfile(
+            index=4,
+            label="bottom",
+            name=(0.430, 0.865, 0.155, 0.045),
+            stack=(0.430, 0.895, 0.160, 0.060),
+            bet=(0.470, 0.610, 0.105, 0.075),
+            cards=((0.430, 0.690, 0.058, 0.122), (0.485, 0.690, 0.058, 0.122)),
+            active=(0.420, 0.675, 0.185, 0.285),
+            dealer=(0.540, 0.665, 0.060, 0.070),
+            action=(0.440, 0.590, 0.150, 0.100),
+        ),
+        FixedSeatProfile(
+            index=5,
+            label="bottom-left",
+            name=(0.140, 0.775, 0.135, 0.040),
+            stack=(0.140, 0.815, 0.135, 0.050),
+            bet=(0.250, 0.635, 0.105, 0.075),
+            cards=((0.135, 0.655, 0.058, 0.120), (0.190, 0.655, 0.058, 0.120)),
+            active=(0.125, 0.640, 0.170, 0.230),
+            dealer=(0.290, 0.670, 0.060, 0.070),
+            action=(0.225, 0.610, 0.155, 0.100),
+        ),
+        FixedSeatProfile(
+            index=6,
+            label="left",
+            name=(0.045, 0.390, 0.125, 0.040),
+            stack=(0.045, 0.425, 0.125, 0.045),
+            bet=(0.160, 0.485, 0.100, 0.080),
+            cards=((0.045, 0.250, 0.055, 0.120), (0.098, 0.250, 0.055, 0.120)),
+            active=(0.030, 0.235, 0.160, 0.240),
+            dealer=(0.185, 0.480, 0.060, 0.070),
+            action=(0.130, 0.465, 0.150, 0.105),
+        ),
+    ),
+    seat_order_clockwise=(0, 1, 2, 3, 4, 5, 6),
+    small_blind=1.0,
+    big_blind=2.0,
+    hero_seat_index=4,
+)
+
+
+CLUBGG_COMPACT_6MAX = FixedGgProfile(
+    name="clubgg_compact_6max",
+    table_type="6max",
+    title_blinds=(0.000, 0.000, 0.330, 0.052),
+    pot=CLUBGG_COMPACT_7MAX.pot,
+    board=CLUBGG_COMPACT_7MAX.board,
+    seats=tuple(seat for seat in CLUBGG_COMPACT_7MAX.seats if seat.index != 0),
+    seat_order_clockwise=(1, 2, 3, 4, 5, 6),
+    small_blind=1.0,
+    big_blind=2.0,
     hero_seat_index=4,
 )
 
@@ -270,6 +389,10 @@ def get_fixed_profile(
     frame_shape: tuple[int, ...] | None = None,
 ) -> FixedGgProfile:
     normalized_name = (name or "").lower()
+    if normalized_name in {"clubgg_compact_6max", "ggclub_compact_6max"}:
+        return CLUBGG_COMPACT_6MAX
+    if normalized_name in {"clubgg_compact_7max", "ggclub_compact_7max"}:
+        return CLUBGG_COMPACT_7MAX
     if normalized_name in {"clubgg_compact", "clubgg_compact_8max", "ggclub_compact_8max"}:
         return CLUBGG_COMPACT_8MAX
     if normalized_name in {"clubgg_fixed", "clubgg_fixed_8max", "ggclub_8max", "ggclub_9max"}:
@@ -280,5 +403,8 @@ def get_fixed_profile(
         # Browser/window captures of the compact ClubGG table arrive as the
         # table window itself, or as a small cropped window from a desktop share.
         if 420 <= width <= 1000 and 300 <= height <= 800:
+            aspect = width / max(1, height)
+            if aspect < 1.48:
+                return CLUBGG_COMPACT_7MAX
             return CLUBGG_COMPACT_8MAX
     return CLUBGG_FIXED_8MAX

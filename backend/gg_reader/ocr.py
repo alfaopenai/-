@@ -3,19 +3,27 @@ from __future__ import annotations
 import os
 import re
 from functools import lru_cache
+from threading import Lock
 from typing import Any
 
 import numpy as np
+
+
+_RAPIDOCR_LOCK = Lock()
 
 
 def normalize_amount(raw: str | None) -> float:
     if not raw:
         return 0.0
     value = raw.strip()
+    value = re.sub(r"(?i)(?<=\d)B[856S](?![A-Za-z0-9])", "BB", value)
+    value = re.sub(r"(?i)(?<=\d)[856S]B(?![A-Za-z0-9])", "BB", value)
     numeric_tokens = re.findall(r"(?i)(?:\d|[Oo])[\dOoIl.,]*(?:\s*(?:BB|B|K|M))?", value)
     if numeric_tokens:
         value = numeric_tokens[-1]
     value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
+    value = re.sub(r"(?i)(?<=\d)B[856S]$", "BB", value)
+    value = re.sub(r"(?i)(?<=\d)[856S]B$", "BB", value)
     value_upper = value.upper()
     is_big_blind_value = "BB" in value_upper or bool(re.search(r"\d\s*B", value_upper))
     if is_big_blind_value and "," in value and "." not in value:
@@ -173,15 +181,18 @@ def read_amount(image: np.ndarray) -> tuple[float, float, str]:
     return max(candidates, key=lambda candidate: (candidate[1], candidate[0]))
 
 
-def read_name(image: np.ndarray) -> tuple[str, float]:
+def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -> dict[str, object]:
     import cv2
 
     if image.size == 0:
-        return "", 0.0
-    candidates: list[tuple[str, float]] = []
-    processed = preprocess_for_text(image)
-    candidates.append(_run_tesseract(processed, "--psm 7"))
-    candidates.append(_run_tesseract(processed, "--psm 8"))
+        return {
+            "raw": "",
+            "cleaned": "",
+            "confidence": 0.0,
+            "source": "tesseract",
+            "rejectReason": "empty-crop",
+        }
+    candidates: list[tuple[str, float, str, str]] = []
 
     if image.ndim == 3 and image.shape[2] >= 3:
         channels = image[:, :, :3].astype(np.int16)
@@ -190,32 +201,92 @@ def read_name(image: np.ndarray) -> tuple[str, float]:
         red = channels[:, :, 2]
         white = ((red > 145) & (green > 145) & (blue > 145)).astype(np.uint8) * 255
         cyan = ((blue > 90) & (green > 90) & (red < 145)).astype(np.uint8) * 255
-        for mask in (white, cyan):
+        whitelist = "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
+        masks = [(white, "white-mask")]
+        if int((white > 0).sum()) < 4:
+            masks.append((cyan, "cyan-mask"))
+        for mask, mask_name in masks:
             if int((mask > 0).sum()) < 4:
                 continue
             tight = _tight_mask(mask)
             if tight is None:
                 continue
-            scaled = 255 - cv2.resize(tight, None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
-            candidates.append(_run_tesseract(scaled, "--psm 7"))
-            candidates.append(_run_tesseract(scaled, "--psm 8"))
-            if mask is white:
-                clean_scaled = cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC)
-                whitelist = "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
-                for processed in (clean_scaled, 255 - clean_scaled):
-                    for psm in (7, 8):
-                        raw = _run_tesseract_string(processed, f"--psm {psm} {whitelist}")
-                        if raw:
-                            candidates.append((raw, 0.72))
+            variants = (
+                cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC),
+                255 - cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC),
+            )
+            for variant_index, variant in enumerate(variants):
+                for psm in (7, 8):
+                    raw = _run_tesseract_string(variant, f"--psm {psm} {whitelist}")
+                    if raw:
+                        candidates.append((raw, 0.72, "tesseract", f"{mask_name}:{variant_index}:psm-{psm}"))
+
+    if not candidates:
+        processed = preprocess_for_text(image)
+        raw, confidence = _run_tesseract(processed, "--psm 7")
+        if raw:
+            candidates.append((raw, confidence, "tesseract", "psm-7"))
+
+    if allow_slow_fallback and os.environ.get("GG_READER_NAME_RAPIDOCR", "1").lower() not in {"0", "false", "no"}:
+        rapidocr_result = _read_name_rapidocr(image)
+        if rapidocr_result:
+            raw, confidence = rapidocr_result
+            candidates.append((raw, confidence, "rapidocr", "rapidocr"))
+
+    if allow_slow_fallback and os.environ.get("GG_READER_NAME_EASYOCR", "").lower() in {"1", "true", "yes"}:
+        easyocr_result = _read_name_easyocr(image)
+        if easyocr_result:
+            raw, confidence = easyocr_result
+            candidates.append((raw, confidence, "easyocr", "easyocr"))
 
     cleaned_candidates = [
-        (_clean_ocr_name_candidate(text), confidence)
-        for text, confidence in candidates
+        (_clean_ocr_name_candidate(text), confidence, text, source, variant)
+        for text, confidence, source, variant in candidates
         if text and _clean_ocr_name_candidate(text)
     ]
     if not cleaned_candidates:
-        return "", 0.0
-    return max(cleaned_candidates, key=lambda item: (item[1], len(item[0])))
+        return {
+            "raw": max((text for text, _confidence, _source, _variant in candidates), key=len, default=""),
+            "cleaned": "",
+            "confidence": 0.0,
+            "source": "tesseract",
+            "rejectReason": "no-clean-name-candidate",
+        }
+    cleaned, confidence, raw, source, variant = max(
+        cleaned_candidates,
+        key=lambda item: (item[1], _name_quality_score(item[0]), len(item[0])),
+    )
+    if _looks_like_amount_text(cleaned):
+        return {
+            "raw": raw,
+            "cleaned": "",
+            "confidence": 0.0,
+            "source": source,
+            "variant": variant,
+            "rejectReason": "amount-text-not-name",
+        }
+    if _looks_like_take_seat_text(cleaned):
+        return {
+            "raw": raw,
+            "cleaned": "",
+            "confidence": 0.0,
+            "source": source,
+            "variant": variant,
+            "rejectReason": "take-seat-placeholder",
+        }
+    return {
+        "raw": raw,
+        "cleaned": cleaned,
+        "confidence": float(confidence),
+        "source": source,
+        "variant": variant,
+        "rejectReason": "" if cleaned and confidence > 0 else "low-confidence",
+    }
+
+
+def read_name(image: np.ndarray) -> tuple[str, float]:
+    result = read_name_detailed(image)
+    return str(result.get("cleaned") or ""), float(result.get("confidence") or 0.0)
 
 
 def read_text(image: np.ndarray, *, mode: str = "name") -> tuple[str, float]:
@@ -239,9 +310,107 @@ def _tight_mask(mask: np.ndarray) -> np.ndarray | None:
 
 def _clean_ocr_name_candidate(text: str) -> str:
     value = str(text or "").strip()
+    value = value.replace("!", "I").replace("|", "I").replace("—", " ")
     value = re.sub(r"[^0-9A-Za-z\u0590-\u05ff_. -]+", " ", value)
     value = " ".join(value.split())
-    return value.strip(" -_{}[]()\\/")
+    value = value.strip(" -_{}[]()\\/")
+    value = re.sub(r"([A-Za-z])O(?=\d)", r"\g<1>0", value)
+    value = re.sub(r"lS$", "IS", value)
+    value = re.sub(r"^a(?=[A-Z]{2}\d)", "", value)
+    compact = re.sub(r"[^0-9a-z]+", "", value.lower())
+    canonical = {
+        "cedarkoi": "CedarKoi",
+        "joeyis": "joeyIS",
+        "joeyls": "joeyIS",
+        "joey1s": "joeyIS",
+    }.get(compact)
+    if canonical:
+        value = canonical
+    return value
+
+
+def _name_quality_score(value: str) -> float:
+    if not value:
+        return 0.0
+    score = 0.0
+    if re.search(r"[A-Za-z]", value):
+        score += 0.35
+    if re.search(r"\d", value):
+        score += 0.12
+    if 2 <= len(value) <= 18:
+        score += 0.25
+    if value.lower().startswith("gg seat"):
+        score -= 0.75
+    if _looks_like_amount_text(value):
+        score -= 0.80
+    if len(value.split()) > 3:
+        score -= 0.18
+    return score
+
+
+def _looks_like_amount_text(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(re.fullmatch(r"(?i)\d+(?:[.,]\d+)?\s*B?B?", text))
+
+
+def _looks_like_take_seat_text(value: str) -> bool:
+    text = re.sub(r"[^a-z]+", "", str(value or "").lower())
+    return text in {"takeseat", "cakeseat"} or text.endswith("takeseat") or text.endswith("cakeseat")
+
+
+@lru_cache(maxsize=1)
+def _easyocr_reader() -> object | None:
+    try:
+        import easyocr
+
+        return easyocr.Reader(["en"], gpu=False, verbose=False)
+    except Exception:
+        return None
+
+
+def _read_name_easyocr(image: np.ndarray) -> tuple[str, float] | None:
+    reader = _easyocr_reader()
+    if reader is None:
+        return None
+    try:
+        results = reader.readtext(image[:, :, :3] if image.ndim == 3 else image, detail=1, paragraph=False)
+    except Exception:
+        return None
+    candidates: list[tuple[str, float]] = []
+    for item in results:
+        if len(item) >= 3:
+            candidates.append((str(item[1] or ""), float(item[2] or 0.0)))
+    return max(candidates, key=lambda item: item[1], default=None)
+
+
+@lru_cache(maxsize=1)
+def _rapidocr_reader() -> object | None:
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+
+        return RapidOCR()
+    except Exception:
+        return None
+
+
+def _read_name_rapidocr(image: np.ndarray) -> tuple[str, float] | None:
+    reader = _rapidocr_reader()
+    if reader is None:
+        return None
+    try:
+        with _RAPIDOCR_LOCK:
+            result, _elapsed = reader(image[:, :, :3] if image.ndim == 3 else image)
+    except Exception:
+        return None
+    candidates: list[tuple[str, float]] = []
+    for item in result or []:
+        if len(item) >= 3:
+            try:
+                confidence = float(item[2] or 0.0)
+            except Exception:
+                confidence = 0.0
+            candidates.append((str(item[1] or ""), confidence))
+    return max(candidates, key=lambda item: item[1], default=None)
 
 
 def read_card(image: np.ndarray) -> dict[str, object]:

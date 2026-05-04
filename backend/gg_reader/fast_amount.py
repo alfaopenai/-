@@ -15,6 +15,7 @@ def read_amount_fast(image: np.ndarray) -> tuple[float, float, str]:
     mask = _best_text_mask(image)
     if mask is None:
         return 0.0, 0.0, ""
+    mask = _remove_amount_noise(mask)
 
     chars = _segment_chars(mask)
     if not chars:
@@ -44,6 +45,7 @@ def amount_text_signal(image: np.ndarray) -> float:
     mask = _best_text_mask(image)
     if mask is None or image.size == 0:
         return 0.0
+    mask = _remove_amount_noise(mask)
     return float((mask > 0).sum() / max(1, image.shape[0] * image.shape[1]))
 
 
@@ -58,6 +60,7 @@ def read_amount_tight_ocr(
     mask = _best_text_mask(image)
     if mask is None:
         return 0.0, 0.0, ""
+    mask = _remove_amount_noise(mask)
     rows, cols = np.where(mask > 0)
     if len(cols) == 0:
         return 0.0, 0.0, ""
@@ -90,7 +93,7 @@ def read_amount_tight_ocr(
         ).strip()
         if not raw:
             continue
-        normalized_raw = raw
+        normalized_raw = _normalize_ocr_amount_raw(raw)
         if has_decimal_marker and re.fullmatch(r"\d{2,4}", normalized_raw or ""):
             normalized_raw = f"{normalized_raw[:-1]}.{normalized_raw[-1]}"
         amount = normalize_amount(normalized_raw)
@@ -132,6 +135,29 @@ def _best_text_mask(image: np.ndarray) -> np.ndarray | None:
         return None
     kernel = np.ones((2, 2), np.uint8)
     return cv2.morphologyEx(best, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+
+def _remove_amount_noise(mask: np.ndarray) -> np.ndarray:
+    import cv2
+
+    if mask.size == 0:
+        return mask
+    cleaned = mask.copy()
+    contours, _hierarchy = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height, width = cleaned.shape[:2]
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        if box_height <= max(2, int(height * 0.12)) and box_width >= width * 0.35:
+            cleaned[y:y + box_height, x:x + box_width] = 0
+    return cleaned
+
+
+def _normalize_ocr_amount_raw(raw: str) -> str:
+    value = str(raw or "").strip().upper().replace(" ", "")
+    value = value.replace("O", "0").replace("I", "1").replace("L", "1")
+    value = re.sub(r"(?<=\d)B[856S]$", "BB", value)
+    value = re.sub(r"(?<=\d)[856S]B$", "BB", value)
+    return value
 
 
 def _segment_chars(mask: np.ndarray) -> list[np.ndarray]:

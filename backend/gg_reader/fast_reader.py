@@ -14,7 +14,7 @@ import numpy as np
 from .fast_amount import amount_text_signal, read_amount_fast, read_amount_tight_ocr
 from .fixed_profile import FixedGgProfile, FixedSeatProfile, get_fixed_profile
 from .models import GgCard, GgSeat, GgTableSnapshot
-from .ocr import normalize_amount, read_amount, read_card, read_name
+from .ocr import normalize_amount, read_amount, read_card, read_name, read_name_detailed
 from .profile_matcher import FittedGgProfile, choose_and_fit_profile
 from .roi import crop_norm, downscale_hash, draw_roi_overlay, roi_changed, roi_mean_abs_diff
 from .table_state import TableStateStabilizer
@@ -25,7 +25,7 @@ CARD_CHANGE_THRESHOLD = 3.5
 TEXT_CHANGE_THRESHOLD = 4.0
 DEALER_HOLD_SECONDS = 1.5
 BAD_FRAME_HOLD_SECONDS = 1.2
-MAX_PENDING_OCR = 8
+MAX_PENDING_OCR = 16
 QUICK_REUSE_MIN_FPS = 2.5
 PROFILE_REFIT_SECONDS = 30.0
 
@@ -47,10 +47,11 @@ class _FieldCache:
     candidate_raw: str = ""
     candidate_confidence: float = 0.0
     kind: str = "generic"
+    reject_reason: str = ""
 
 
 class FastGgReader:
-    def __init__(self, profile: FixedGgProfile | None = None, *, ocr_workers: int = 5) -> None:
+    def __init__(self, profile: FixedGgProfile | None = None, *, ocr_workers: int = 8) -> None:
         self.profile = profile or get_fixed_profile()
         self._profile_locked = profile is not None
         self._executor = ThreadPoolExecutor(max_workers=ocr_workers, thread_name_prefix="fast-gg-ocr")
@@ -120,6 +121,7 @@ class FastGgReader:
                 metrics=metrics,
                 stale_seconds=15.0,
                 min_confidence=0.15,
+                allow_slow_fallback=False,
             )
             small_blind, big_blind = self._parse_blinds(title_text)
 
@@ -134,8 +136,9 @@ class FastGgReader:
                 empty_is_zero=False,
             )
             seats = self._read_seats(frame, visible_ids, now, metrics)
-            active_count = sum(1 for seat in seats if seat.active)
             dealer_index = self._detect_dealer(frame, seats, now, metrics)
+            self._apply_positions(seats, dealer_index)
+            active_count = sum(1 for seat in seats if seat.active)
             confidence = self._snapshot_confidence(seats, pot_confidence, title_confidence, dealer_index)
 
             snapshot = GgTableSnapshot(
@@ -172,6 +175,7 @@ class FastGgReader:
             metrics = dict(self._last_metrics)
             metrics["ocrPending"] = pending
             metrics["ocrPendingByKind"] = self._pending_ocr_by_kind()
+            metrics["retryableMissingNames"] = self._has_retryable_missing_names()
             metrics["cacheFields"] = len(self._fields)
             metrics["lastSnapshotAgeMs"] = (
                 round((time.monotonic() - self._last_snapshot_at) * 1000, 2)
@@ -181,6 +185,9 @@ class FastGgReader:
             metrics["p95ParseMs"] = self._percentile(self._parse_durations_ms, 0.95)
             metrics["maxParseMs"] = round(max(self._parse_durations_ms), 2) if self._parse_durations_ms else 0.0
             return metrics
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def save_roi_overlay(self, output_path: str | Path, frame: np.ndarray | None = None) -> dict[str, Any]:
         with self._lock:
@@ -213,12 +220,23 @@ class FastGgReader:
                 changed_since_cache = False
                 if entry and entry.image_hash is not None:
                     changed_since_cache = roi_changed(entry.image_hash, downscale_hash(crop), TEXT_CHANGE_THRESHOLD)
-                accepted = bool(entry and entry.known and not changed_since_cache)
+                accepted = bool(
+                    entry
+                    and entry.known
+                    and not changed_since_cache
+                    and not entry.reject_reason
+                    and (
+                        float(entry.confidence or 0.0) > 0.0
+                        or entry.source in {"empty", "visual_card_detection"}
+                        or entry.value not in (None, "")
+                    )
+                )
                 field_payload = {
                     "key": cache_key,
                     "label": label,
                     "path": str(path),
                     "raw": str(entry.raw or "") if entry else "",
+                    "cleaned": _clean_player_name(str(entry.value or "")) if entry and "-name" in cache_key else None,
                     "parsedValue": parsed_value,
                     "confidence": round(float(entry.confidence or 0.0), 4) if entry else 0.0,
                     "source": "stale-cache" if changed_since_cache else (str(entry.source or "unread") if entry else "unread"),
@@ -227,7 +245,11 @@ class FastGgReader:
                     "rejectReason": (
                         ""
                         if accepted
-                        else ("roi-changed-since-cache" if changed_since_cache else "not-read-yet")
+                        else (
+                            "roi-changed-since-cache"
+                            if changed_since_cache
+                            else (str(entry.reject_reason or "") if entry else "not-read-yet") or "not-read-yet"
+                        )
                     ),
                 }
                 fields.append(field_payload)
@@ -471,6 +493,8 @@ class FastGgReader:
             return None
         if self._pending_ocr_count() > 0:
             return None
+        if self._has_retryable_missing_names():
+            return None
         if self._actual_fps() < QUICK_REUSE_MIN_FPS:
             return None
         if not np.array_equal(quick_hash, self._last_quick_hash):
@@ -485,6 +509,22 @@ class FastGgReader:
         self._last_snapshot = snapshot.model_copy(deep=True)
         self._last_snapshot_at = time.monotonic()
         return snapshot
+
+    def _has_retryable_missing_names(self) -> bool:
+        if self._last_snapshot is None:
+            return False
+        now = time.monotonic()
+        for seat in self._last_snapshot.seats:
+            if not seat.active or seat.name:
+                continue
+            entry = self._fields.get(f"seat-{seat.physicalSeatIndex}-name")
+            if entry is None:
+                return True
+            if entry.consecutive_misses >= 10:
+                continue
+            if entry.future is None and now - float(entry.requested_at or 0.0) >= 1.0:
+                return True
+        return False
 
     def _quick_frame_hash(self, frame: np.ndarray) -> np.ndarray:
         sample = frame[::24, ::24, :3] if frame.ndim == 3 else frame[::24, ::24]
@@ -567,24 +607,26 @@ class FastGgReader:
 
         stack_crop = crop_norm(frame, seat_profile.stack)
         bet_crop = crop_norm(frame, seat_profile.bet)
+        name_crop = crop_norm(frame, seat_profile.name)
+        action_roi = seat_profile.action or seat_profile.bet
+        action_crop = crop_norm(frame, action_roi)
         active_crop = crop_norm(frame, seat_profile.active)
         stack_signal = _cyan_signal(stack_crop)
         stack_text_signal = amount_text_signal(stack_crop)
         bet_text_signal = amount_text_signal(bet_crop)
+        name_text_signal = _name_text_signal(name_crop)
+        panel_signal = _panel_signal(active_crop)
+        action_text_signal = _name_text_signal(action_crop)
         has_two_hole_cards = len(hole_cards) >= 2
-        has_clear_stack_text = stack_text_signal >= 0.025
-        has_clear_bet_text = bet_text_signal >= 0.020
-        has_clear_cyan_stack = stack_signal >= 0.025
+        has_clear_stack_text = stack_text_signal >= 0.014
+        has_clear_bet_text = bet_text_signal >= 0.012
+        has_clear_cyan_stack = stack_signal >= 0.014
         empty_take_seat = _looks_like_empty_take_seat(
             active_crop,
             has_two_hole_cards=has_two_hole_cards,
             stack_signal=stack_signal,
             stack_text_signal=stack_text_signal,
             bet_text_signal=bet_text_signal,
-        )
-        likely_active = bool(
-            not empty_take_seat
-            and (has_two_hole_cards or has_clear_stack_text or has_clear_bet_text or has_clear_cyan_stack)
         )
 
         stack = 0.0
@@ -595,7 +637,26 @@ class FastGgReader:
         name_confidence = 0.0
         detected_action = "none"
         action_confidence = 0.0
-        if likely_active:
+        should_read_stack = (
+            has_clear_stack_text
+            or has_clear_cyan_stack
+            or self._field_known(f"seat-{seat_profile.index}-stack")
+        )
+        should_read_bet = (
+            has_clear_bet_text
+            or self._field_known(f"seat-{seat_profile.index}-bet")
+        )
+        should_read_name = (
+            name_text_signal >= 0.010
+            or panel_signal >= 0.28
+            or self._field_known(f"seat-{seat_profile.index}-name")
+        )
+        should_read_action = (
+            action_text_signal >= 0.012
+            or has_clear_bet_text
+            or self._field_known(f"seat-{seat_profile.index}-action")
+        )
+        if should_read_stack:
             stack, stack_confidence, _raw_stack = self._read_amount_cached(
                 f"seat-{seat_profile.index}-stack",
                 stack_crop,
@@ -604,6 +665,7 @@ class FastGgReader:
                 stale_seconds=0.75,
                 empty_is_zero=False,
             )
+        if should_read_bet:
             current_bet, bet_confidence, _raw_bet = self._read_amount_cached(
                 f"seat-{seat_profile.index}-bet",
                 bet_crop,
@@ -612,33 +674,36 @@ class FastGgReader:
                 stale_seconds=0.333,
                 empty_is_zero=True,
             )
+        if should_read_name:
             name, name_confidence = self._read_name_cached(
                 f"seat-{seat_profile.index}-name",
-                crop_norm(frame, seat_profile.name),
+                name_crop,
                 now=now,
                 metrics=metrics,
-                stale_seconds=20.0,
+                stale_seconds=120.0,
                 min_confidence=0.18,
             )
-            action_roi = seat_profile.action or seat_profile.bet
+        if should_read_action:
             detected_action, action_confidence = self._read_action_cached(
                 f"seat-{seat_profile.index}-action",
-                crop_norm(frame, action_roi),
+                action_crop,
                 now=now,
                 metrics=metrics,
                 stale_seconds=1.0,
             )
 
-        name_with_money = bool(name_confidence >= 0.25 and (stack_confidence >= 0.50 or bet_confidence >= 0.50))
+        valid_stack = bool(stack > 0 and stack_confidence >= 0.50)
+        valid_bet = bool(current_bet > 0 and bet_confidence >= 0.50)
+        valid_name_with_panel = bool(name and name_confidence >= 0.18 and panel_signal >= 0.22)
+        empty = bool(empty_take_seat and not has_two_hole_cards and not valid_stack and not valid_bet)
         active = bool(
-            not empty_take_seat
+            not empty
             and (
-                likely_active
-                or name_with_money
-                or stack_confidence >= 0.55
-                or bet_confidence >= 0.55
-                or stack > 0
-                or current_bet > 0
+                has_two_hole_cards
+                or valid_stack
+                or valid_bet
+                or valid_name_with_panel
+                or has_clear_cyan_stack
             )
         )
 
@@ -653,10 +718,17 @@ class FastGgReader:
         else:
             action = "none"
             action_source = "none"
+        if active and not hole_cards and action != "fold" and (valid_stack or valid_name_with_panel or has_clear_cyan_stack):
+            hole_cards = [
+                GgCard(hidden=True, visible=False, display="X", confidence=0.72),
+                GgCard(hidden=True, visible=False, display="X", confidence=0.72),
+            ]
         confidence = _estimate_confidence([
             min(0.90, stack_signal * 16),
             min(0.90, stack_text_signal * 10),
             min(0.90, bet_text_signal * 12),
+            min(0.90, name_text_signal * 12),
+            min(0.90, panel_signal),
             stack_confidence,
             bet_confidence,
             name_confidence,
@@ -672,10 +744,13 @@ class FastGgReader:
             seat_debug.append({
                 "index": seat_profile.index,
                 "activeSignal": round(float(_active_signal(active_crop)), 4),
+                "panelSignal": round(float(panel_signal), 4),
                 "emptyTakeSeat": bool(empty_take_seat),
+                "empty": bool(empty),
                 "stackTextSignal": round(float(stack_text_signal), 4),
                 "stackCyanSignal": round(float(stack_signal), 4),
                 "betTextSignal": round(float(bet_text_signal), 4),
+                "nameTextSignal": round(float(name_text_signal), 4),
                 "card0Present": bool(len(hole_cards) >= 1),
                 "card1Present": bool(len(hole_cards) >= 2),
                 "nameUnknown": bool(active and not name),
@@ -723,6 +798,9 @@ class FastGgReader:
             entry.completed_at = time.monotonic()
             entry.value = self._card_from_data(data, allow_hidden=allow_hidden)
             entry.confidence = float(data.get("confidence") or 0.0)
+            entry.source = "visual_card_detection"
+            entry.raw = _card_id(entry.value) if isinstance(entry.value, GgCard) else ("X" if data.get("hidden") else "")
+            entry.reject_reason = "" if entry.value is not None else "no-card-detected"
             metrics["fieldsUpdated"] += 1
         else:
             metrics["fieldsReused"] += 1
@@ -788,6 +866,7 @@ class FastGgReader:
                 entry.confidence = 0.92
                 entry.raw = ""
                 entry.source = "empty"
+                entry.reject_reason = ""
                 entry.known = True
                 entry.completed_at = now
                 metrics["fieldsUpdated"] += 1
@@ -866,6 +945,7 @@ class FastGgReader:
                     entry.known = True
                     entry.completed_at = now
                     entry.source = "fast_amount_low_confidence"
+                    entry.reject_reason = "fast-amount-low-confidence"
                 metrics["fieldsReused"] += 1
         else:
             metrics["fieldsReused"] += 1
@@ -901,6 +981,10 @@ class FastGgReader:
                 metrics["fieldsUpdated"] += 1
             else:
                 metrics["fieldsReused"] += 1
+        elif suspicious_pot:
+            entry.reject_reason = "suspicious-pot-jackpot"
+        elif value <= 0:
+            entry.reject_reason = "empty-or-zero-amount"
         metrics["ocrCompleted"] += 1
 
     def _apply_amount_candidate(
@@ -917,8 +1001,10 @@ class FastGgReader:
         field_is_stack = "-stack" in key
         field_is_pot = key == "pot"
         if value <= 0 or confidence <= 0:
+            entry.reject_reason = "empty-or-zero-amount"
             return False
         if field_is_pot and value > 500 and not re.search(r"(?i)[.KMB]|BB", raw or ""):
+            entry.reject_reason = "suspicious-pot-jackpot"
             return False
         if previous > 0 and (field_is_stack or field_is_pot):
             ratio = value / max(previous, 0.01)
@@ -933,11 +1019,13 @@ class FastGgReader:
                 entry.candidate_confidence = confidence
                 if not candidate_matches:
                     entry.source = f"{source}_candidate"
+                    entry.reject_reason = "suspicious-amount-jump"
                     return False
         entry.value = float(value)
         entry.confidence = float(confidence)
         entry.raw = str(raw or "")
         entry.source = str(source or "tesseract")
+        entry.reject_reason = ""
         entry.known = True
         entry.completed_at = now
         entry.consecutive_hits += 1
@@ -975,6 +1063,7 @@ class FastGgReader:
         metrics: dict[str, Any],
         stale_seconds: float,
         min_confidence: float,
+        allow_slow_fallback: bool = True,
     ) -> tuple[str, float]:
         entry = self._fields.setdefault(key, _FieldCache(value=""))
         self._consume_name_future(entry, metrics, min_confidence=min_confidence)
@@ -987,9 +1076,10 @@ class FastGgReader:
         stale_known_due = bool(entry.value) and now - entry.completed_at >= stale_seconds
         should_refresh = changed or not entry.known or missing_retry_due or stale_known_due
         if should_refresh and entry.future is None and self._can_queue_ocr(now):
-            entry.future = self._executor.submit(read_name, crop.copy())
+            entry.future = self._executor.submit(_read_name_source, crop.copy(), allow_slow_fallback)
             entry.requested_at = now
             metrics["ocrQueued"] += 1
+            entry.source = "queued_tesseract"
             if not entry.known:
                 entry.known = True
                 entry.completed_at = now
@@ -1006,19 +1096,35 @@ class FastGgReader:
         if future is None or not future.done():
             return
         try:
-            value, confidence = future.result()
+            result = future.result()
         except Exception:
-            value, confidence = "", 0.0
+            result = ("", 0.0, "", "tesseract_error", "ocr-error")
         entry.future = None
+        if isinstance(result, tuple) and len(result) >= 5:
+            value, confidence, raw, source, reject_reason = result[:5]
+        else:
+            value, confidence = result[:2]
+            raw = value
+            source = "tesseract"
+            reject_reason = ""
         cleaned = _clean_player_name(value)
+        entry.raw = str(raw or value or "")
+        entry.source = str(source or "tesseract")
+        entry.reject_reason = str(reject_reason or "")
         if cleaned and confidence >= min_confidence:
             entry.value = cleaned
             entry.confidence = float(confidence)
             entry.known = True
             entry.completed_at = time.monotonic()
+            entry.reject_reason = ""
+            entry.consecutive_misses = 0
             metrics["fieldsUpdated"] += 1
         else:
+            entry.confidence = float(confidence or 0.0)
             entry.completed_at = time.monotonic()
+            entry.consecutive_misses += 1
+            if not entry.reject_reason:
+                entry.reject_reason = "low-confidence-or-empty-name"
         metrics["ocrCompleted"] += 1
 
     def _read_action_cached(
@@ -1080,6 +1186,15 @@ class FastGgReader:
         now: float,
         metrics: dict[str, Any],
     ) -> int:
+        if self.profile.table_type in {"6max", "7max"}:
+            visual_index, visual_score = _detect_dealer_by_geometry(frame, self.profile, seats)
+            if visual_index is not None and visual_score >= 0.08:
+                self._last_dealer_index = int(visual_index)
+                self._last_dealer_at = now
+                metrics["dealerConfidence"] = round(float(visual_score), 4)
+                metrics["dealerSource"] = "visual_geometry"
+                return int(visual_index)
+
         best_index = None
         best_score = 0.0
         for seat in self.profile.seats:
@@ -1092,6 +1207,7 @@ class FastGgReader:
             self._last_dealer_index = int(best_index)
             self._last_dealer_at = now
             metrics["dealerConfidence"] = round(best_score, 4)
+            metrics["dealerSource"] = "roi"
             return int(best_index)
 
         active_indexes = [seat.physicalSeatIndex for seat in seats if seat.active]
@@ -1099,6 +1215,40 @@ class FastGgReader:
             metrics["dealerHeld"] = True
             return self._last_dealer_index
         return active_indexes[0] if active_indexes else self._last_dealer_index
+
+    def _apply_positions(self, seats: list[GgSeat], dealer_index: int) -> None:
+        order = list(getattr(self.profile, "seat_order_clockwise", ()) or [seat.index for seat in self.profile.seats])
+        active_by_index = {int(seat.physicalSeatIndex): seat for seat in seats if seat.active}
+        active_order = [index for index in order if index in active_by_index]
+        for seat in seats:
+            seat.isDealer = bool(seat.active and int(seat.physicalSeatIndex) == int(dealer_index))
+            seat.position = None
+        if not active_order:
+            return
+        if dealer_index not in active_order:
+            dealer_position = 0
+            for offset, seat_index in enumerate(order):
+                if seat_index == dealer_index:
+                    following = order[offset:] + order[:offset]
+                    dealer_position = next(
+                        (active_order.index(candidate) for candidate in following if candidate in active_by_index),
+                        0,
+                    )
+                    break
+        else:
+            dealer_position = active_order.index(dealer_index)
+        rotated = active_order[dealer_position:] + active_order[:dealer_position]
+        labels = _position_labels(len(rotated))
+        for seat_index, label in zip(rotated, labels):
+            active_by_index[seat_index].position = label
+
+    def _field_known(self, key: str) -> bool:
+        entry = self._fields.get(key)
+        if entry is None:
+            return False
+        if entry.future is not None:
+            return True
+        return bool(entry.known and (entry.value not in (None, "", 0.0) or float(entry.confidence or 0.0) > 0.0))
 
     def _parse_blinds(self, title_text: str) -> tuple[float, float]:
         value = title_text or ""
@@ -1207,6 +1357,16 @@ def _read_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
     return amount, confidence, raw, "tesseract"
 
 
+def _read_name_source(image: np.ndarray, allow_slow_fallback: bool = True) -> tuple[str, float, str, str, str]:
+    result = read_name_detailed(image, allow_slow_fallback=allow_slow_fallback)
+    cleaned = str(result.get("cleaned") or "")
+    confidence = float(result.get("confidence") or 0.0)
+    raw = str(result.get("raw") or "")
+    source = str(result.get("source") or "tesseract")
+    reject_reason = str(result.get("rejectReason") or "")
+    return cleaned, confidence, raw, source, reject_reason
+
+
 def _read_pot_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
     amount, confidence, raw = read_amount_tight_ocr(image, squash_bb_suffix=True)
     if amount > 0 and confidence > 0:
@@ -1223,6 +1383,28 @@ def _active_signal(image: np.ndarray) -> float:
     bright = float((gray > 120).mean())
     cyan = _cyan_signal(image)
     return min(1.0, bright * 1.5 + cyan * 8)
+
+
+def _name_text_signal(image: np.ndarray) -> float:
+    if image.size == 0 or image.ndim < 3:
+        return 0.0
+    channels = image[:, :, :3].astype(np.int16)
+    blue = channels[:, :, 0]
+    green = channels[:, :, 1]
+    red = channels[:, :, 2]
+    white = (red > 145) & (green > 145) & (blue > 145)
+    cyan = (blue > 90) & (green > 90) & (red < 150) & ((blue - red) > 20) & ((green - red) > 20)
+    return float(np.logical_or(white, cyan).mean())
+
+
+def _panel_signal(image: np.ndarray) -> float:
+    if image.size == 0 or image.ndim < 3:
+        return 0.0
+    gray = np.mean(image[:, :, :3], axis=2)
+    dark = float((gray < 85).mean())
+    text = _name_text_signal(image)
+    cyan = _cyan_signal(image)
+    return min(1.0, dark * 0.55 + text * 7.5 + cyan * 14.0)
 
 
 def _looks_like_empty_take_seat(
@@ -1247,6 +1429,65 @@ def _looks_like_empty_take_seat(
     return white_ratio >= 0.006 or bright_ratio >= 0.035
 
 
+def _detect_dealer_by_geometry(
+    frame: np.ndarray,
+    profile: FixedGgProfile | FittedGgProfile,
+    seats: list[GgSeat],
+) -> tuple[int | None, float]:
+    try:
+        import cv2
+    except Exception:
+        return None, 0.0
+    if frame.size == 0 or frame.ndim < 3:
+        return None, 0.0
+    channels = frame[:, :, :3].astype(np.int16)
+    blue = channels[:, :, 0]
+    green = channels[:, :, 1]
+    red = channels[:, :, 2]
+    yellow = (red > 135) & (green > 95) & (blue < 120) & ((red - blue) > 35)
+    # Exclude the Bad Beat banner/title bar and the board cards. The dealer
+    # button lives around the table ring, not in the top chrome or board strip.
+    height, width = yellow.shape[:2]
+    yellow[: int(height * 0.22), :] = False
+    yellow[int(height * 0.38): int(height * 0.60), int(width * 0.28): int(width * 0.72)] = False
+    mask = yellow.astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: list[tuple[float, tuple[float, float]]] = []
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        area = float(cv2.contourArea(contour))
+        if area < max(14.0, width * height * 0.00004):
+            continue
+        if area > width * height * 0.004:
+            continue
+        aspect = box_width / max(1, box_height)
+        if not 0.45 <= aspect <= 1.95:
+            continue
+        center = (x + box_width / 2.0, y + box_height / 2.0)
+        ring_score = 1.0 - min(1.0, abs((center[1] / max(1, height)) - 0.66) / 0.50)
+        candidates.append((float(area) * max(0.2, ring_score), center))
+    if not candidates:
+        return None, 0.0
+    _score, point = max(candidates, key=lambda item: item[0])
+    active_indexes = {int(seat.physicalSeatIndex) for seat in seats if seat.active}
+    centers: dict[int, tuple[float, float]] = {}
+    for seat in profile.seats:
+        roi = seat.active
+        centers[int(seat.index)] = ((roi[0] + roi[2] / 2) * width, (roi[1] + roi[3] / 2) * height)
+    candidate_indexes = active_indexes or set(centers)
+    if not candidate_indexes:
+        return None, 0.0
+    best_index = min(candidate_indexes, key=lambda index: _distance(point, centers.get(index, point)))
+    best_distance = _distance(point, centers.get(best_index, point))
+    confidence = max(0.0, min(1.0, 1.0 - best_distance / max(width, height)))
+    return int(best_index), confidence
+
+
+def _distance(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return ((left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2) ** 0.5
+
+
 def _dealer_signal(image: np.ndarray) -> float:
     if image.size == 0 or image.ndim < 3:
         return 0.0
@@ -1268,6 +1509,15 @@ def _clean_player_name(name: str | None) -> str:
     cleaned = re.sub(r"[^0-9A-Za-z\u0590-\u05ff_. -]+", " ", cleaned)
     cleaned = " ".join(cleaned.split())
     cleaned = cleaned.strip(" -_{}[]()\\/")
+    cleaned = re.sub(r"([A-Za-z])O(?=\d)", r"\g<1>0", cleaned)
+    cleaned = re.sub(r"lS$", "IS", cleaned)
+    cleaned = re.sub(r"^a(?=[A-Z]{2}\d)", "", cleaned)
+    canonical = {
+        "cedarkoi": "CedarKoi",
+        "joeyis": "joeyIS",
+    }.get(cleaned.lower())
+    if canonical:
+        cleaned = canonical
     if len(cleaned) > 24:
         cleaned = cleaned[:24]
     return cleaned
@@ -1320,6 +1570,29 @@ def _street_from_board(board: list[GgCard]) -> str:
     if visible == 0:
         return "preflop"
     return "unknown"
+
+
+def _position_labels(active_count: int) -> list[str]:
+    if active_count <= 0:
+        return []
+    if active_count == 1:
+        return ["BTN"]
+    if active_count == 2:
+        return ["BTN/SB", "BB"]
+    middle_by_count = {
+        3: [],
+        4: ["UTG"],
+        5: ["UTG", "CO"],
+        6: ["UTG", "HJ", "CO"],
+        7: ["UTG", "UTG+1", "HJ", "CO"],
+        8: ["UTG", "UTG+1", "MP", "HJ", "CO"],
+        9: ["UTG", "UTG+1", "MP", "LJ", "HJ", "CO"],
+    }
+    middle = middle_by_count.get(active_count)
+    if middle is None:
+        middle = ["UTG", *[f"UTG+{index}" for index in range(1, max(1, active_count - 4))], "HJ", "CO"]
+        middle = middle[-max(0, active_count - 3):]
+    return ["BTN", "SB", "BB", *middle[: max(0, active_count - 3)]]
 
 
 def _card_id(card: GgCard) -> str:

@@ -38,6 +38,13 @@ class AmountNormalizationTest(unittest.TestCase):
             "110.5 BB": 110.5,
             "192,1B": 192.1,
             "195,17B": 195.17,
+            "46.9BB": 46.9,
+            "122BB": 122.0,
+            "194.2BB": 194.2,
+            "131.1BB": 131.1,
+            "54BB": 54.0,
+            "196.5BB": 196.5,
+            "100B8": 100.0,
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
@@ -137,13 +144,15 @@ class DebugFrameCropProfileTest(unittest.TestCase):
             raise unittest.SkipTest(validation.rejected_reason or "latest debug crop is not a visible ClubGG table")
         profile = choose_and_fit_profile(frame)
         self.assertGreaterEqual(profile.fit_score, 0.25)
-        self.assertIn(profile.name, {"clubgg_fixed_8max", "clubgg_compact_8max"})
+        self.assertIn(profile.name, {"clubgg_fixed_8max", "clubgg_compact_6max", "clubgg_compact_7max", "clubgg_compact_8max"})
 
     def test_pot_parsing_from_fixture_still_works(self) -> None:
         from backend.gg_reader.fast_reader import FastGgReader
 
         frame = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_table_preflop.png")
-        snapshot = FastGgReader().parse(frame)
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        snapshot = reader.parse(frame)
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
         self.assertAlmostEqual(snapshot.pot, 1.5, delta=0.2)
@@ -171,14 +180,34 @@ class DebugFrameCropProfileTest(unittest.TestCase):
         self.assertLess(crop.crop_rect["width"], frame.shape[1] * 0.40)
         self.assertFalse(crop.diagnostics.get("rejectedLocalhostTable"))
 
+    def test_current_two_tables_live_selects_real_clubgg(self) -> None:
+        fixture = ROOT / "tests" / "fixtures" / "current_two_tables_live.png"
+        frame = _load_optional_image(fixture)
+        crop = detect_clubgg_table_crop(frame)
+        self.assertTrue(crop.diagnostics.get("isRealClubGg"), crop.diagnostics)
+        self.assertEqual(crop.source, "image-detected-table")
+        self.assertGreater(crop.crop_rect["left"], frame.shape[1] * 0.55)
+        self.assertLess(crop.crop_rect["left"], frame.shape[1] * 0.98)
+        self.assertFalse(crop.diagnostics.get("rejectedLocalhostTable"))
+        candidates = crop.diagnostics.get("cropCandidates") or []
+        self.assertGreaterEqual(len(candidates), 2)
+        selected = candidates[0]
+        self.assertTrue(selected.get("isRealClubGg"))
+        self.assertGreater(int(selected.get("left") or 0), frame.shape[1] * 0.55)
+        profile = choose_and_fit_profile(crop.cropped_frame)
+        self.assertEqual(profile.name, "clubgg_compact_7max")
+        self.assertGreaterEqual(profile.fit_score, 0.75)
+
     def test_no_snapshot_from_wrong_source(self) -> None:
         from backend.gg_reader.fast_reader import FastGgReader
 
         frame = _synthetic_localhost_table()
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
         snapshot = parse_frame(
             frame,
             {},
-            FastGgReader(),
+            reader,
             {
                 "title": "localhost:7000 - Google Chrome",
                 "processName": "chrome.exe",
@@ -191,6 +220,7 @@ class DebugFrameCropProfileTest(unittest.TestCase):
         from backend.gg_reader.fast_reader import FastGgReader
 
         reader = FastGgReader()
+        self.addCleanup(reader.close)
         good_frame = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_table_preflop.png")
         good = parse_frame(good_frame, {}, reader, {"title": "NLH 2-4 - 2/4"})
         self.assertIsNotNone(good)

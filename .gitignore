@@ -14,6 +14,10 @@ backend/data/*.jsonl
 backend/data/*.png
 backend/data/*.sqlite
 backend/data/*.sqlite-*
+backend/data/**/*.json
+backend/data/**/*.png
+backend/data/**/*.sqlite
+backend/data/**/*.sqlite-*
 !backend/data/.gitkeep
 .venv/
 .playwright-mcp/

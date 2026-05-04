@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+import re
 from typing import Any, Iterable
 
 import numpy as np
 
 from .fast_amount import amount_text_signal
 from .fixed_profile import (
+    CLUBGG_COMPACT_6MAX,
+    CLUBGG_COMPACT_7MAX,
     CLUBGG_COMPACT_8MAX,
     CLUBGG_FIXED_8MAX,
     FixedGgProfile,
@@ -34,6 +38,10 @@ class FittedGgProfile:
     @property
     def table_type(self) -> str:
         return self.base.table_type
+
+    @property
+    def seat_order_clockwise(self) -> tuple[int, ...]:
+        return self.base.seat_order_clockwise
 
     @property
     def small_blind(self) -> float:
@@ -137,15 +145,29 @@ def choose_and_fit_profile(
     best: FittedGgProfile | None = None
     best_score = -1.0
     best_diagnostics: dict[str, Any] = {}
+    title_layout_hint = _title_text_hint(frame)
 
     search_points = (
         (0.0, 0.0, 1.0, 1.0),
-        (0.0, -0.035, 1.0, 1.0),
-        (0.0, 0.035, 1.0, 1.0),
-        (-0.03, 0.0, 1.0, 1.0),
-        (0.03, 0.0, 1.0, 1.0),
-        (0.0, 0.0, 0.98, 0.98),
-        (0.0, 0.0, 1.02, 1.02),
+        (-0.025, 0.0, 1.0, 1.0),
+        (0.025, 0.0, 1.0, 1.0),
+        (0.0, -0.025, 1.0, 1.0),
+        (0.0, 0.025, 1.0, 1.0),
+        (-0.050, 0.0, 1.0, 1.0),
+        (0.050, 0.0, 1.0, 1.0),
+        (0.0, -0.050, 1.0, 1.0),
+        (0.0, 0.050, 1.0, 1.0),
+        (0.0, 0.0, 0.96, 0.96),
+        (0.0, 0.0, 1.04, 1.04),
+        (0.0, 0.0, 0.98, 1.02),
+        (0.0, 0.0, 1.02, 0.98),
+        (0.0, -0.010, 0.955, 0.930),
+        (0.0, 0.010, 0.955, 0.930),
+        (0.0, -0.015, 0.960, 0.940),
+        (-0.025, -0.025, 0.98, 0.98),
+        (0.025, 0.025, 0.98, 0.98),
+        (-0.025, 0.025, 1.02, 1.02),
+        (0.025, -0.025, 1.02, 1.02),
     )
     for base in bases:
         for offset_x, offset_y, scale_x, scale_y in search_points:
@@ -157,9 +179,36 @@ def choose_and_fit_profile(
                 scale_y=scale_y,
             )
             score, diagnostics = score_profile_fit(frame, candidate)
-            adjusted_score = score - (abs(offset_x) + abs(offset_y)) * 0.12 - abs(scale_x - 1.0) * 0.35
+            layout_bonus = _layout_title_bonus(frame, base, title_layout_hint)
+            exact_window_bonus = (
+                0.075
+                if offset_x == 0.0
+                and offset_y == 0.0
+                and scale_x == 1.0
+                and scale_y == 1.0
+                and _looks_like_unpadded_compact_window(frame, base)
+                else 0.0
+            )
+            padded_crop_bonus = _padded_compact_crop_bonus(
+                frame,
+                base,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                scale_x=scale_x,
+                scale_y=scale_y,
+            )
+            adjusted_score = (
+                score
+                + layout_bonus
+                + exact_window_bonus
+                + padded_crop_bonus
+                - (abs(offset_x) + abs(offset_y)) * 0.08
+                - (abs(scale_x - 1.0) + abs(scale_y - 1.0)) * 0.05
+            )
             if base.name == preferred_name:
-                adjusted_score += 0.02
+                adjusted_score += 0.035
+            elif base.name == "clubgg_fixed_8max" and preferred_name != "clubgg_fixed_8max":
+                adjusted_score -= 0.035
             if adjusted_score > best_score:
                 best_score = adjusted_score
                 best = candidate
@@ -167,6 +216,10 @@ def choose_and_fit_profile(
                     **diagnostics,
                     **source_validation.as_diagnostics(),
                     "rawFitScore": round(score, 4),
+                    "layoutTitleBonus": round(layout_bonus, 4),
+                    "exactWindowBonus": round(exact_window_bonus, 4),
+                    "paddedCropBonus": round(padded_crop_bonus, 4),
+                    "titleLayoutHint": title_layout_hint,
                 }
 
     if best is None:
@@ -205,6 +258,7 @@ def score_profile_fit(frame: np.ndarray, profile: FittedGgProfile) -> tuple[floa
             card_scores.append(_card_presence_signal(crop_norm(frame, card_roi)))
 
     board_scores = [_card_presence_signal(crop_norm(frame, roi)) for roi in profile.board]
+    extra_layout_penalty = _extra_seat_penalty(frame, profile)
     top_stacks = sorted(stack_scores, reverse=True)[:5]
     top_cards = sorted(card_scores, reverse=True)[:8]
     top_names = sorted(name_scores, reverse=True)[:5]
@@ -219,6 +273,7 @@ def score_profile_fit(frame: np.ndarray, profile: FittedGgProfile) -> tuple[floa
         + max(dealer_scores or [0.0]) * 0.06
         + _avg(board_scores) * 0.04
         + _avg(top_bets) * 0.02
+        - extra_layout_penalty
     )
     diagnostics = {
         "profile": profile.name,
@@ -234,6 +289,7 @@ def score_profile_fit(frame: np.ndarray, profile: FittedGgProfile) -> tuple[floa
         "dealerSignalScore": round(max(dealer_scores or [0.0]), 4),
         "boardSignalScore": round(_avg(board_scores), 4),
         "betSignalScore": round(_avg(top_bets), 4),
+        "extraSeatPenalty": round(extra_layout_penalty, 4),
     }
     return float(score), diagnostics
 
@@ -244,10 +300,137 @@ def _candidate_bases(preferred: FixedGgProfile | FittedGgProfile | None) -> tupl
     candidates: list[FixedGgProfile] = []
     if preferred is not None:
         candidates.append(preferred)
-    for profile in (CLUBGG_FIXED_8MAX, CLUBGG_COMPACT_8MAX):
+    for profile in (CLUBGG_COMPACT_7MAX, CLUBGG_COMPACT_6MAX, CLUBGG_COMPACT_8MAX, CLUBGG_FIXED_8MAX):
         if all(item.name != profile.name for item in candidates):
             candidates.append(profile)
     return tuple(candidates)
+
+
+def _layout_title_bonus(frame: np.ndarray, profile: FixedGgProfile, title_layout_hint: str = "") -> float:
+    title = crop_norm(frame, profile.title_blinds)
+    if title.size == 0 or title.ndim < 3:
+        return 0.0
+    # A cheap non-OCR hint: compact 6/7max titles often include "(6max)" or
+    # "(7max)" in bright glyphs near the left title bar. We avoid blocking on
+    # OCR and just score the visual title band plus the window aspect.
+    height, width = frame.shape[:2]
+    aspect = width / max(1, height)
+    bonus = 0.0
+    if profile.table_type in {"6max", "7max"} and aspect < 1.50:
+        bonus += 0.035
+    if profile.table_type == "8max" and aspect >= 1.50:
+        bonus += 0.018
+    normalized_hint = title_layout_hint.lower()
+    hinted_table_type = ""
+    if re.search(r"\b6\s*max\b", normalized_hint):
+        hinted_table_type = "6max"
+    elif re.search(r"\b7\s*max\b", normalized_hint):
+        hinted_table_type = "7max"
+    elif re.search(r"\b8\s*max\b", normalized_hint):
+        hinted_table_type = "8max"
+    if hinted_table_type:
+        if profile.table_type == hinted_table_type:
+            bonus += 0.22
+        elif profile.table_type in {"6max", "7max", "8max"}:
+            bonus -= 0.12
+    return bonus
+
+
+def _title_text_hint(frame: np.ndarray) -> str:
+    if frame is None or frame.size == 0 or frame.ndim < 3:
+        return ""
+    try:
+        import cv2
+        import pytesseract
+    except Exception:
+        return ""
+
+    try:
+        tesseract_cmd = os.environ.get("TESSERACT_CMD")
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        height, width = frame.shape[:2]
+        title = frame[: max(1, int(height * 0.075)), : max(1, int(width * 0.46)), :3]
+        gray = cv2.cvtColor(title, cv2.COLOR_BGR2GRAY)
+        scaled = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        _, threshold = cv2.threshold(scaled, 70, 255, cv2.THRESH_BINARY)
+        config = (
+            "--psm 7 "
+            "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-(). "
+        )
+        raw = pytesseract.image_to_string(threshold, config=config)
+    except Exception:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9()/.\- ]+", " ", raw or "")
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
+
+
+def _extra_seat_penalty(frame: np.ndarray, profile: FittedGgProfile) -> float:
+    if profile.base.name == "clubgg_compact_7max":
+        extra_probe = FittedGgProfile(
+            CLUBGG_COMPACT_8MAX,
+            offset_x=profile.offset_x,
+            offset_y=profile.offset_y,
+            scale_x=profile.scale_x,
+            scale_y=profile.scale_y,
+        )
+        upper_left = next(seat for seat in extra_probe.seats if seat.index == 7)
+        upper_left_stack = crop_norm(frame, upper_left.stack)
+        upper_left_name = crop_norm(frame, upper_left.name)
+        signal = max(_cyan_signal(upper_left_stack) * 12.0, _white_text_signal(upper_left_name) * 10.0)
+        if signal < 0.35:
+            return 0.0
+        return min(0.16, (signal - 0.35) * 0.20)
+    if profile.base.name == "clubgg_compact_6max":
+        seat_probe = FittedGgProfile(
+            CLUBGG_COMPACT_7MAX,
+            offset_x=profile.offset_x,
+            offset_y=profile.offset_y,
+            scale_x=profile.scale_x,
+            scale_y=profile.scale_y,
+        )
+        top_seat = next(seat for seat in seat_probe.seats if seat.index == 0)
+        top_take_seat = crop_norm(frame, top_seat.active)
+        signal = _panel_signal(top_take_seat)
+        if signal < 0.35:
+            return 0.0
+        return min(0.18, (signal - 0.35) * 0.24)
+    return 0.0
+
+
+def _looks_like_unpadded_compact_window(frame: np.ndarray, profile: FixedGgProfile) -> bool:
+    if profile.table_type not in {"6max", "7max", "8max"}:
+        return False
+    if profile.name == "clubgg_fixed_8max":
+        return False
+    height, width = frame.shape[:2]
+    return 800 <= width <= 870 and 590 <= height <= 650
+
+
+def _padded_compact_crop_bonus(
+    frame: np.ndarray,
+    profile: FixedGgProfile,
+    *,
+    offset_x: float,
+    offset_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> float:
+    if profile.table_type not in {"6max", "7max", "8max"}:
+        return 0.0
+    height, width = frame.shape[:2]
+    looks_like_padded_live_crop = 870 <= width <= 930 and 650 <= height <= 710 and width / max(1, height) < 1.36
+    if not looks_like_padded_live_crop:
+        return 0.0
+    matches_content_inset = (
+        abs(offset_x) <= 0.012
+        and -0.025 <= offset_y <= 0.002
+        and 0.945 <= scale_x <= 0.970
+        and 0.920 <= scale_y <= 0.945
+    )
+    if not matches_content_inset:
+        return 0.0
+    return 0.04
 
 
 def _avg(values: list[float]) -> float:

@@ -81,6 +81,7 @@ class TableCropResult:
             "rejectedBrowserChrome",
             "rejectedReason",
             "selectedCropCandidate",
+            "cropCandidates",
         ):
             if key in self.diagnostics:
                 metrics[key] = self.diagnostics[key]
@@ -174,22 +175,11 @@ def validate_real_clubgg_crop(
     generic_confidence, generic_diag = validate_table_crop(frame)
     diagnostics: dict[str, Any] = dict(generic_diag)
     metadata = dict(window_metadata or {})
-    rejection = _metadata_rejection_reason(metadata)
-    if rejection:
-        process_text = f"{metadata.get('processName') or ''} {metadata.get('processExe') or ''}".lower()
-        is_browser = (
-            rejection in {"browser-process", "browser-title", "remote-control-process"}
-            or any(process in process_text for process in ("chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"))
-        )
-        is_localhost = rejection in {"localhost-title", "browser-title"}
-        return ClubGgValidationResult(
-            is_real_clubgg=False,
-            score=0.0,
-            rejected_localhost_table=is_localhost,
-            rejected_browser_chrome=is_browser,
-            rejected_reason=rejection,
-            diagnostics={**diagnostics, **_metadata_debug(metadata)},
-        )
+    metadata_rejection = _metadata_rejection_reason(metadata)
+    process_text = f"{metadata.get('processName') or ''} {metadata.get('processExe') or ''}".lower()
+    metadata_browser_hint = metadata_rejection in {"browser-process", "browser-title"} or any(
+        process in process_text for process in ("chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe")
+    )
 
     if frame is None or frame.size == 0 or frame.ndim < 3:
         return ClubGgValidationResult(False, 0.0, rejected_reason="empty-frame", diagnostics=diagnostics)
@@ -240,9 +230,18 @@ def validate_real_clubgg_crop(
         score -= 0.32
     if localhost_like:
         score -= 0.45
+    if metadata_rejection:
+        # Window metadata is a hint, not a veto. Desktop/browser captures often
+        # arrive through Chrome or mRemoteNG even when the pixels are the real
+        # ClubGG client. Visual ClubGG anchors are allowed to override that.
+        metadata_penalty = 0.14 if len(set(anchors)) >= 3 else 0.45
+        if metadata_rejection in {"localhost-title", "browser-title"} and len(set(anchors)) < 3:
+            metadata_penalty = 0.55
+        score -= metadata_penalty
 
     diagnostics.update({
         **_metadata_debug(metadata),
+        "metadataRejectHint": metadata_rejection,
         "clubggTitleVisualSignal": round(float(title_visual), 4),
         "clubggBadBeatSignal": round(float(bad_beat), 4),
         "clubggPotAnchorSignal": round(float(pot), 4),
@@ -273,6 +272,8 @@ def validate_real_clubgg_crop(
             reason = "localhost-like-green-table"
         elif browser_ui >= 0.72:
             reason = "browser-frame-not-clubgg"
+        elif metadata_rejection and len(set(anchors)) < 3:
+            reason = metadata_rejection
         elif not table_surface_visible:
             reason = "clubgg-table-obscured-or-not-visible"
         elif not enough_anchors:
@@ -284,8 +285,8 @@ def validate_real_clubgg_crop(
         is_real_clubgg=is_real,
         score=max(0.0, min(1.0, score)),
         anchors_found=sorted(set(anchors)),
-        rejected_localhost_table=bool(localhost_like),
-        rejected_browser_chrome=bool(browser_ui >= 0.72),
+        rejected_localhost_table=bool(localhost_like or (metadata_rejection == "localhost-title" and not is_real)),
+        rejected_browser_chrome=bool(browser_ui >= 0.72 or (metadata_browser_hint and not is_real)),
         rejected_reason=reason,
         diagnostics=diagnostics,
     )
@@ -377,6 +378,7 @@ def _image_detected_table_crop(
         return None
 
     scored: list[tuple[float, tuple[int, int, int, int, dict[str, int], dict[str, Any], ClubGgValidationResult]]] = []
+    candidate_debug: list[dict[str, Any]] = []
     for area, (x0, y0, box_width0, box_height0) in candidates:
         x = int(x0 * sample_step)
         y = int(y0 * sample_step)
@@ -429,11 +431,29 @@ def _image_detected_table_crop(
             score = real_validation.score
             if real_validation.is_real_clubgg:
                 score += 0.25
+            debug_item = {
+                "variant": variant_name,
+                "left": int(left),
+                "top": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+                "feltArea": int(area * sample_step * sample_step),
+                "score": round(float(score), 4),
+                "accepted": bool(real_validation.is_real_clubgg),
+                "rejectReason": real_validation.rejected_reason,
+                "anchors": list(real_validation.anchors_found),
+                "isRealClubGg": bool(real_validation.is_real_clubgg),
+                "rejectedLocalhostTable": bool(real_validation.rejected_localhost_table),
+                "realClubGgScore": round(float(real_validation.score), 4),
+            }
+            candidate_debug.append(debug_item)
             scored.append((score, (int(left), int(top), int(right), int(bottom), inner_rect, diagnostics, real_validation)))
 
     if not scored:
         return None
-    return max(scored, key=lambda item: item[0])[1]
+    selected = max(scored, key=lambda item: item[0])[1]
+    selected[5]["cropCandidates"] = sorted(candidate_debug, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return selected
 
 
 def _green_inner_rect(frame: np.ndarray) -> dict[str, int] | None:
