@@ -165,12 +165,12 @@
     const GG_READER_CONFIDENCE_MIN = 0.75;
     const GG_READER_CONFIDENCE_DIRECT = 0.9;
     const GG_READER_HISTORY_LIMIT = 80;
-    const GG_READER_BROWSER_FPS = 1;
+    const GG_READER_BROWSER_FPS = 2;
     const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
-    const GG_READER_RENDER_INTERVAL_MS = 1000;
+    const GG_READER_RENDER_INTERVAL_MS = 250;
     const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1920;
     const GG_READER_BROWSER_JPEG_QUALITY = 0.9;
-    const GG_READER_MAX_IN_FLIGHT_FRAMES = 1;
+    const GG_READER_MAX_IN_FLIGHT_FRAMES = 2;
     const GG_READER_PROBABILITY_THROTTLE_MS = 5000;
     const GG_READER_STATUS_LOG_INTERVAL_MS = 1000;
     const GG_READER_LIVE_ENUMERATION_LIMIT = 50000;
@@ -280,6 +280,12 @@
         ggReaderHistory: document.getElementById("gg-reader-history"),
         ggReaderHistoryList: document.getElementById("gg-reader-history-list"),
         ggReaderHistoryDownload: document.getElementById("gg-reader-history-download"),
+        ggReaderDebug: document.getElementById("gg-reader-debug"),
+        ggReaderTableInfo: document.getElementById("gg-reader-table-info"),
+        ggReaderSeats: document.getElementById("gg-reader-seats"),
+        ggReaderDebugOutput: document.getElementById("gg-reader-debug-output"),
+        ggReaderRoiOverlay: document.getElementById("gg-reader-roi-overlay"),
+        ggReaderFieldCrops: document.getElementById("gg-reader-field-crops"),
         dealRandom: document.getElementById("deal-random"),
         liveGame: document.getElementById("live-game"),
         clearAll: document.getElementById("clear-all"),
@@ -372,6 +378,7 @@
             lastPipelineLogAt: 0,
             droppedFrames: 0,
             staleResponsesIgnored: 0,
+            failedReads: 0,
             errors: [],
             potOverride: null,
             isHistoryOpen: false,
@@ -771,6 +778,16 @@
         return state.playerEconomy[index];
     }
 
+    function isGgSeatActiveInLastSnapshot(index) {
+        const snapshot = state.ggReader && state.ggReader.lastSnapshot;
+        const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
+        const seat = seats.find((item) => Number(item?.physicalSeatIndex) === Number(index));
+        if (!seat) {
+            return index < state.playersCount;
+        }
+        return seat.active !== false;
+    }
+
     function applyDefaultBlinds() {
         for (let i = 0; i < state.playersCount; i += 1) {
             const economy = ensurePlayerEconomy(i);
@@ -799,7 +816,7 @@
                 return;
             }
             const data = ensurePlayerEconomy(index);
-            const isActive = index < state.playersCount;
+            const isActive = index < state.playersCount && isGgSeatActiveInLastSnapshot(index);
 
             const stackInput = meta.economyInputs[ECONOMY_FIELDS.stack];
             updateEconomyInput(stackInput, data.stack, isActive);
@@ -856,7 +873,7 @@
         if (!meta || !meta.betDisplay) {
             return;
         }
-        const isSeatActive = index < state.playersCount;
+        const isSeatActive = index < state.playersCount && isGgSeatActiveInLastSnapshot(index);
         const economy = ensurePlayerEconomy(index);
         const totalBet = sanitizeEconomyValue((economy.pendingBet || 0) + (economy.committedBet || 0));
         if (isSeatActive && totalBet > 0) {
@@ -1996,18 +2013,34 @@ function advanceActiveSlot(fromSlot) {
     function collectPlayersData() {
         const players = [];
         const requiredHoleCards = getRequiredHoleCards();
-        for (let i = 0; i < state.playersCount; i += 1) {
-            const slots = getPlayerCardSlots(i).slice(0, requiredHoleCards);
+        getEquityPlayerIndexes().forEach((playerIndex) => {
+            const slots = getPlayerCardSlots(playerIndex).slice(0, requiredHoleCards);
             const cardIds = slots.map((slot) => slot?.dataset.cardId).filter(Boolean);
             const cards = cardIds.map((id) => getCardById(id));
             players.push({
-                index: i,
+                index: playerIndex,
                 slots,
                 cardIds,
                 cards
             });
-        }
+        });
         return players;
+    }
+
+    function getEquityPlayerIndexes() {
+        const snapshot = state.ggReader && state.ggReader.lastSnapshot;
+        const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
+        if (state.ggReader?.running && seats.length) {
+            const indexes = seats
+                .filter((seat) => seat && seat.active !== false)
+                .map((seat) => Number(seat.physicalSeatIndex))
+                .filter((index) => Number.isInteger(index) && index >= 0 && index < state.playersCount)
+                .sort((left, right) => left - right);
+            if (indexes.length >= MIN_PLAYERS) {
+                return indexes;
+            }
+        }
+        return Array.from({ length: state.playersCount }, (_item, index) => index);
     }
 
     function collectBoardCards() {
@@ -2105,8 +2138,8 @@ function advanceActiveSlot(fromSlot) {
         clearProbabilityHighlights();
 
         if (!simulations) {
-            players.forEach((_, index) => {
-                updateProbabilityLabel(index, { win: PROBABILITY_PLACEHOLDER, tie: PROBABILITY_PLACEHOLDER });
+            players.forEach((player) => {
+                updateProbabilityLabel(player.index, { win: PROBABILITY_PLACEHOLDER, tie: PROBABILITY_PLACEHOLDER });
             });
             if (elements.results) {
                 elements.results.innerHTML = "";
@@ -2135,7 +2168,7 @@ function advanceActiveSlot(fromSlot) {
         });
 
         probabilityData.forEach(({ winRatio, tieRatio }, index) => {
-            updateProbabilityLabel(index, {
+            updateProbabilityLabel(players[index].index, {
                 win: formatProbability(winRatio),
                 tie: formatProbability(tieRatio)
             });
@@ -2143,7 +2176,7 @@ function advanceActiveSlot(fromSlot) {
 
         probabilityData.forEach(({ shareRatio }, index) => {
             if (shareRatio >= bestShare - HIGHLIGHT_EPSILON) {
-                setProbabilityHighlight(index, true);
+                setProbabilityHighlight(players[index].index, true);
             }
         });
 
@@ -3347,6 +3380,14 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderHistoryDownload) {
             elements.ggReaderHistoryDownload.addEventListener("click", downloadGgReaderHistory);
         }
+
+        if (elements.ggReaderRoiOverlay) {
+            elements.ggReaderRoiOverlay.addEventListener("click", () => fetchGgReaderDebugArtifact("roi-overlay"));
+        }
+
+        if (elements.ggReaderFieldCrops) {
+            elements.ggReaderFieldCrops.addEventListener("click", () => fetchGgReaderDebugArtifact("field-crops"));
+        }
     }
 
     async function populateGgMonitorOptions() {
@@ -3585,7 +3626,7 @@ function advanceActiveSlot(fromSlot) {
 
         state.ggReader.running = true;
         setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
-        showError("קורא את שולחן GG מהשיתוף פעם בשנייה.");
+        showError("קורא את שולחן GG מהשיתוף לפחות פעמיים בשנייה.");
         startGgRenderLoop();
         state.ggReader.browserFrameNextAt = performance.now();
         scheduleNextGgBrowserFrame(0);
@@ -3610,6 +3651,7 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.captureFps = 0;
         state.ggReader.parseFps = 0;
         state.ggReader.renderFps = 0;
+        state.ggReader.failedReads = 0;
         state.ggReader.lastFrameMs = null;
         state.ggReader.lastParseMs = null;
         stopGgRenderLoop();
@@ -3909,6 +3951,9 @@ function advanceActiveSlot(fromSlot) {
 
         if (payload.type === "status") {
             const previousStatusText = state.ggReader.lastStatusText;
+            if (state.ggReader.running && ["warning", "error", "waiting"].includes(String(payload.status || ""))) {
+                state.ggReader.failedReads += 1;
+            }
             setGgReaderStatus(payload.status || "waiting", payload.message || "ממתין ל-GG...");
             if (payload.message && payload.status !== "waiting") {
                 showError(payload.message);
@@ -4201,19 +4246,22 @@ function advanceActiveSlot(fromSlot) {
         const previousSnapshot = state.ggReader.lastSnapshot;
         const seats = Array.isArray(normalizedSnapshot.seats) ? normalizedSnapshot.seats : [];
         const board = Array.isArray(normalizedSnapshot.board) ? normalizedSnapshot.board : [];
-        const activeSeatCount = Math.max(
+        const tableSeatCount = Math.max(
             MIN_PLAYERS,
             Math.min(
                 MAX_PLAYERS,
-                Number(normalizedSnapshot.activePlayerCount) || seats.filter((seat) => seat && seat.active !== false).length || MIN_PLAYERS
+                Number(normalizedSnapshot.tableSeatCount)
+                    || seats.length
+                    || Number(normalizedSnapshot.activePlayerCount)
+                    || MIN_PLAYERS
             )
         );
 
         const previousDefer = state.deferProbabilityUpdate;
         state.deferProbabilityUpdate = true;
-        setPlayersCount(activeSeatCount);
+        setPlayersCount(tableSeatCount);
 
-        clearGgInactiveUiSeats(activeSeatCount);
+        clearGgInactiveUiSeats(tableSeatCount);
         state.ggReader.potOverride = sanitizeEconomyValue(Number(normalizedSnapshot.pot) || 0);
         applyGgBoardSnapshot(board);
         seats.forEach((seat) => applyGgSeatSnapshot(seat));
@@ -4238,6 +4286,7 @@ function advanceActiveSlot(fromSlot) {
             setGgReaderStatus("running", "קורא GG...");
         }
         renderGgReaderStatus();
+        renderGgReaderDebugPanel();
         recordGgSnapshotDiff(previousSnapshot, normalizedSnapshot, options);
         return true;
     }
@@ -4248,43 +4297,40 @@ function advanceActiveSlot(fromSlot) {
 
     function normalizeGgSnapshotForUi(snapshot) {
         const rawSeats = Array.isArray(snapshot.seats) ? snapshot.seats : [];
-        const activeSeats = rawSeats
-            .filter((seat) => seat && seat.active !== false && Number.isInteger(Number(seat.physicalSeatIndex)))
+        const seats = rawSeats
+            .filter((seat) => seat && Number.isInteger(Number(seat.physicalSeatIndex)))
             .sort((left, right) => Number(left.physicalSeatIndex) - Number(right.physicalSeatIndex));
 
-        if (!activeSeats.length) {
+        if (!seats.length) {
             return {
                 ...snapshot,
                 seats: [],
+                tableSeatCount: 0,
                 activePlayerCount: 0
             };
         }
 
-        const physicalToCompact = new Map();
-        const compactSeats = activeSeats.slice(0, MAX_PLAYERS).map((seat, compactIndex) => {
+        const normalizedSeats = seats.slice(0, MAX_PLAYERS).map((seat) => {
             const physicalIndex = Number(seat.physicalSeatIndex);
-            physicalToCompact.set(physicalIndex, compactIndex);
             return {
                 ...seat,
                 sourcePhysicalSeatIndex: physicalIndex,
-                physicalSeatIndex: compactIndex,
-                active: true
+                physicalSeatIndex: physicalIndex,
+                active: seat.active !== false
             };
         });
 
-        const remapIndex = (value, fallback = 0) => {
-            const physicalIndex = Number(value);
-            return physicalToCompact.has(physicalIndex) ? physicalToCompact.get(physicalIndex) : fallback;
-        };
-
+        const activePlayerCount = normalizedSeats.filter((seat) => seat.active !== false).length;
+        const maxPhysicalIndex = normalizedSeats.reduce((maxIndex, seat) => Math.max(maxIndex, Number(seat.physicalSeatIndex)), -1);
         return {
             ...snapshot,
-            seats: compactSeats,
-            dealerSeatIndex: remapIndex(snapshot.dealerSeatIndex, 0),
+            seats: normalizedSeats,
+            dealerSeatIndex: Number.isInteger(Number(snapshot.dealerSeatIndex)) ? Number(snapshot.dealerSeatIndex) : 0,
             heroSeatIndex: snapshot.heroSeatIndex === null || snapshot.heroSeatIndex === undefined
                 ? null
-                : remapIndex(snapshot.heroSeatIndex, null),
-            activePlayerCount: compactSeats.length
+                : Number(snapshot.heroSeatIndex),
+            tableSeatCount: Math.max(activePlayerCount, maxPhysicalIndex + 1),
+            activePlayerCount
         };
     }
 
@@ -4376,7 +4422,7 @@ function advanceActiveSlot(fromSlot) {
         if (meta && meta.nameEl) {
             meta.nameEl.textContent = isActive && seatSnapshot.name
                 ? String(seatSnapshot.name)
-                : `שחקן ${index + 1}`;
+                : (isActive ? `שחקן ${index + 1}` : "Take Seat");
         }
 
         const economy = ensurePlayerEconomy(index);
@@ -4784,6 +4830,231 @@ function advanceActiveSlot(fromSlot) {
         if (elements.readGgTable) {
             elements.readGgTable.textContent = state.ggReader.running ? "קורא GG..." : "קרא שולחן GG";
             elements.readGgTable.classList.toggle("is-active", state.ggReader.running);
+        }
+        renderGgReaderDebugPanel();
+    }
+
+    function renderGgReaderDebugPanel() {
+        if (!elements.ggReaderDebug) {
+            return;
+        }
+        const snapshot = state.ggReader.lastSnapshot || state.ggReader.latestSnapshot;
+        const shouldShow = Boolean(snapshot || state.ggReader.running || state.ggReader.errors.length);
+        elements.ggReaderDebug.hidden = !shouldShow;
+        elements.ggReaderDebug.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+        if (!shouldShow) {
+            return;
+        }
+
+        renderGgReaderTableInfo(snapshot);
+        renderGgReaderSeatRows(snapshot);
+    }
+
+    function renderGgReaderTableInfo(snapshot) {
+        if (!elements.ggReaderTableInfo) {
+            return;
+        }
+        elements.ggReaderTableInfo.innerHTML = "";
+        const metrics = snapshot || {};
+        const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
+        const activeSeats = seats.filter((seat) => seat && seat.active !== false);
+        const board = Array.isArray(snapshot?.board) ? snapshot.board : [];
+        const visibleBets = activeSeats.reduce((total, seat) => total + (Number(seat.currentBet) || 0), 0);
+        const detectedPot = Number(snapshot?.pot);
+        const warnings = [];
+        if (Number.isFinite(detectedPot) && detectedPot > 0 && visibleBets > 0) {
+            const mismatch = Math.abs(detectedPot - visibleBets);
+            if (mismatch > Math.max(0.5, detectedPot * 0.25)) {
+                warnings.push(`pot/bets ${formatChipAmount(detectedPot)} vs ${formatChipAmount(visibleBets)}`);
+            }
+        }
+        const cropWarnings = getGgMetric(metrics, "cropWarnings");
+        if (Array.isArray(cropWarnings)) {
+            warnings.push(...cropWarnings.filter(Boolean).slice(0, 3));
+        }
+        const ocrPending = getGgMetric(metrics, "ocrPending");
+        const tableSeatCount = Number(snapshot?.tableSeatCount) || seats.length || 0;
+        const lastCaptureAt = Number(state.ggReader.latestServerReceivedAt || snapshot?.serverReceivedAt || snapshot?.timestamp || 0);
+
+        const items = [
+            ["street", snapshot?.street || "unknown"],
+            ["pot", Number.isFinite(detectedPot) ? `${formatChipAmount(detectedPot)} BB` : "unknown"],
+            ["visible bets", `${formatChipAmount(visibleBets)} BB`],
+            ["board", board.length ? board.map(formatGgCardSnapshot).join(" ") : "-"],
+            ["dealer", Number.isInteger(Number(snapshot?.dealerSeatIndex)) ? `seat ${Number(snapshot.dealerSeatIndex)}` : "-"],
+            ["seats", tableSeatCount ? `${activeSeats.length}/${tableSeatCount}` : "-"],
+            ["capture", `${formatGgFps(state.ggReader.captureFps)}`],
+            ["read", `${formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps)}`],
+            ["render", `${formatGgFps(state.ggReader.renderFps)}`],
+            ["last capture", lastCaptureAt ? new Date(lastCaptureAt).toLocaleTimeString() : "-"],
+            ["latency", formatGgMs(state.ggReader.lastFrameMs || state.ggReader.lastInFlightMs)],
+            ["OCR", ocrPending === undefined || ocrPending === null ? "-" : `${ocrPending} pending`],
+            ["confidence", formatGgConfidence(snapshot?.confidence)],
+            ["dropped", String(state.ggReader.droppedFrames || 0)],
+            ["failed", String(state.ggReader.failedReads || 0)],
+            ["warnings", warnings.length ? warnings.join(" | ") : "-"]
+        ];
+
+        items.forEach(([label, value]) => appendGgInfoPill(elements.ggReaderTableInfo, label, value));
+    }
+
+    function renderGgReaderSeatRows(snapshot) {
+        if (!elements.ggReaderSeats) {
+            return;
+        }
+        elements.ggReaderSeats.innerHTML = "";
+        const seats = Array.isArray(snapshot?.seats) ? snapshot.seats.slice() : [];
+        seats.sort((left, right) => Number(left.physicalSeatIndex) - Number(right.physicalSeatIndex));
+        if (!seats.length) {
+            const empty = document.createElement("div");
+            empty.className = "gg-reader-seat-row gg-reader-seat-row--empty";
+            empty.textContent = state.ggReader.running ? "waiting for seats" : "no snapshot";
+            elements.ggReaderSeats.appendChild(empty);
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        seats.forEach((seat) => {
+            const row = document.createElement("article");
+            row.className = "gg-reader-seat-row";
+            row.classList.toggle("is-empty", seat.active === false);
+            row.classList.toggle("is-dealer", Boolean(seat.isDealer));
+
+            const title = document.createElement("div");
+            title.className = "gg-reader-seat-row__title";
+            const seatIndex = Number(seat.physicalSeatIndex);
+            title.textContent = `Seat ${Number.isInteger(seatIndex) ? seatIndex : "?"}`;
+            if (seat.isDealer) {
+                const dealer = document.createElement("span");
+                dealer.className = "gg-reader-seat-row__dealer";
+                dealer.textContent = "D";
+                title.appendChild(dealer);
+            }
+
+            const status = document.createElement("div");
+            status.className = "gg-reader-seat-row__status";
+            status.textContent = seat.active === false ? "empty / Take Seat" : (seat.status || "occupied");
+
+            const fields = document.createElement("div");
+            fields.className = "gg-reader-seat-row__fields";
+            appendGgSeatField(fields, "name", seat.active === false ? "Take Seat" : (seat.name || "unknown"), seat.nameConfidence);
+            appendGgSeatField(fields, "stack", seat.active === false ? "-" : formatNullableBb(seat.stack), seat.stackConfidence);
+            appendGgSeatField(fields, "bet", seat.active === false ? "-" : formatNullableBb(seat.currentBet), seat.betConfidence);
+            appendGgSeatField(fields, "cards", formatGgSeatCards(seat), getGgSeatCardsConfidence(seat));
+            appendGgSeatField(fields, "pos", seat.position || "-", seat.confidence);
+            appendGgSeatField(fields, "conf", formatGgConfidence(seat.confidence), seat.confidence);
+
+            row.append(title, status, fields);
+            fragment.appendChild(row);
+        });
+        elements.ggReaderSeats.appendChild(fragment);
+    }
+
+    function appendGgInfoPill(parent, label, value) {
+        const item = document.createElement("div");
+        item.className = "gg-reader-info-pill";
+        const labelEl = document.createElement("span");
+        labelEl.className = "gg-reader-info-pill__label";
+        labelEl.textContent = label;
+        const valueEl = document.createElement("strong");
+        valueEl.textContent = value;
+        item.append(labelEl, valueEl);
+        parent.appendChild(item);
+    }
+
+    function appendGgSeatField(parent, label, value, confidence) {
+        const item = document.createElement("div");
+        item.className = "gg-reader-seat-field";
+        const labelEl = document.createElement("span");
+        labelEl.textContent = label;
+        const valueEl = document.createElement("strong");
+        valueEl.textContent = value;
+        const confidenceEl = document.createElement("em");
+        confidenceEl.textContent = formatGgConfidence(confidence);
+        item.append(labelEl, valueEl, confidenceEl);
+        parent.appendChild(item);
+    }
+
+    function formatNullableBb(value) {
+        const amount = Number(value);
+        return Number.isFinite(amount) && amount > 0 ? `${formatChipAmount(amount)} BB` : "-";
+    }
+
+    function formatGgSeatCards(seat) {
+        const cards = Array.isArray(seat?.holeCards) ? seat.holeCards : [];
+        if (!cards.length) {
+            return seat?.active === false ? "-" : "unknown";
+        }
+        return cards.map(formatGgCardSnapshot).join(" ");
+    }
+
+    function formatGgCardSnapshot(card) {
+        if (!card) {
+            return "-";
+        }
+        if (card.hidden || card.visible === false) {
+            return card.display || "X";
+        }
+        const id = getGgCardId(card);
+        return id || "unknown";
+    }
+
+    function getGgSeatCardsConfidence(seat) {
+        const cards = Array.isArray(seat?.holeCards) ? seat.holeCards : [];
+        if (!cards.length) {
+            return 0;
+        }
+        const values = cards.map((card) => Number(card.confidence)).filter(Number.isFinite);
+        return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
+    }
+
+    function formatGgConfidence(value) {
+        const confidence = Number(value);
+        return Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
+    }
+
+    function getGgMetric(snapshot, key) {
+        if (!snapshot || !key) {
+            return undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(snapshot, key)) {
+            return snapshot[key];
+        }
+        if (snapshot.metrics && Object.prototype.hasOwnProperty.call(snapshot.metrics, key)) {
+            return snapshot.metrics[key];
+        }
+        return undefined;
+    }
+
+    async function fetchGgReaderDebugArtifact(kind) {
+        if (!elements.ggReaderDebugOutput) {
+            return;
+        }
+        const endpoint = kind === "field-crops" ? "field-crops" : "roi-overlay";
+        elements.ggReaderDebugOutput.textContent = "loading...";
+        try {
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/debug/${endpoint}`, { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error(`debug ${endpoint} failed: ${response.status}`);
+            }
+            const data = await response.json();
+            if (endpoint === "field-crops") {
+                elements.ggReaderDebugOutput.textContent = [
+                    `field crops: ${data.path || "-"}`,
+                    `profile: ${data.profile || "-"}`,
+                    `fields: ${data.fieldCount ?? "-"}`,
+                    `crop: ${data.croppedFramePath || "-"}`
+                ].join("\n");
+            } else {
+                elements.ggReaderDebugOutput.textContent = [
+                    `roi overlay: ${data.path || "-"}`,
+                    `profile: ${data.profile || "-"}`,
+                    `crop: ${data.croppedFramePath || "-"}`
+                ].join("\n");
+            }
+        } catch (error) {
+            elements.ggReaderDebugOutput.textContent = String(error && error.message ? error.message : error);
+            state.ggReader.errors.push(elements.ggReaderDebugOutput.textContent);
+            renderGgReaderStatus();
         }
     }
 

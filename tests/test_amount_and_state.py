@@ -198,6 +198,26 @@ class DebugFrameCropProfileTest(unittest.TestCase):
         self.assertEqual(profile.name, "clubgg_compact_7max")
         self.assertGreaterEqual(profile.fit_score, 0.75)
 
+    def test_padded_desktop_clubgg_frame_is_cropped_before_roi_reading(self) -> None:
+        clubgg = _load_optional_image(ROOT / "tests" / "fixtures" / "current_clubgg_compact_live.png")
+        canvas = np.zeros((768, 1024, 3), dtype=np.uint8)
+        canvas[:] = (210, 140, 30)
+        cv2.circle(canvas, (850, 740), 300, (255, 80, 20), -1)
+        top = 52
+        left = 101
+        canvas[top:top + clubgg.shape[0], left:left + clubgg.shape[1]] = clubgg[:, :, :3]
+
+        crop = detect_clubgg_table_crop(canvas)
+        self.assertTrue(crop.diagnostics.get("isRealClubGg"), crop.diagnostics)
+        self.assertEqual(crop.source, "image-detected-table")
+        self.assertGreater(crop.crop_rect["left"], 40)
+        self.assertGreater(crop.crop_rect["top"], 20)
+        self.assertLess(crop.crop_rect["width"], canvas.shape[1] * 0.95)
+        self.assertLess(crop.crop_rect["height"], canvas.shape[0] * 0.95)
+        profile = choose_and_fit_profile(crop.cropped_frame)
+        self.assertEqual(profile.name, "clubgg_compact_7max")
+        self.assertGreaterEqual(profile.fit_score, 0.70)
+
     def test_no_snapshot_from_wrong_source(self) -> None:
         from backend.gg_reader.fast_reader import FastGgReader
 

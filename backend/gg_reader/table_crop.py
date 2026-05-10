@@ -110,6 +110,39 @@ def detect_clubgg_table_crop(
     warnings: list[str] = []
 
     if direct_real.is_real_clubgg:
+        detected = _image_detected_table_crop(frame, window_metadata)
+        if detected is not None:
+            left, top, right, bottom, inner_rect, detected_diag, real_validation = detected
+            if _should_prefer_detected_crop(
+                frame_width=frame_width,
+                frame_height=frame_height,
+                left=left,
+                top=top,
+                right=right,
+                bottom=bottom,
+                direct_score=direct_real.score,
+                detected_validation=real_validation,
+            ):
+                cropped = frame[top:bottom, left:right]
+                detected_confidence, validation_diag = validate_table_crop(cropped)
+                return TableCropResult(
+                    cropped,
+                    {
+                        "left": int(left),
+                        "top": int(top),
+                        "width": int(right - left),
+                        "height": int(bottom - top),
+                    },
+                    inner_rect,
+                    "image-detected-table",
+                    min(1.0, max(detected_confidence, real_validation.score)),
+                    diagnostics={
+                        **direct_diag,
+                        **detected_diag,
+                        **validation_diag,
+                        **real_validation.as_diagnostics(),
+                    },
+                )
         source = "window-client"
         if window_metadata and window_metadata.get("source"):
             source = str(window_metadata["source"])
@@ -159,6 +192,44 @@ def detect_clubgg_table_crop(
         diagnostics={**direct_diag, **direct_real.as_diagnostics(), "selectedCropCandidate": "none"},
         warnings=warnings,
     )
+
+
+def _should_prefer_detected_crop(
+    *,
+    frame_width: int,
+    frame_height: int,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    direct_score: float,
+    detected_validation: ClubGgValidationResult,
+) -> bool:
+    """Prefer the table client when a desktop/screen frame contains padding.
+
+    Direct validation intentionally accepts real ClubGG pixels even when they
+    are surrounded by desktop background. The ROI reader, however, needs the
+    client/table area, not the whole monitor, so a smaller high-confidence crop
+    should win when it clearly trims outside padding.
+    """
+
+    if not detected_validation.is_real_clubgg:
+        return False
+    frame_area = max(1, int(frame_width) * int(frame_height))
+    crop_width = max(0, int(right) - int(left))
+    crop_height = max(0, int(bottom) - int(top))
+    crop_area = crop_width * crop_height
+    if crop_width < 320 or crop_height < 240:
+        return False
+    trims_padding = crop_area < frame_area * 0.94 and (
+        int(left) > max(8, frame_width * 0.01)
+        or int(top) > max(8, frame_height * 0.01)
+        or int(right) < frame_width - max(8, frame_width * 0.01)
+        or int(bottom) < frame_height - max(8, frame_height * 0.01)
+    )
+    if not trims_padding:
+        return False
+    return detected_validation.score >= max(0.38, float(direct_score) + 0.045)
 
 
 def validate_real_clubgg_crop(

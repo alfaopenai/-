@@ -201,7 +201,7 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
         red = channels[:, :, 2]
         white = ((red > 145) & (green > 145) & (blue > 145)).astype(np.uint8) * 255
         cyan = ((blue > 90) & (green > 90) & (red < 145)).astype(np.uint8) * 255
-        whitelist = "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-"
+        whitelist = "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.- "
         masks = [(white, "white-mask")]
         if int((white > 0).sum()) < 4:
             masks.append((cyan, "cyan-mask"))
@@ -216,7 +216,7 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
                 255 - cv2.resize(tight, None, fx=8, fy=8, interpolation=cv2.INTER_CUBIC),
             )
             for variant_index, variant in enumerate(variants):
-                for psm in (7, 8):
+                for psm in (6, 7, 8):
                     raw = _run_tesseract_string(variant, f"--psm {psm} {whitelist}")
                     if raw:
                         candidates.append((raw, 0.72, "tesseract", f"{mask_name}:{variant_index}:psm-{psm}"))
@@ -227,7 +227,7 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
         if raw:
             candidates.append((raw, confidence, "tesseract", "psm-7"))
 
-    if allow_slow_fallback and os.environ.get("GG_READER_NAME_RAPIDOCR", "1").lower() not in {"0", "false", "no"}:
+    if allow_slow_fallback and os.environ.get("GG_READER_NAME_RAPIDOCR", "0").lower() in {"1", "true", "yes"}:
         rapidocr_result = _read_name_rapidocr(image)
         if rapidocr_result:
             raw, confidence = rapidocr_result
@@ -244,6 +244,7 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
         for text, confidence, source, variant in candidates
         if text and _clean_ocr_name_candidate(text)
     ]
+    cleaned_candidates = _add_visual_digit_name_candidates(image, cleaned_candidates)
     if not cleaned_candidates:
         return {
             "raw": max((text for text, _confidence, _source, _variant in candidates), key=len, default=""),
@@ -296,6 +297,111 @@ def read_text(image: np.ndarray, *, mode: str = "name") -> tuple[str, float]:
     return read_name(image)
 
 
+def _add_visual_digit_name_candidates(
+    image: np.ndarray,
+    cleaned_candidates: list[tuple[str, float, str, str, str]],
+) -> list[tuple[str, float, str, str, str]]:
+    if not cleaned_candidates:
+        return cleaned_candidates
+    digit_positions: set[int] = set()
+    for cleaned, _confidence, _raw, _source, _variant in cleaned_candidates:
+        for index, char in enumerate(cleaned):
+            if char.isdigit():
+                digit_positions.add(index)
+    digit_hints = _visual_name_digit_hints(image)
+    if not digit_positions:
+        digit_positions = {index for index, digit, score in digit_hints if digit == "9" and score >= 0.95 and index <= 2}
+    if not digit_positions:
+        return cleaned_candidates
+    repaired_candidates = list(cleaned_candidates)
+    for index, digit, score in digit_hints:
+        if digit != "9" or index not in digit_positions:
+            continue
+        for cleaned, confidence, raw, source, variant in cleaned_candidates:
+            if index >= len(cleaned):
+                continue
+            current = cleaned[index]
+            if current == digit:
+                continue
+            if current.lower() not in {"a", "e", "g", "q", "o", "b", "8"}:
+                continue
+            repaired = f"{cleaned[:index]}{digit}{cleaned[index + 1:]}"
+            repaired_candidates.append(
+                (
+                    repaired,
+                    max(float(confidence), min(0.84, float(confidence) + 0.05 * float(score))),
+                    raw,
+                    source,
+                    f"{variant}:visual-digit-{digit}",
+                )
+            )
+    return repaired_candidates
+
+
+def _visual_name_digit_hints(image: np.ndarray) -> list[tuple[int, str, float]]:
+    import cv2
+
+    if image.size == 0 or image.ndim < 3:
+        return []
+    channels = image[:, :, :3].astype(np.int16)
+    blue = channels[:, :, 0]
+    green = channels[:, :, 1]
+    red = channels[:, :, 2]
+    mask = ((red > 145) & (green > 145) & (blue > 145)).astype(np.uint8) * 255
+    if int((mask > 0).sum()) < 4:
+        return []
+    tight = _tight_mask(mask)
+    if tight is None:
+        return []
+    contours, _hierarchy = cv2.findContours(tight, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes: list[tuple[int, int, int, int]] = []
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if height < max(5, int(tight.shape[0] * 0.22)) or width < 2:
+            continue
+        if width * height < 12:
+            continue
+        boxes.append((x, y, width, height))
+    hints: list[tuple[int, str, float]] = []
+    for index, (x, y, width, height) in enumerate(sorted(boxes)):
+        crop = tight[
+            max(0, y - 1): min(tight.shape[0], y + height + 1),
+            max(0, x - 1): min(tight.shape[1], x + width + 1),
+        ]
+        score = _digit_nine_component_score(crop)
+        if score >= 0.72:
+            hints.append((index, "9", score))
+    return hints
+
+
+def _digit_nine_component_score(component: np.ndarray) -> float:
+    if component.size == 0:
+        return 0.0
+    mask = component > 0
+    height, width = mask.shape[:2]
+    if height < 8 or width < 5:
+        return 0.0
+    top = float(mask[: max(1, height // 3)].mean())
+    middle = float(mask[height // 3: max(height // 3 + 1, 2 * height // 3)].mean())
+    bottom = float(mask[2 * height // 3:].mean())
+    top_left = float(mask[: height // 2, : width // 2].mean())
+    top_right = float(mask[: height // 2, width // 2:].mean())
+    bottom_left = float(mask[height // 2:, : width // 2].mean())
+    bottom_right = float(mask[height // 2:, width // 2:].mean())
+    middle_bar = float(mask[max(0, height // 2 - 1): min(height, height // 2 + 2)].mean())
+    checks = [
+        top > 0.18,
+        middle > 0.22,
+        bottom > 0.10,
+        top_left > 0.18,
+        top_right > 0.16,
+        bottom_right > 0.16,
+        middle_bar > 0.30,
+        bottom_right >= bottom_left * 1.25,
+    ]
+    return sum(1 for item in checks if item) / len(checks)
+
+
 def _tight_mask(mask: np.ndarray) -> np.ndarray | None:
     rows, cols = np.where(mask > 0)
     if len(cols) == 0:
@@ -323,6 +429,7 @@ def _clean_ocr_name_candidate(text: str) -> str:
         "joeyis": "joeyIS",
         "joeyls": "joeyIS",
         "joey1s": "joeyIS",
+        "jetstreamv": "JetStreamV",
     }.get(compact)
     if canonical:
         value = canonical
@@ -341,6 +448,10 @@ def _name_quality_score(value: str) -> float:
         score += 0.25
     if value.lower().startswith("gg seat"):
         score -= 0.75
+    if re.match(r"^[A-Za-z0-9]\s+\S{3,}", value):
+        score -= 0.22
+    if re.search(r"\S{4,}\s+\S{1,2}$", value):
+        score -= 0.14
     if _looks_like_amount_text(value):
         score -= 0.80
     if len(value.split()) > 3:

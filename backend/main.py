@@ -925,7 +925,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             "fatal": False,
                             "confidence": 0,
                         })
-                        target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+                        target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
                         elapsed = time.perf_counter() - loop_started_at
                         await asyncio.sleep(max(0.0, target_interval - elapsed))
                         continue
@@ -940,7 +940,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                                 "confidence": 0,
                                 **last_crop_metrics,
                             })
-                            target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+                            target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
                             elapsed = time.perf_counter() - loop_started_at
                             await asyncio.sleep(max(0.0, target_interval - elapsed))
                             continue
@@ -964,7 +964,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             reader_state.lastFrameMs = data["frameMs"]
                             reader_state.captureSource = capture.last_source
                             await websocket.send_json(data)
-            target_interval = max(1.0, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+            target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
             elapsed = time.perf_counter() - loop_started_at
             await asyncio.sleep(max(0.0, target_interval - elapsed))
     except WebSocketDisconnect:

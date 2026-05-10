@@ -1515,6 +1515,7 @@ def _clean_player_name(name: str | None) -> str:
     canonical = {
         "cedarkoi": "CedarKoi",
         "joeyis": "joeyIS",
+        "jetstreamv": "JetStreamV",
     }.get(cleaned.lower())
     if canonical:
         cleaned = canonical
