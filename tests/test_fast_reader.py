@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 from backend.gg_reader.fast_reader import FastGgReader, _FieldCache
+from backend.gg_reader.parser import parse_frame
 from backend.gg_reader.roi import crop_norm, downscale_hash
 
 
@@ -25,6 +26,7 @@ PREFLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_preflop.png"
 COMPACT_FLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_flop_compact.png"
 COMPACT_RIVER_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_compact_river.png"
 CURRENT_COMPACT_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_clubgg_compact_live.png"
+CURRENT_TWO_TABLES_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_two_tables_live.png"
 
 
 @unittest.skipIf(cv2 is None, "OpenCV is unavailable")
@@ -145,6 +147,35 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertEqual(seat.stack, 0)
         self.assertEqual(seat.name, "")
         self.assertGreaterEqual(snapshot.metrics.get("emptySeatCacheClears", 0), 1)
+
+    def test_unlabeled_1000_stack_is_not_accepted_as_bb(self) -> None:
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        entry = _FieldCache(value=0.0)
+        accepted = reader._apply_amount_candidate(
+            entry,
+            "seat-3-stack",
+            1000.0,
+            0.90,
+            "1000",
+            "tight_ocr",
+            time.monotonic(),
+        )
+        self.assertFalse(accepted)
+        self.assertEqual(entry.reject_reason, "suspicious-stack-unlabeled-buyin")
+        self.assertEqual(float(entry.value or 0.0), 0.0)
+
+        accepted_with_bb = reader._apply_amount_candidate(
+            entry,
+            "seat-3-stack",
+            1000.0,
+            0.90,
+            "1000BB",
+            "tight_ocr",
+            time.monotonic(),
+        )
+        self.assertTrue(accepted_with_bb)
+        self.assertEqual(float(entry.value or 0.0), 1000.0)
 
     def test_compact_river_fixture_snapshot(self) -> None:
         frame = self._load_fixture(COMPACT_RIVER_FIXTURE)
@@ -274,11 +305,67 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertEqual(by_index[5].position, "SB")
         self.assertEqual(by_index[6].position, "BB")
 
+    def test_current_two_tables_live_reads_real_table_exact_seats(self) -> None:
+        frame = self._load_fixture(CURRENT_TWO_TABLES_LIVE_FIXTURE)
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        snapshot = self._parse_frame_until(
+            reader,
+            frame,
+            lambda item: (
+                item.pot > 0
+                and _stacked_count(item) >= 6
+                and _has_names(item, {1, 2, 3, 4, 5, 6})
+            ),
+            deadline_seconds=90.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.metrics.get("cropSource"), "image-detected-table")
+        self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_7max")
+        self.assertEqual(snapshot.street, "river")
+        self.assertAlmostEqual(snapshot.pot, 5.0, delta=0.25)
+
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        self.assertFalse(by_index[0].active)
+        expected_stacks = {
+            1: 45.6,
+            2: 168.5,
+            3: 216.9,
+            4: 95.3,
+            5: 100.0,
+            6: 76.0,
+        }
+        for index, expected_stack in expected_stacks.items():
+            self.assertTrue(by_index[index].active)
+            self.assertAlmostEqual(by_index[index].stack, expected_stack, delta=1.0)
+            self.assertLess(by_index[index].stack, 700.0)
+        expected_names = {
+            1: "J9sutied",
+            2: "AW0311",
+            3: "CedarKoi",
+            4: "joeyIS",
+            6: "JetStreamV",
+        }
+        for index, expected_name in expected_names.items():
+            self.assertEqual(by_index[index].name, expected_name)
+        self.assertIn(by_index[5].name, {"Itzh4k", "Itzhak"})
+
     def _parse_until(self, reader: FastGgReader, frame: np.ndarray, predicate, *, deadline_seconds: float = 4.0) -> object:
         snapshot = None
         deadline = time.perf_counter() + deadline_seconds
         while time.perf_counter() < deadline:
             snapshot = reader.parse(frame)
+            if snapshot is not None and predicate(snapshot):
+                return snapshot
+            time.sleep(0.1)
+        return snapshot
+
+    def _parse_frame_until(self, reader: FastGgReader, frame: np.ndarray, predicate, *, deadline_seconds: float = 4.0) -> object:
+        snapshot = None
+        deadline = time.perf_counter() + deadline_seconds
+        while time.perf_counter() < deadline:
+            snapshot = parse_frame(frame, {}, reader, {"title": "NLH 1-2 BP (7max) - 1/2"})
             if snapshot is not None and predicate(snapshot):
                 return snapshot
             time.sleep(0.1)

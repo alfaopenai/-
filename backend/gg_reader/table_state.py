@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 from .models import GgSeat, GgTableSnapshot
@@ -9,6 +10,13 @@ from .models import GgSeat, GgTableSnapshot
 
 PUBLISH_INTERVAL_SECONDS = 1.0
 ACTION_HOLD_SECONDS = 1.8
+NAME_ACCEPT_CONFIDENCE = 0.55
+NAME_REPLACE_CONFIDENCE = 0.86
+NAME_REPLACE_HITS = 2
+NAME_VARIANT_SIMILARITY = 0.78
+STACK_ACCEPT_CONFIDENCE = 0.50
+STACK_REPLACE_CONFIDENCE = 0.92
+STACK_REPLACE_HITS = 2
 
 
 @dataclass
@@ -19,6 +27,23 @@ class _SeatState:
     last_action: str = "none"
     last_action_amount: float = 0.0
     last_action_until: float = 0.0
+
+
+@dataclass
+class _SeatPositionRecord:
+    active: bool = False
+    name: str = ""
+    name_confidence: float = 0.0
+    stack: float = 0.0
+    stack_confidence: float = 0.0
+    last_seen_at: float = 0.0
+    updated_at: float = 0.0
+    pending_name: str = ""
+    pending_name_hits: int = 0
+    pending_name_confidence: float = 0.0
+    pending_stack: float = 0.0
+    pending_stack_hits: int = 0
+    pending_stack_confidence: float = 0.0
 
 
 class TableStateStabilizer:
@@ -32,6 +57,7 @@ class TableStateStabilizer:
     def __init__(self) -> None:
         self._stable: GgTableSnapshot | None = None
         self._seat_states: dict[int, _SeatState] = {}
+        self._seat_database: dict[int, _SeatPositionRecord] = {}
         self._last_publish_at = 0.0
         self._last_metrics: dict[str, Any] = {}
 
@@ -47,9 +73,11 @@ class TableStateStabilizer:
         if self._stable is None:
             stable = raw.model_copy(deep=True)
             self._sanitize_placeholder_names(stable, metrics)
+            self._apply_seat_database_to_snapshot(stable, current_time, metrics)
+            metrics["initialStableSnapshot"] = True
+            stable.metrics = {**raw.metrics, "stabilizer": metrics}
             self._stable = stable.model_copy(deep=True)
             self._last_publish_at = current_time
-            metrics["initialStableSnapshot"] = True
             self._last_metrics = metrics
             return stable
 
@@ -70,6 +98,7 @@ class TableStateStabilizer:
             merged_seats.append(self._stabilize_seat(raw_seat, previous_seat, current_time, metrics))
 
         stable.seats = sorted(merged_seats, key=lambda seat: int(seat.physicalSeatIndex))
+        self._apply_seat_database_to_snapshot(stable, current_time, metrics)
         stable.activePlayerCount = sum(1 for seat in stable.seats if seat.active)
         stable.pot = self._stable_amount(
             "pot",
@@ -253,6 +282,176 @@ class TableStateStabilizer:
         for seat in snapshot.seats:
             self._sanitize_seat_name(seat, None, metrics)
 
+    def _apply_seat_database_to_snapshot(
+        self,
+        snapshot: GgTableSnapshot,
+        now: float,
+        metrics: dict[str, Any],
+    ) -> None:
+        seen_indexes: set[int] = set()
+        for seat in snapshot.seats:
+            index = int(seat.physicalSeatIndex)
+            seen_indexes.add(index)
+            self._apply_seat_database(seat, now, metrics)
+        metrics["seatDatabase"] = self._seat_database_rows(now, seen_indexes)
+
+    def _apply_seat_database(self, seat: GgSeat, now: float, metrics: dict[str, Any]) -> None:
+        index = int(seat.physicalSeatIndex)
+        record = self._seat_database.setdefault(index, _SeatPositionRecord())
+
+        if not seat.active:
+            if record.active or record.name or record.stack > 0:
+                metrics["fieldsAccepted"].append(f"seat-{index}-database-clear")
+            self._clear_position_record(record, now)
+            seat.name = ""
+            seat.nameConfidence = 0.0
+            seat.stack = 0.0
+            seat.stackConfidence = 0.0
+            return
+
+        record.active = True
+        record.last_seen_at = now
+        self._apply_database_name(seat, record, metrics)
+        self._apply_database_stack(seat, record, metrics)
+
+    def _apply_database_name(
+        self,
+        seat: GgSeat,
+        record: _SeatPositionRecord,
+        metrics: dict[str, Any],
+    ) -> None:
+        index = int(seat.physicalSeatIndex)
+        observed_name = _record_name(seat.name)
+        confidence = float(seat.nameConfidence or 0.0)
+        accepted = False
+
+        if observed_name and not _is_placeholder_name(observed_name):
+            accepted = self._accept_name_candidate(record, observed_name, confidence)
+            if accepted:
+                metrics["fieldsAccepted"].append(f"seat-{index}-database-name")
+
+        if record.name:
+            if not accepted and observed_name and not _same_name(observed_name, record.name):
+                metrics["fieldsHeld"].append(f"seat-{index}-database-name")
+            seat.name = record.name
+            seat.nameConfidence = max(confidence if accepted else 0.0, min(record.name_confidence, 0.90))
+            return
+
+        if not accepted:
+            seat.name = ""
+            seat.nameConfidence = 0.0
+
+    def _apply_database_stack(
+        self,
+        seat: GgSeat,
+        record: _SeatPositionRecord,
+        metrics: dict[str, Any],
+    ) -> None:
+        index = int(seat.physicalSeatIndex)
+        observed_stack = float(seat.stack or 0.0)
+        confidence = float(seat.stackConfidence or 0.0)
+        accepted = False
+
+        if observed_stack > 0 and confidence >= STACK_ACCEPT_CONFIDENCE:
+            accepted = self._accept_stack_candidate(record, observed_stack, confidence)
+            if accepted:
+                metrics["fieldsAccepted"].append(f"seat-{index}-database-stack")
+
+        if record.stack > 0:
+            if not accepted and observed_stack > 0 and not _close_amount(observed_stack, record.stack):
+                metrics["fieldsHeld"].append(f"seat-{index}-database-stack")
+            seat.stack = record.stack
+            seat.stackConfidence = max(confidence if accepted else 0.0, min(record.stack_confidence, 0.90))
+            return
+
+        if not accepted:
+            seat.stack = 0.0
+            seat.stackConfidence = 0.0
+
+    def _accept_name_candidate(self, record: _SeatPositionRecord, name: str, confidence: float) -> bool:
+        if confidence < 0.20:
+            return False
+        if not record.name:
+            if confidence >= NAME_ACCEPT_CONFIDENCE:
+                _set_record_name(record, name, confidence)
+                return True
+            hits = _stage_name_candidate(record, name, confidence)
+            if hits >= NAME_REPLACE_HITS:
+                _set_record_name(record, name, confidence)
+                return True
+            return False
+
+        if _same_name(name, record.name):
+            if _name_quality_score(name) >= _name_quality_score(record.name) or confidence >= record.name_confidence:
+                record.name = name
+            record.name_confidence = max(record.name_confidence, confidence)
+            record.pending_name = ""
+            record.pending_name_hits = 0
+            return True
+
+        if _name_similarity(name, record.name) >= NAME_VARIANT_SIMILARITY and confidence < NAME_REPLACE_CONFIDENCE:
+            _stage_name_candidate(record, name, confidence)
+            return False
+
+        if confidence >= NAME_REPLACE_CONFIDENCE:
+            _set_record_name(record, name, confidence)
+            return True
+
+        hits = _stage_name_candidate(record, name, confidence)
+        if confidence >= NAME_ACCEPT_CONFIDENCE and hits >= NAME_REPLACE_HITS:
+            _set_record_name(record, name, confidence)
+            return True
+        return False
+
+    def _accept_stack_candidate(self, record: _SeatPositionRecord, stack: float, confidence: float) -> bool:
+        if record.stack <= 0:
+            _set_record_stack(record, stack, confidence)
+            return True
+
+        if _amount_is_sane(record.stack, stack, confidence):
+            _set_record_stack(record, stack, confidence)
+            return True
+
+        hits = _stage_stack_candidate(record, stack, confidence)
+        if confidence >= STACK_REPLACE_CONFIDENCE or (confidence >= 0.75 and hits >= STACK_REPLACE_HITS):
+            _set_record_stack(record, stack, confidence)
+            return True
+        return False
+
+    def _clear_position_record(self, record: _SeatPositionRecord, now: float) -> None:
+        record.active = False
+        record.name = ""
+        record.name_confidence = 0.0
+        record.stack = 0.0
+        record.stack_confidence = 0.0
+        record.last_seen_at = now
+        record.updated_at = now
+        record.pending_name = ""
+        record.pending_name_hits = 0
+        record.pending_name_confidence = 0.0
+        record.pending_stack = 0.0
+        record.pending_stack_hits = 0
+        record.pending_stack_confidence = 0.0
+
+    def _seat_database_rows(self, now: float, seen_indexes: set[int]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index in sorted(seen_indexes | set(self._seat_database)):
+            record = self._seat_database.setdefault(index, _SeatPositionRecord())
+            rows.append({
+                "seatIndex": index,
+                "active": bool(record.active),
+                "name": record.name,
+                "nameConfidence": round(float(record.name_confidence or 0.0), 4),
+                "stack": round(float(record.stack or 0.0), 4),
+                "stackConfidence": round(float(record.stack_confidence or 0.0), 4),
+                "lastSeenMsAgo": round(max(0.0, now - float(record.last_seen_at or now)) * 1000, 2),
+                "pendingName": record.pending_name,
+                "pendingNameHits": int(record.pending_name_hits),
+                "pendingStack": round(float(record.pending_stack or 0.0), 4),
+                "pendingStackHits": int(record.pending_stack_hits),
+            })
+        return rows
+
 
 def _amount_confidence(snapshot: GgTableSnapshot, key: str) -> float:
     for field in snapshot.metrics.get("amountFields") or []:
@@ -267,6 +466,73 @@ def _amount_confidence(snapshot: GgTableSnapshot, key: str) -> float:
 def _is_placeholder_name(value: str | None) -> bool:
     text = str(value or "").strip()
     return bool(text and text.lower().startswith("gg seat "))
+
+
+def _record_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _same_name(left: str | None, right: str | None) -> bool:
+    return _record_name(left).casefold() == _record_name(right).casefold()
+
+
+def _name_similarity(left: str | None, right: str | None) -> float:
+    return SequenceMatcher(None, _record_name(left).casefold(), _record_name(right).casefold()).ratio()
+
+
+def _name_quality_score(value: str | None) -> float:
+    text = _record_name(value)
+    if not text:
+        return 0.0
+    alpha_numeric = sum(1 for char in text if char.isalnum())
+    separators = sum(1 for char in text if char in "_. -")
+    return alpha_numeric + min(separators, 2) * 0.25
+
+
+def _set_record_name(record: _SeatPositionRecord, name: str, confidence: float) -> None:
+    record.name = _record_name(name)
+    record.name_confidence = float(confidence or 0.0)
+    record.updated_at = time.monotonic()
+    record.pending_name = ""
+    record.pending_name_hits = 0
+    record.pending_name_confidence = 0.0
+
+
+def _stage_name_candidate(record: _SeatPositionRecord, name: str, confidence: float) -> int:
+    normalized = _record_name(name)
+    if _same_name(record.pending_name, normalized):
+        record.pending_name_hits += 1
+        record.pending_name_confidence = max(record.pending_name_confidence, float(confidence or 0.0))
+    else:
+        record.pending_name = normalized
+        record.pending_name_hits = 1
+        record.pending_name_confidence = float(confidence or 0.0)
+    return record.pending_name_hits
+
+
+def _set_record_stack(record: _SeatPositionRecord, stack: float, confidence: float) -> None:
+    record.stack = round(float(stack or 0.0), 4)
+    record.stack_confidence = float(confidence or 0.0)
+    record.updated_at = time.monotonic()
+    record.pending_stack = 0.0
+    record.pending_stack_hits = 0
+    record.pending_stack_confidence = 0.0
+
+
+def _stage_stack_candidate(record: _SeatPositionRecord, stack: float, confidence: float) -> int:
+    value = float(stack or 0.0)
+    if record.pending_stack > 0 and _close_amount(record.pending_stack, value):
+        record.pending_stack_hits += 1
+        record.pending_stack_confidence = max(record.pending_stack_confidence, float(confidence or 0.0))
+    else:
+        record.pending_stack = value
+        record.pending_stack_hits = 1
+        record.pending_stack_confidence = float(confidence or 0.0)
+    return record.pending_stack_hits
+
+
+def _close_amount(left: float, right: float) -> bool:
+    return abs(float(left or 0.0) - float(right or 0.0)) <= max(0.05, max(abs(left), abs(right)) * 0.002)
 
 
 def _amount_is_sane(previous: float, current: float, confidence: float) -> bool:

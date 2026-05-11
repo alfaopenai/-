@@ -18,7 +18,7 @@ from backend.gg_reader.parser import parse_frame
 from backend.gg_reader.profile_matcher import choose_and_fit_profile
 from backend.gg_reader.table_crop import detect_clubgg_table_crop, validate_real_clubgg_crop
 from backend.gg_reader.table_state import TableStateStabilizer
-from backend.main import infer_actions
+from backend.main import build_normalized_state, infer_actions
 
 try:
     import cv2
@@ -100,6 +100,68 @@ class TableStateStabilizerTest(unittest.TestCase):
         held = stabilizer.stabilize(placeholder, now=time.monotonic() + 1.1)
         self.assertEqual(held.seats[0].name, "RealName")
         self.assertNotEqual(held.seats[0].name, "GG Seat 1")
+
+    def test_seat_database_holds_last_verified_name_and_stack_by_position(self) -> None:
+        stabilizer = TableStateStabilizer()
+        first = _snapshot(seats=[_seat(6, name="loftyodb", name_confidence=0.72, stack=116.9, stack_confidence=0.82)])
+        stabilizer.stabilize(first, now=time.monotonic())
+
+        missing = _snapshot(seats=[_seat(6, name="", name_confidence=0.0, stack=0.0, stack_confidence=0.0)])
+        held = stabilizer.stabilize(missing, now=time.monotonic() + 1.1)
+        self.assertEqual(held.seats[0].name, "loftyodb")
+        self.assertAlmostEqual(held.seats[0].stack, 116.9)
+        database = held.metrics["stabilizer"]["seatDatabase"]
+        seat_record = next(record for record in database if record["seatIndex"] == 6)
+        self.assertEqual(seat_record["name"], "loftyodb")
+        self.assertAlmostEqual(seat_record["stack"], 116.9)
+        normalized = build_normalized_state(held, held.metrics)
+        normalized_record = next(record for record in normalized["seat_database"] if record["seat_index"] == 6)
+        self.assertEqual(normalized_record["player_name"], "loftyodb")
+        self.assertAlmostEqual(normalized_record["stack_bb"], 116.9)
+
+    def test_seat_database_rejects_single_frame_wrong_name_for_same_position(self) -> None:
+        stabilizer = TableStateStabilizer()
+        first = _snapshot(seats=[_seat(4, name="barak_wit", name_confidence=0.72, stack=198.0, stack_confidence=0.82)])
+        stabilizer.stabilize(first, now=time.monotonic())
+
+        bad_read = _snapshot(seats=[_seat(4, name="P6743-5812", name_confidence=0.72, stack=1980.0, stack_confidence=0.82)])
+        held = stabilizer.stabilize(bad_read, now=time.monotonic() + 1.1)
+        self.assertEqual(held.seats[0].name, "barak_wit")
+        self.assertAlmostEqual(held.seats[0].stack, 198.0)
+        self.assertIn("seat-4-database-name", held.metrics["stabilizer"]["fieldsHeld"])
+
+    def test_seat_database_updates_repeated_new_name_after_confirmation(self) -> None:
+        stabilizer = TableStateStabilizer()
+        first = _snapshot(seats=[_seat(3, name="old_player", name_confidence=0.72, stack=150.0, stack_confidence=0.82)])
+        stabilizer.stabilize(first, now=time.monotonic())
+
+        changed = _snapshot(seats=[_seat(3, name="new_player", name_confidence=0.72, stack=151.0, stack_confidence=0.82)])
+        once = stabilizer.stabilize(changed, now=time.monotonic() + 1.1)
+        self.assertEqual(once.seats[0].name, "old_player")
+
+        twice = stabilizer.stabilize(changed, now=time.monotonic() + 2.2)
+        self.assertEqual(twice.seats[0].name, "new_player")
+        self.assertAlmostEqual(twice.seats[0].stack, 151.0)
+
+    def test_seat_database_clears_after_confirmed_empty_position(self) -> None:
+        stabilizer = TableStateStabilizer()
+        first = _snapshot(seats=[_seat(5, name="Neegaa", name_confidence=0.72, stack=167.7, stack_confidence=0.82)])
+        stabilizer.stabilize(first, now=time.monotonic())
+
+        empty = _snapshot(seats=[_empty_seat(5)])
+        once = stabilizer.stabilize(empty, now=time.monotonic() + 0.4)
+        self.assertTrue(once.seats[0].active)
+        self.assertEqual(once.seats[0].name, "Neegaa")
+
+        twice = stabilizer.stabilize(empty, now=time.monotonic() + 1.4)
+        self.assertFalse(twice.seats[0].active)
+        self.assertEqual(twice.seats[0].name, "")
+        self.assertEqual(twice.seats[0].stack, 0.0)
+        database = twice.metrics["stabilizer"]["seatDatabase"]
+        seat_record = next(record for record in database if record["seatIndex"] == 5)
+        self.assertFalse(seat_record["active"])
+        self.assertEqual(seat_record["name"], "")
+        self.assertEqual(seat_record["stack"], 0.0)
 
     def test_bet_resets_only_after_two_empty_hits(self) -> None:
         stabilizer = TableStateStabilizer()
@@ -341,6 +403,24 @@ def _seat(
             GgCard(hidden=True, visible=False, display="X", confidence=0.82),
         ] if cards else [],
         confidence=0.82,
+    )
+
+
+def _empty_seat(index: int) -> GgSeat:
+    return GgSeat(
+        physicalSeatIndex=index,
+        active=False,
+        name="",
+        nameConfidence=0.0,
+        stack=0.0,
+        stackConfidence=0.0,
+        currentBet=0.0,
+        betConfidence=0.0,
+        action="none",
+        actionSource="empty",
+        status="empty",
+        holeCards=[],
+        confidence=0.92,
     )
 
 

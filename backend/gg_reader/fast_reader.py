@@ -491,7 +491,7 @@ class FastGgReader:
     ) -> GgTableSnapshot | None:
         if self._last_snapshot is None or self._last_quick_hash is None:
             return None
-        if self._pending_ocr_count() > 0:
+        if self._pending_stack_ocr_count() > 0:
             return None
         if self._has_retryable_missing_names():
             return None
@@ -1052,6 +1052,9 @@ class FastGgReader:
         if field_is_pot and value > 500 and not re.search(r"(?i)[.KMB]|BB", raw or ""):
             entry.reject_reason = "suspicious-pot-jackpot"
             return False
+        if field_is_stack and _looks_like_unlabeled_buyin_stack(value, raw, confidence):
+            entry.reject_reason = "suspicious-stack-unlabeled-buyin"
+            return False
         if previous > 0 and (field_is_stack or field_is_pot):
             ratio = value / max(previous, 0.01)
             suspicious_jump = ratio < 0.35 or ratio > 2.8
@@ -1353,6 +1356,9 @@ class FastGgReader:
     def _pending_ocr_count(self) -> int:
         return sum(1 for entry in self._fields.values() if entry.future is not None)
 
+    def _pending_stack_ocr_count(self) -> int:
+        return sum(1 for key, entry in self._fields.items() if "-stack" in key and entry.future is not None)
+
     def _pending_ocr_by_kind(self) -> dict[str, int]:
         counts = {"amount": 0, "name": 0, "action": 0, "card": 0, "other": 0}
         for key, entry in self._fields.items():
@@ -1419,6 +1425,18 @@ def _read_pot_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
         return amount, confidence, raw, "tight_ocr"
     amount, confidence, raw = read_amount(image)
     return amount, confidence, raw, "tesseract"
+
+
+def _looks_like_unlabeled_buyin_stack(value: float, raw: str, confidence: float) -> bool:
+    if float(value or 0.0) < 700:
+        return False
+    text = str(raw or "").strip().upper().replace(" ", "")
+    if re.search(r"(?i)(?:BB|B)$", text) or "." in text:
+        return False
+    if float(confidence or 0.0) >= 0.95:
+        return False
+    digits = re.sub(r"\D+", "", text)
+    return digits in {"1000", "10000"} or bool(digits and float(value or 0.0) >= 900)
 
 
 def _active_signal(image: np.ndarray) -> float:

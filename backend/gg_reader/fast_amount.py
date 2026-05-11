@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .ocr import _configure_tesseract, normalize_amount
+from .ocr import TESSERACT_TIMEOUT_SECONDS, _configure_tesseract, normalize_amount
 
 
 FAST_AMOUNT_MIN_CONFIDENCE = 0.74
@@ -87,10 +87,14 @@ def read_amount_tight_ocr(
     )
     for interpolation, psm in variants:
         processed = cv2.resize(tight, None, fx=8, fy=8, interpolation=interpolation)
-        raw = pytesseract.image_to_string(
-            processed,
-            config=f"--psm {psm} -c tessedit_char_whitelist=0123456789.,KMBBO",
-        ).strip()
+        try:
+            raw = pytesseract.image_to_string(
+                processed,
+                config=f"--psm {psm} -c tessedit_char_whitelist=0123456789.,KMBBO",
+                timeout=TESSERACT_TIMEOUT_SECONDS,
+            ).strip()
+        except Exception:
+            continue
         if not raw:
             continue
         normalized_raw = _normalize_ocr_amount_raw(raw)

@@ -10,6 +10,7 @@ import numpy as np
 
 
 _RAPIDOCR_LOCK = Lock()
+TESSERACT_TIMEOUT_SECONDS = float(os.environ.get("GG_READER_TESSERACT_TIMEOUT", "2.0"))
 
 
 def normalize_amount(raw: str | None) -> float:
@@ -98,6 +99,7 @@ def _run_tesseract(image: np.ndarray, config: str) -> tuple[str, float]:
             image,
             output_type=pytesseract.Output.DICT,
             config=config,
+            timeout=TESSERACT_TIMEOUT_SECONDS,
         )
     except Exception:
         return "", 0.0
@@ -122,7 +124,7 @@ def _run_tesseract_string(image: np.ndarray, config: str) -> str:
         import pytesseract
 
         _configure_tesseract(pytesseract)
-        return pytesseract.image_to_string(image, config=config).strip()
+        return pytesseract.image_to_string(image, config=config, timeout=TESSERACT_TIMEOUT_SECONDS).strip()
     except Exception:
         return ""
 
@@ -227,7 +229,8 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
         if raw:
             candidates.append((raw, confidence, "tesseract", "psm-7"))
 
-    if allow_slow_fallback and os.environ.get("GG_READER_NAME_RAPIDOCR", "0").lower() in {"1", "true", "yes"}:
+    rapidocr_mode = _rapidocr_mode() if allow_slow_fallback else "off"
+    if rapidocr_mode == "always":
         rapidocr_result = _read_name_rapidocr(image)
         if rapidocr_result:
             raw, confidence = rapidocr_result
@@ -244,6 +247,13 @@ def read_name_detailed(image: np.ndarray, *, allow_slow_fallback: bool = True) -
         for text, confidence, source, variant in candidates
         if text and _clean_ocr_name_candidate(text)
     ]
+    if not cleaned_candidates and rapidocr_mode == "missing":
+        rapidocr_result = _read_name_rapidocr(image)
+        if rapidocr_result:
+            raw, confidence = rapidocr_result
+            cleaned = _clean_ocr_name_candidate(raw)
+            if cleaned:
+                cleaned_candidates.append((cleaned, confidence, raw, "rapidocr", "rapidocr-missing"))
     cleaned_candidates = _add_visual_digit_name_candidates(image, cleaned_candidates)
     if not cleaned_candidates:
         return {
@@ -467,6 +477,15 @@ def _looks_like_amount_text(value: str) -> bool:
 def _looks_like_take_seat_text(value: str) -> bool:
     text = re.sub(r"[^a-z]+", "", str(value or "").lower())
     return text in {"takeseat", "cakeseat"} or text.endswith("takeseat") or text.endswith("cakeseat")
+
+
+def _rapidocr_mode() -> str:
+    value = os.environ.get("GG_READER_NAME_RAPIDOCR", "missing").strip().lower()
+    if value in {"1", "true", "yes", "on", "always"}:
+        return "always"
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return "off"
+    return "missing"
 
 
 @lru_cache(maxsize=1)

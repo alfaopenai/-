@@ -5895,6 +5895,7 @@ body {
 
 .card-row {
     gap: 8px;
+    direction: ltr;
 }
 
 .card-slot {
@@ -6224,6 +6225,7 @@ body {
 
 .board-cards {
     gap: 8px;
+    direction: ltr;
 }
 
 .board-cards .card-slot {

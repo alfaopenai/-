@@ -78,6 +78,7 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
     payload_metrics = dict(metrics or snapshot.metrics or {})
     amount_fields = payload_metrics.get("amountFields") or snapshot.metrics.get("amountFields") or []
     pot_field = next((field for field in amount_fields if isinstance(field, dict) and field.get("key") == "pot"), {})
+    seat_database = _seat_database_payload(payload_metrics or snapshot.metrics or {})
     visible_bets = [
         round(float(seat.currentBet or 0.0), 4)
         for seat in snapshot.seats
@@ -133,6 +134,7 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
             "warnings": warnings,
         },
         "seats": normalized_seats,
+        "seat_database": seat_database,
     }
 
 
@@ -147,6 +149,45 @@ def _card_code(card: Any) -> str:
 def _cards_confidence(cards: list[Any]) -> float:
     values = [float(getattr(card, "confidence", 0.0) or 0.0) for card in cards]
     return sum(values) / len(values) if values else 0.0
+
+
+def _seat_database_payload(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    stabilizer = metrics.get("stabilizer") if isinstance(metrics, dict) else None
+    records = stabilizer.get("seatDatabase") if isinstance(stabilizer, dict) else []
+    if not isinstance(records, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            seat_index = int(record.get("seatIndex"))
+        except (TypeError, ValueError):
+            continue
+        stack = _safe_float(record.get("stack"))
+        pending_stack = _safe_float(record.get("pendingStack"))
+        normalized.append({
+            "seat_index": seat_index,
+            "occupied": bool(record.get("active")),
+            "player_name": str(record.get("name") or ""),
+            "stack_bb": round(stack, 4) if stack > 0 else None,
+            "confidence": {
+                "name": round(_safe_float(record.get("nameConfidence")), 4),
+                "stack": round(_safe_float(record.get("stackConfidence")), 4),
+            },
+            "pending_name": str(record.get("pendingName") or ""),
+            "pending_name_hits": int(record.get("pendingNameHits") or 0),
+            "pending_stack_bb": round(pending_stack, 4) if pending_stack > 0 else None,
+            "pending_stack_hits": int(record.get("pendingStackHits") or 0),
+        })
+    return normalized
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def enrich_snapshot(snapshot: GgTableSnapshot) -> tuple[GgTableSnapshot, list[dict[str, Any]]]:
