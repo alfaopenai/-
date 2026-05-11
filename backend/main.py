@@ -71,6 +71,82 @@ _cached_calibration: tuple[float, dict[str, Any] | None] = (0.0, None)
 POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
 HEADS_UP_POSITIONS = ["SB", "BB"]
 STREET_ORDER = {"unknown": -1, "preflop": 0, "flop": 1, "turn": 2, "river": 3, "showdown": 4}
+READ_RATE_MARGIN = 1.15
+
+
+def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload_metrics = dict(metrics or snapshot.metrics or {})
+    amount_fields = payload_metrics.get("amountFields") or snapshot.metrics.get("amountFields") or []
+    pot_field = next((field for field in amount_fields if isinstance(field, dict) and field.get("key") == "pot"), {})
+    visible_bets = [
+        round(float(seat.currentBet or 0.0), 4)
+        for seat in snapshot.seats
+        if seat.active and float(seat.currentBet or 0.0) > 0
+    ]
+    calculated_pot = round(sum(visible_bets), 4) if visible_bets else None
+    detected_pot = round(float(snapshot.pot or 0.0), 4)
+    warnings: list[str] = []
+    if calculated_pot is not None and detected_pot > 0:
+        mismatch = abs(detected_pot - calculated_pot)
+        if mismatch > max(0.5, detected_pot * 0.25):
+            warnings.append(f"detected pot {detected_pot:g} BB differs from visible bets {calculated_pot:g} BB")
+    warnings.extend(str(item) for item in payload_metrics.get("cropWarnings") or [] if item)
+
+    board_cards = [_card_code(card) for card in snapshot.board if _card_code(card)]
+    normalized_seats = []
+    for seat in sorted(snapshot.seats, key=lambda item: int(item.physicalSeatIndex)):
+        cards = [_card_code(card) or (card.display or "X") for card in seat.holeCards]
+        normalized_seats.append({
+            "seat_index": int(seat.physicalSeatIndex),
+            "occupied": bool(seat.active),
+            "empty_seat": not bool(seat.active),
+            "player_name": seat.name or "",
+            "stack_bb": round(float(seat.stack or 0.0), 4) if seat.active and float(seat.stack or 0.0) > 0 else None,
+            "current_bet_bb": round(float(seat.currentBet or 0.0), 4) if seat.active and float(seat.currentBet or 0.0) > 0 else None,
+            "cards": cards,
+            "cards_visible": any(card.visible and not card.hidden and bool(_card_code(card)) for card in seat.holeCards),
+            "has_hidden_cards": any(card.hidden or card.visible is False for card in seat.holeCards),
+            "is_dealer": bool(seat.isDealer or int(seat.physicalSeatIndex) == int(snapshot.dealerSeatIndex)),
+            "status": seat.status,
+            "position": seat.position,
+            "last_updated_at": int(snapshot.timestamp),
+            "confidence": {
+                "name": round(float(seat.nameConfidence or 0.0), 4),
+                "stack": round(float(seat.stackConfidence or 0.0), 4),
+                "bet": round(float(seat.betConfidence or 0.0), 4),
+                "cards": round(_cards_confidence(seat.holeCards), 4),
+                "seat": round(float(seat.confidence or 0.0), 4),
+            },
+        })
+
+    return {
+        "table": {
+            "window_found": bool(payload_metrics.get("isRealClubGg", True)),
+            "read_rate_hz": round(float(payload_metrics.get("actualReaderFps") or 0.0), 4),
+            "street": snapshot.street,
+            "detected_pot_text": str(pot_field.get("raw") or ""),
+            "total_pot_bb": detected_pot if detected_pot > 0 else None,
+            "calculated_pot_from_bets_bb": calculated_pot,
+            "board_cards": board_cards,
+            "dealer_seat": int(snapshot.dealerSeatIndex),
+            "active_player_count": int(snapshot.activePlayerCount),
+            "warnings": warnings,
+        },
+        "seats": normalized_seats,
+    }
+
+
+def _card_code(card: Any) -> str:
+    if not card or bool(getattr(card, "hidden", False)) or getattr(card, "visible", True) is False:
+        return ""
+    rank = str(getattr(card, "rank", "") or "").strip().upper()
+    suit = str(getattr(card, "suit", "") or "").strip().upper()[:1]
+    return f"{rank}{suit}" if rank and suit else ""
+
+
+def _cards_confidence(cards: list[Any]) -> float:
+    values = [float(getattr(card, "confidence", 0.0) or 0.0) for card in cards]
+    return sum(values) / len(values) if values else 0.0
 
 
 def enrich_snapshot(snapshot: GgTableSnapshot) -> tuple[GgTableSnapshot, list[dict[str, Any]]]:
@@ -241,6 +317,11 @@ def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -
             seat.action = "none"
             seat.actionSource = "none"
         seat.actionAmount = 0
+
+
+def target_reader_interval_seconds(fps: float) -> float:
+    requested_fps = max(float(fps or 0.1), 0.1)
+    return max(0.05, 1 / (requested_fps * READ_RATE_MARGIN))
 
 
 @app.post("/api/gg-reader/start")
@@ -665,6 +746,7 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
     data["parseMs"] = backend_parse_ms
     data["totalFrameMs"] = frame_ms
     data.update(metrics)
+    data["normalizedState"] = build_normalized_state(snapshot, metrics)
     data["events"] = events
     return data
 
@@ -917,6 +999,7 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             window_metadata,
                         )
                     except Exception as exc:
+                        server_received_at = int(time.time() * 1000)
                         await websocket.send_json({
                             "type": "status",
                             "status": "warning",
@@ -924,13 +1007,15 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             "clearTable": False,
                             "fatal": False,
                             "confidence": 0,
+                            "serverReceivedAt": server_received_at,
                         })
-                        target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+                        target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
                         elapsed = time.perf_counter() - loop_started_at
                         await asyncio.sleep(max(0.0, target_interval - elapsed))
                         continue
                     else:
                         if snapshot is None:
+                            server_received_at = int(time.time() * 1000)
                             await websocket.send_json({
                                 "type": "status",
                                 "status": "waiting",
@@ -938,9 +1023,10 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                                 "clearTable": False,
                                 "calibrationVerified": bool(calibration.get("verified")),
                                 "confidence": 0,
+                                "serverReceivedAt": server_received_at,
                                 **last_crop_metrics,
                             })
-                            target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+                            target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
                             elapsed = time.perf_counter() - loop_started_at
                             await asyncio.sleep(max(0.0, target_interval - elapsed))
                             continue
@@ -954,17 +1040,19 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             data = snapshot.model_dump()
                             data["captureSource"] = capture.last_source
                             data["window"] = capture.last_window
+                            data["serverReceivedAt"] = int(time.time() * 1000)
                             data["frameMs"] = round((time.perf_counter() - loop_started_at) * 1000, 2)
                             metrics = FAST_GG_READER.get_metrics()
                             metrics["readerParseMs"] = metrics.get("parseMs")
                             metrics["parseMs"] = data["frameMs"]
                             data.update(metrics)
+                            data["normalizedState"] = build_normalized_state(snapshot, metrics)
                             data["events"] = events
                             reader_state.framesRead += 1
                             reader_state.lastFrameMs = data["frameMs"]
                             reader_state.captureSource = capture.last_source
                             await websocket.send_json(data)
-            target_interval = max(0.05, 1 / max(reader_config.fps, 0.1)) if reader_state.running else 0.1
+            target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
             elapsed = time.perf_counter() - loop_started_at
             await asyncio.sleep(max(0.0, target_interval - elapsed))
     except WebSocketDisconnect:

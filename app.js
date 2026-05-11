@@ -165,8 +165,10 @@
     const GG_READER_CONFIDENCE_MIN = 0.75;
     const GG_READER_CONFIDENCE_DIRECT = 0.9;
     const GG_READER_HISTORY_LIMIT = 80;
-    const GG_READER_BROWSER_FPS = 2;
+    const GG_READER_MIN_READ_FPS = 2;
+    const GG_READER_BROWSER_FPS = 2.25;
     const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
+    const GG_READER_MAX_FRAME_LATENCY_MS = 500;
     const GG_READER_RENDER_INTERVAL_MS = 250;
     const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1920;
     const GG_READER_BROWSER_JPEG_QUALITY = 0.9;
@@ -367,9 +369,12 @@
             lastImageBytes: 0,
             lastFrameBytes: 0,
             lastInFlightMs: 0,
+            lastCaptureAt: 0,
             lastSnapshotReceivedAt: 0,
             latestServerReceivedAt: 0,
             lastResponseAt: 0,
+            lastOcrConfidence: null,
+            lastDetectionConfidence: null,
             lastRenderAt: 0,
             lastApplySnapshotMs: 0,
             lastProbabilityMs: 0,
@@ -3654,6 +3659,9 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.failedReads = 0;
         state.ggReader.lastFrameMs = null;
         state.ggReader.lastParseMs = null;
+        state.ggReader.lastCaptureAt = 0;
+        state.ggReader.lastOcrConfidence = null;
+        state.ggReader.lastDetectionConfidence = null;
         stopGgRenderLoop();
         if (state.ggReader.browserVideo) {
             state.ggReader.browserVideo.pause();
@@ -3865,6 +3873,7 @@ function advanceActiveSlot(fromSlot) {
 
     function recordGgCaptureSent(now) {
         recordGgRateSample("captureTimes", "captureFps", now, GG_READER_BROWSER_FPS);
+        state.ggReader.lastCaptureAt = Date.now();
     }
 
     function recordGgParseResponse(now) {
@@ -4012,9 +4021,26 @@ function advanceActiveSlot(fromSlot) {
         if (Number.isFinite(frameBytes) && frameBytes >= 0) {
             state.ggReader.lastFrameBytes = frameBytes;
         }
+        const serverReceivedAt = Number(payload.serverReceivedAt || payload.timestamp || 0);
+        if (Number.isFinite(serverReceivedAt) && serverReceivedAt > 0) {
+            state.ggReader.lastCaptureAt = Math.max(Number(state.ggReader.lastCaptureAt || 0), serverReceivedAt);
+        }
         const readerFps = Number(payload.actualReaderFps);
         if (Number.isFinite(readerFps) && readerFps > 0) {
             state.ggReader.actualFps = Math.min(GG_READER_BROWSER_FPS, readerFps);
+        }
+        const ocrConfidence = getGgAmountFieldConfidence(payload);
+        if (Number.isFinite(ocrConfidence)) {
+            state.ggReader.lastOcrConfidence = ocrConfidence;
+        }
+        const detectionValues = [
+            Number(payload.confidence),
+            Number(payload.profileFitScore || payload.metrics?.profileFitScore),
+            Number(payload.cropConfidence || payload.metrics?.cropConfidence),
+            Number(payload.realClubGgScore || payload.metrics?.realClubGgScore)
+        ].filter(Number.isFinite);
+        if (detectionValues.length) {
+            state.ggReader.lastDetectionConfidence = detectionValues.reduce((total, value) => total + value, 0) / detectionValues.length;
         }
     }
 
@@ -4859,6 +4885,7 @@ function advanceActiveSlot(fromSlot) {
         const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
         const activeSeats = seats.filter((seat) => seat && seat.active !== false);
         const board = Array.isArray(snapshot?.board) ? snapshot.board : [];
+        const normalizedTable = snapshot?.normalizedState?.table || {};
         const visibleBets = activeSeats.reduce((total, seat) => total + (Number(seat.currentBet) || 0), 0);
         const detectedPot = Number(snapshot?.pot);
         const warnings = [];
@@ -4872,23 +4899,58 @@ function advanceActiveSlot(fromSlot) {
         if (Array.isArray(cropWarnings)) {
             warnings.push(...cropWarnings.filter(Boolean).slice(0, 3));
         }
+        if (Array.isArray(normalizedTable.warnings)) {
+            warnings.push(...normalizedTable.warnings.filter(Boolean).slice(0, 3));
+        }
         const ocrPending = getGgMetric(metrics, "ocrPending");
+        const readRate = Number(state.ggReader.parseFps || state.ggReader.actualFps || 0);
+        const latencyMs = Number(state.ggReader.lastFrameMs || state.ggReader.lastInFlightMs || 0);
+        if (state.ggReader.running && readRate > 0 && readRate < GG_READER_MIN_READ_FPS) {
+            warnings.push(`read ${readRate.toFixed(2)} Hz < ${GG_READER_MIN_READ_FPS} Hz`);
+        }
+        if (latencyMs > GG_READER_MAX_FRAME_LATENCY_MS) {
+            warnings.push(`latency ${Math.round(latencyMs)} ms > ${GG_READER_MAX_FRAME_LATENCY_MS} ms`);
+        }
         const tableSeatCount = Number(snapshot?.tableSeatCount) || seats.length || 0;
-        const lastCaptureAt = Number(state.ggReader.latestServerReceivedAt || snapshot?.serverReceivedAt || snapshot?.timestamp || 0);
+        const lastCaptureAt = Number(
+            state.ggReader.lastCaptureAt
+                || state.ggReader.latestServerReceivedAt
+                || snapshot?.serverReceivedAt
+                || snapshot?.timestamp
+                || 0
+        );
+        const ocrConfidence = getGgAmountFieldConfidence(snapshot) ?? state.ggReader.lastOcrConfidence;
+        const detectionCandidates = [
+            state.ggReader.lastDetectionConfidence,
+            getGgMetric(metrics, "profileFitScore"),
+            getGgMetric(metrics, "cropConfidence"),
+            snapshot?.confidence
+        ].map(Number).filter(Number.isFinite);
+        const detectionConfidence = detectionCandidates.length ? detectionCandidates[0] : null;
+        const readHealth = readRate >= GG_READER_MIN_READ_FPS && latencyMs <= GG_READER_MAX_FRAME_LATENCY_MS
+            ? "ok"
+            : "watch";
 
         const items = [
             ["street", snapshot?.street || "unknown"],
             ["pot", Number.isFinite(detectedPot) ? `${formatChipAmount(detectedPot)} BB` : "unknown"],
+            ["pot text", normalizedTable.detected_pot_text || "-"],
             ["visible bets", `${formatChipAmount(visibleBets)} BB`],
+            ["derived pot", Number.isFinite(Number(normalizedTable.calculated_pot_from_bets_bb))
+                ? `${formatChipAmount(Number(normalizedTable.calculated_pot_from_bets_bb))} BB`
+                : "-"],
             ["board", board.length ? board.map(formatGgCardSnapshot).join(" ") : "-"],
             ["dealer", Number.isInteger(Number(snapshot?.dealerSeatIndex)) ? `seat ${Number(snapshot.dealerSeatIndex)}` : "-"],
             ["seats", tableSeatCount ? `${activeSeats.length}/${tableSeatCount}` : "-"],
             ["capture", `${formatGgFps(state.ggReader.captureFps)}`],
             ["read", `${formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps)}`],
             ["render", `${formatGgFps(state.ggReader.renderFps)}`],
+            ["read health", readHealth],
             ["last capture", lastCaptureAt ? new Date(lastCaptureAt).toLocaleTimeString() : "-"],
-            ["latency", formatGgMs(state.ggReader.lastFrameMs || state.ggReader.lastInFlightMs)],
+            ["latency", formatGgMs(latencyMs)],
             ["OCR", ocrPending === undefined || ocrPending === null ? "-" : `${ocrPending} pending`],
+            ["OCR conf", formatGgConfidence(ocrConfidence)],
+            ["detect conf", formatGgConfidence(detectionConfidence)],
             ["confidence", formatGgConfidence(snapshot?.confidence)],
             ["dropped", String(state.ggReader.droppedFrames || 0)],
             ["failed", String(state.ggReader.failedReads || 0)],
@@ -4942,6 +5004,7 @@ function advanceActiveSlot(fromSlot) {
             appendGgSeatField(fields, "cards", formatGgSeatCards(seat), getGgSeatCardsConfidence(seat));
             appendGgSeatField(fields, "pos", seat.position || "-", seat.confidence);
             appendGgSeatField(fields, "conf", formatGgConfidence(seat.confidence), seat.confidence);
+            appendGgSeatField(fields, "updated", formatGgSeatUpdatedAt(snapshot, seat), seat.confidence);
 
             row.append(title, status, fields);
             fragment.appendChild(row);
@@ -5007,6 +5070,16 @@ function advanceActiveSlot(fromSlot) {
         return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
     }
 
+    function formatGgSeatUpdatedAt(snapshot, seat) {
+        const normalizedSeats = snapshot?.normalizedState?.seats;
+        const seatIndex = Number(seat?.physicalSeatIndex);
+        const normalizedSeat = Array.isArray(normalizedSeats)
+            ? normalizedSeats.find((item) => Number(item?.seat_index) === seatIndex)
+            : null;
+        const timestamp = Number(normalizedSeat?.last_updated_at || snapshot?.timestamp || 0);
+        return timestamp ? new Date(timestamp).toLocaleTimeString() : "-";
+    }
+
     function formatGgConfidence(value) {
         const confidence = Number(value);
         return Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
@@ -5023,6 +5096,19 @@ function advanceActiveSlot(fromSlot) {
             return snapshot.metrics[key];
         }
         return undefined;
+    }
+
+    function getGgAmountFieldConfidence(snapshot) {
+        const fields = getGgMetric(snapshot, "amountFields");
+        if (!Array.isArray(fields)) {
+            return null;
+        }
+        const values = fields
+            .map((field) => Number(field && field.confidence))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        return values.length
+            ? values.reduce((total, value) => total + value, 0) / values.length
+            : null;
     }
 
     async function fetchGgReaderDebugArtifact(kind) {

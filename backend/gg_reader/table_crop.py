@@ -110,6 +110,16 @@ def detect_clubgg_table_crop(
     warnings: list[str] = []
 
     if direct_real.is_real_clubgg:
+        if _trust_direct_window_capture(window_metadata):
+            source = str((window_metadata or {}).get("source") or (window_metadata or {}).get("captureSource") or "window")
+            return TableCropResult(
+                frame,
+                full_rect,
+                None,
+                source,
+                min(1.0, max(direct_confidence, direct_real.score)),
+                diagnostics={**direct_diag, **direct_real.as_diagnostics(), "selectedCropCandidate": "direct-window"},
+            )
         detected = _image_detected_table_crop(frame, window_metadata)
         if detected is not None:
             left, top, right, bottom, inner_rect, detected_diag, real_validation = detected
@@ -191,6 +201,22 @@ def detect_clubgg_table_crop(
         min(direct_confidence, direct_real.score),
         diagnostics={**direct_diag, **direct_real.as_diagnostics(), "selectedCropCandidate": "none"},
         warnings=warnings,
+    )
+
+
+def _trust_direct_window_capture(window_metadata: dict[str, Any] | None) -> bool:
+    metadata = dict(window_metadata or {})
+    source = str(metadata.get("source") or metadata.get("captureSource") or "").lower()
+    if source != "window":
+        return False
+    process_text = f"{metadata.get('processName') or ''} {metadata.get('processExe') or ''}".lower()
+    title = str(metadata.get("title") or metadata.get("selectedWindowTitle") or "").lower()
+    class_name = str(metadata.get("className") or "").lower()
+    return bool(
+        "clubgg" in process_text
+        or "unitywndclass" in class_name
+        or "clubgg" in title
+        or re.search(r"\b(?:nlh|plo)\b", title)
     )
 
 

@@ -17,7 +17,8 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from backend.gg_reader.fast_reader import FastGgReader
+from backend.gg_reader.fast_reader import FastGgReader, _FieldCache
+from backend.gg_reader.roi import crop_norm, downscale_hash
 
 
 PREFLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_preflop.png"
@@ -106,6 +107,44 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertEqual(held.activePlayerCount, good.activePlayerCount)
         self.assertEqual(held.dealerSeatIndex, good.dealerSeatIndex)
         self.assertTrue(held.metrics.get("heldSnapshot"))
+
+    def test_take_seat_clears_stale_cached_player_fields(self) -> None:
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        initial = self._parse_until(reader, self.frame, lambda item: item.pot > 0)
+        self.assertIsNotNone(initial)
+        assert initial is not None
+
+        empty_profile = next(seat for seat in reader.profile.seats if seat.index == 7)
+        stack_crop = crop_norm(self.frame, empty_profile.stack)
+        name_crop = crop_norm(self.frame, empty_profile.name)
+        reader._fields["seat-7-stack"] = _FieldCache(
+            value=222.2,
+            confidence=0.91,
+            raw="222.2BB",
+            source="test-stale",
+            image_hash=downscale_hash(stack_crop),
+            known=True,
+            completed_at=time.monotonic(),
+        )
+        reader._fields["seat-7-name"] = _FieldCache(
+            value="Stale Player",
+            confidence=0.88,
+            raw="Stale Player",
+            source="test-stale",
+            image_hash=downscale_hash(name_crop),
+            known=True,
+            completed_at=time.monotonic(),
+        )
+
+        snapshot = reader.parse(self.frame)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        seat = next(seat for seat in snapshot.seats if seat.physicalSeatIndex == 7)
+        self.assertFalse(seat.active)
+        self.assertEqual(seat.stack, 0)
+        self.assertEqual(seat.name, "")
+        self.assertGreaterEqual(snapshot.metrics.get("emptySeatCacheClears", 0), 1)
 
     def test_compact_river_fixture_snapshot(self) -> None:
         frame = self._load_fixture(COMPACT_RIVER_FIXTURE)

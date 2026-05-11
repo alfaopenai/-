@@ -692,6 +692,23 @@ class FastGgReader:
                 stale_seconds=1.0,
             )
 
+        if (
+            empty_take_seat
+            and not has_two_hole_cards
+            and not has_clear_stack_text
+            and not has_clear_bet_text
+            and stack_signal < 0.010
+        ):
+            self._clear_empty_seat_cache(seat_profile.index, now, metrics)
+            stack = 0.0
+            stack_confidence = 0.0
+            current_bet = 0.0
+            bet_confidence = 0.0
+            name = ""
+            name_confidence = 0.0
+            detected_action = "none"
+            action_confidence = 0.0
+
         valid_stack = bool(stack > 0 and stack_confidence >= 0.50)
         valid_bet = bool(current_bet > 0 and bet_confidence >= 0.50)
         valid_name_with_panel = bool(name and name_confidence >= 0.18 and panel_signal >= 0.22)
@@ -776,6 +793,35 @@ class FastGgReader:
             holeCards=hole_cards if active else [],
             confidence=confidence if active else 0.92,
         )
+
+    def _clear_empty_seat_cache(self, seat_index: int, now: float, metrics: dict[str, Any]) -> None:
+        fields = {
+            f"seat-{seat_index}-stack": (0.0, ""),
+            f"seat-{seat_index}-bet": (0.0, ""),
+            f"seat-{seat_index}-name": ("", ""),
+            f"seat-{seat_index}-action": ("none", "none"),
+        }
+        cleared = 0
+        for key, (value, raw) in fields.items():
+            entry = self._fields.get(key)
+            if entry is None:
+                continue
+            if entry.future is not None:
+                entry.future.cancel()
+                entry.future = None
+            entry.value = value
+            entry.confidence = 0.0
+            entry.raw = raw
+            entry.source = "empty_take_seat"
+            entry.reject_reason = ""
+            entry.known = True
+            entry.completed_at = now
+            entry.candidate_value = None
+            entry.candidate_raw = ""
+            entry.candidate_confidence = 0.0
+            cleared += 1
+        if cleared:
+            metrics["emptySeatCacheClears"] = int(metrics.get("emptySeatCacheClears") or 0) + cleared
 
     def _read_card_cached(
         self,

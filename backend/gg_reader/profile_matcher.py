@@ -145,7 +145,10 @@ def choose_and_fit_profile(
     best: FittedGgProfile | None = None
     best_score = -1.0
     best_diagnostics: dict[str, Any] = {}
-    title_layout_hint = _title_text_hint(frame)
+    # Title OCR is expensive enough to break the 500 ms live-read budget on
+    # some machines. Keep profile fitting on visual signals by default; the
+    # OCR hint can still be enabled for calibration/debug sessions.
+    title_layout_hint = _title_text_hint(frame) if os.environ.get("GG_READER_TITLE_OCR_HINT") == "1" else ""
 
     search_points = (
         (0.0, 0.0, 1.0, 1.0),
