@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .ocr import TESSERACT_TIMEOUT_SECONDS, _configure_tesseract, normalize_amount
+from .ocr import TESSERACT_TIMEOUT_SECONDS, _RAPIDOCR_LOCK, _configure_tesseract, _rapidocr_reader, normalize_amount
 
 
 FAST_AMOUNT_MIN_CONFIDENCE = 0.74
@@ -112,6 +112,57 @@ def read_amount_tight_ocr(
     amount, score, raw = best
     confidence = max(0.55, min(0.90, score + _cluster_bonus(amount, candidates)))
     return amount, confidence, raw
+
+
+def read_amount_rapidocr(image: np.ndarray) -> tuple[float, float, str]:
+    """Read a short amount line with RapidOCR's recognizer only.
+
+    The full RapidOCR detector is too slow for live table polling. Stack/bet
+    ROIs are already tightly cropped, so feeding the crop directly to the text
+    recognizer is both faster and much more reliable for ClubGG's cyan BB font.
+    """
+    if image.size == 0 or image.ndim < 2:
+        return 0.0, 0.0, ""
+    reader = _rapidocr_reader()
+    recognizer = getattr(reader, "text_recognizer", None) if reader is not None else None
+    if recognizer is None:
+        return 0.0, 0.0, ""
+    try:
+        import cv2
+
+        source = image[:, :, :3] if image.ndim == 3 else np.stack([image, image, image], axis=2)
+        variants = [
+            cv2.resize(source, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC),
+            cv2.resize(source, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST),
+        ]
+        with _RAPIDOCR_LOCK:
+            batch_results, _elapsed = recognizer(variants)
+    except Exception:
+        return 0.0, 0.0, ""
+    candidates: list[tuple[float, float, str]] = []
+    for text, confidence in batch_results or []:
+        try:
+            score = float(confidence or 0.0)
+        except Exception:
+            score = 0.0
+        raw = _normalize_ocr_amount_raw(str(text or ""))
+        amount = _squash_bb_noise(raw, normalize_amount(raw))
+        if amount > 0:
+            candidates.append((amount, min(0.93, max(0.0, score)), raw))
+    return max(candidates, key=_rapid_amount_candidate_score, default=(0.0, 0.0, ""))
+
+
+def _rapid_amount_candidate_score(candidate: tuple[float, float, str]) -> float:
+    amount, confidence, raw = candidate
+    text = str(raw or "")
+    score = float(confidence or 0.0)
+    if "." in text or "," in text:
+        score += 0.04
+    if len(re.sub(r"\D+", "", text)) >= 2:
+        score += 0.02
+    if 1.0 <= float(amount or 0.0) < 700:
+        score += 0.02
+    return score
 
 
 def _best_text_mask(image: np.ndarray) -> np.ndarray | None:
@@ -271,6 +322,9 @@ def _squash_bb_noise(raw: str, amount: float) -> float:
         value = re.sub(r"(\d+),(\d{1,2})(?=B*$)", r"\1.\2", value)
     else:
         value = value.replace(",", "")
+    long_decimal = re.search(r"^(\d+)[.](\d{3,})(?:B*)$", value)
+    if long_decimal and 0 < amount < 1000:
+        return float(f"{long_decimal.group(1)}.{long_decimal.group(2)[0]}")
     match = re.search(r"(\d+)\.(\d)(?:[568B]{1,3})$", value)
     if match:
         return float(f"{match.group(1)}.{match.group(2)}")

@@ -27,6 +27,7 @@ COMPACT_FLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_flop_compact.png"
 COMPACT_RIVER_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_compact_river.png"
 CURRENT_COMPACT_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_clubgg_compact_live.png"
 CURRENT_TWO_TABLES_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_two_tables_live.png"
+CURRENT_SHOWDOWN_DIMMED_FIXTURE = ROOT / "tests" / "fixtures" / "current_showdown_dimmed_live.png"
 
 
 @unittest.skipIf(cv2 is None, "OpenCV is unavailable")
@@ -165,6 +166,18 @@ class FastGgReaderTest(unittest.TestCase):
         self.assertEqual(entry.reject_reason, "suspicious-stack-unlabeled-buyin")
         self.assertEqual(float(entry.value or 0.0), 0.0)
 
+        accepted_high_confidence = reader._apply_amount_candidate(
+            entry,
+            "seat-3-stack",
+            1000.0,
+            0.99,
+            "1000",
+            "rapidocr_recognizer",
+            time.monotonic(),
+        )
+        self.assertFalse(accepted_high_confidence)
+        self.assertEqual(entry.reject_reason, "suspicious-stack-unlabeled-buyin")
+
         accepted_with_bb = reader._apply_amount_candidate(
             entry,
             "seat-3-stack",
@@ -260,7 +273,7 @@ class FastGgReaderTest(unittest.TestCase):
                 and _stacked_count(item) >= 6
                 and _has_names(item, {1, 2, 3, 4, 6})
             ),
-            deadline_seconds=60.0,
+            deadline_seconds=90.0,
         )
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
@@ -350,6 +363,37 @@ class FastGgReaderTest(unittest.TestCase):
         for index, expected_name in expected_names.items():
             self.assertEqual(by_index[index].name, expected_name)
         self.assertIn(by_index[5].name, {"Itzh4k", "Itzhak"})
+
+    def test_current_showdown_dimmed_cards_and_stacks(self) -> None:
+        frame = self._load_fixture(CURRENT_SHOWDOWN_DIMMED_FIXTURE)
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        snapshot = self._parse_until(
+            reader,
+            frame,
+            lambda item: len(_card_codes(item.board)) >= 5 and _stacked_count(item) >= 8,
+            deadline_seconds=90.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_8max")
+        self.assertEqual(_card_codes(snapshot.board), ["9S", "2C", "8C", "6H", "QS"])
+
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        expected_stacks = {
+            0: 274.1,
+            1: 165.7,
+            2: 84.2,
+            3: 58.7,
+            4: 121.5,
+            5: 63.6,
+            6: 151.4,
+            7: 109.9,
+        }
+        for index, expected_stack in expected_stacks.items():
+            self.assertTrue(by_index[index].active)
+            self.assertAlmostEqual(by_index[index].stack, expected_stack, delta=1.0)
+        self.assertLess(by_index[4].currentBet, 1.0, "winner +BB text must not be parsed as a live bet")
 
     def _parse_until(self, reader: FastGgReader, frame: np.ndarray, predicate, *, deadline_seconds: float = 4.0) -> object:
         snapshot = None

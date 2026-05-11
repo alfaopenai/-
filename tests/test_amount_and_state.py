@@ -163,6 +163,26 @@ class TableStateStabilizerTest(unittest.TestCase):
         self.assertEqual(seat_record["name"], "")
         self.assertEqual(seat_record["stack"], 0.0)
 
+    def test_board_database_rejects_single_frame_wrong_card_for_same_slot(self) -> None:
+        stabilizer = TableStateStabilizer()
+        first = _snapshot(
+            street="flop",
+            board=[_card("AS"), _card("6D"), _card("3D")],
+            seats=[_seat(0)],
+        )
+        stabilizer.stabilize(first, now=time.monotonic())
+
+        bad_read = _snapshot(
+            street="flop",
+            board=[_card("AC"), _card("6D"), _card("3D")],
+            seats=[_seat(0)],
+        )
+        held = stabilizer.stabilize(bad_read, now=time.monotonic() + 1.1)
+        self.assertEqual(_card_codes(held.board), ["AS", "6D", "3D"])
+        self.assertIn("board-0-database-card", held.metrics["stabilizer"]["fieldsHeld"])
+        normalized = build_normalized_state(held, held.metrics)
+        self.assertEqual(normalized["board_database"][0]["card"], "AS")
+
     def test_bet_resets_only_after_two_empty_hits(self) -> None:
         stabilizer = TableStateStabilizer()
         first = _snapshot(seats=[_seat(0, current_bet=4.0, bet_confidence=0.82)])
@@ -358,14 +378,17 @@ def _snapshot(
     pot: float = 1.5,
     seats: list[GgSeat] | None = None,
     pot_confidence: float = 0.82,
+    street: str = "preflop",
+    board: list[GgCard] | None = None,
 ) -> GgTableSnapshot:
     return GgTableSnapshot(
         timestamp=int(time.time() * 1000),
         tableType="8max",
-        street="preflop",
+        street=street,
         pot=pot,
         activePlayerCount=len([seat for seat in seats or [] if seat.active]),
         dealerSeatIndex=0,
+        board=board or [],
         seats=seats or [],
         confidence=0.86,
         metrics={
@@ -374,6 +397,15 @@ def _snapshot(
             ]
         },
     )
+
+
+def _card(code: str, confidence: float = 0.84) -> GgCard:
+    value = code.upper()
+    return GgCard(rank=value[:-1], suit=value[-1], visible=True, hidden=False, confidence=confidence)
+
+
+def _card_codes(cards: list[GgCard]) -> list[str]:
+    return [f"{card.rank}{card.suit}" for card in cards if card.visible and not card.hidden]
 
 
 def _seat(

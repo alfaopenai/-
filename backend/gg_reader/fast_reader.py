@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .fast_amount import amount_text_signal, read_amount_fast, read_amount_tight_ocr
+from .fast_amount import amount_text_signal, read_amount_fast, read_amount_rapidocr, read_amount_tight_ocr
 from .fixed_profile import FixedGgProfile, FixedSeatProfile, get_fixed_profile
 from .models import GgCard, GgSeat, GgTableSnapshot
 from .ocr import normalize_amount, read_amount, read_card, read_name, read_name_detailed
@@ -614,6 +614,7 @@ class FastGgReader:
         stack_signal = _cyan_signal(stack_crop)
         stack_text_signal = amount_text_signal(stack_crop)
         bet_text_signal = amount_text_signal(bet_crop)
+        win_text_signal = _yellow_win_text_signal(bet_crop)
         name_text_signal = _name_text_signal(name_crop)
         panel_signal = _panel_signal(active_crop)
         action_text_signal = _name_text_signal(action_crop)
@@ -642,7 +643,7 @@ class FastGgReader:
             or has_clear_cyan_stack
             or self._field_known(f"seat-{seat_profile.index}-stack")
         )
-        should_read_bet = (
+        should_read_bet = win_text_signal < 0.010 and (
             has_clear_bet_text
             or self._field_known(f"seat-{seat_profile.index}-bet")
         )
@@ -767,6 +768,7 @@ class FastGgReader:
                 "stackTextSignal": round(float(stack_text_signal), 4),
                 "stackCyanSignal": round(float(stack_signal), 4),
                 "betTextSignal": round(float(bet_text_signal), 4),
+                "winTextSignal": round(float(win_text_signal), 4),
                 "nameTextSignal": round(float(name_text_signal), 4),
                 "card0Present": bool(len(hole_cards) >= 1),
                 "card1Present": bool(len(hole_cards) >= 2),
@@ -862,7 +864,8 @@ class FastGgReader:
             return GgCard(hidden=True, visible=False, display=str(data.get("display") or "X"), confidence=confidence)
         rank = data.get("rank")
         suit = data.get("suit")
-        if rank and suit and confidence >= 0.70:
+        visible_min_confidence = 0.88 if allow_hidden else 0.70
+        if rank and suit and confidence >= visible_min_confidence:
             return GgCard(rank=str(rank), suit=str(suit), visible=True, hidden=False, confidence=confidence)
         return None
 
@@ -1045,9 +1048,13 @@ class FastGgReader:
     ) -> bool:
         previous = float(entry.value or 0.0)
         field_is_stack = "-stack" in key
+        field_is_bet = "-bet" in key
         field_is_pot = key == "pot"
         if value <= 0 or confidence <= 0:
             entry.reject_reason = "empty-or-zero-amount"
+            return False
+        if field_is_bet and "+" in str(raw or ""):
+            entry.reject_reason = "winner-text-not-live-bet"
             return False
         if field_is_pot and value > 500 and not re.search(r"(?i)[.KMB]|BB", raw or ""):
             entry.reject_reason = "suspicious-pot-jackpot"
@@ -1401,10 +1408,29 @@ def _cyan_signal(image: np.ndarray) -> float:
     return float(mask.mean())
 
 
+def _yellow_win_text_signal(image: np.ndarray) -> float:
+    if image.size == 0 or image.ndim < 3:
+        return 0.0
+    channels = image[:, :, :3].astype(np.int16)
+    blue = channels[:, :, 0]
+    green = channels[:, :, 1]
+    red = channels[:, :, 2]
+    mask = (red > 150) & (green > 110) & (blue < 95) & ((red - blue) > 70) & ((green - blue) > 45)
+    return float(mask.mean())
+
+
 def _read_amount_source(image: np.ndarray) -> tuple[float, float, str, str]:
+    rapid_amount, rapid_confidence, rapid_raw = read_amount_rapidocr(image)
+    if rapid_amount > 0 and rapid_confidence >= 0.70:
+        return rapid_amount, rapid_confidence, rapid_raw, "rapidocr_recognizer"
     amount, confidence, raw = read_amount_tight_ocr(image, squash_bb_suffix=True)
+    combined_amount = _combine_amount_candidates(amount, raw, rapid_amount, rapid_raw)
+    if combined_amount > 0:
+        return combined_amount, max(confidence, rapid_confidence, 0.78), f"{rapid_raw}|{raw}", "rapidocr_tight_ocr"
     if amount > 0 and confidence > 0:
         return amount, confidence, raw, "tight_ocr"
+    if rapid_amount > 0 and rapid_confidence >= 0.55:
+        return rapid_amount, rapid_confidence, rapid_raw, "rapidocr_recognizer"
     amount, confidence, raw = read_amount(image)
     return amount, confidence, raw, "tesseract"
 
@@ -1433,10 +1459,20 @@ def _looks_like_unlabeled_buyin_stack(value: float, raw: str, confidence: float)
     text = str(raw or "").strip().upper().replace(" ", "")
     if re.search(r"(?i)(?:BB|B)$", text) or "." in text:
         return False
-    if float(confidence or 0.0) >= 0.95:
-        return False
     digits = re.sub(r"\D+", "", text)
     return digits in {"1000", "10000"} or bool(digits and float(value or 0.0) >= 900)
+
+
+def _combine_amount_candidates(tight_amount: float, tight_raw: str, rapid_amount: float, rapid_raw: str) -> float:
+    if tight_amount <= 0 or rapid_amount <= 0:
+        return 0.0
+    tight_text = str(tight_raw or "").upper().replace(" ", "")
+    rapid_text = str(rapid_raw or "").upper().replace(" ", "")
+    rapid_prefix = re.search(r"^(\d+)[.,]$", rapid_text)
+    tight_decimal = re.search(r"[.,](\d)", tight_text)
+    if rapid_prefix and tight_decimal:
+        return float(f"{rapid_prefix.group(1)}.{tight_decimal.group(1)}")
+    return 0.0
 
 
 def _active_signal(image: np.ndarray) -> float:

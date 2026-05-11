@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
-from .models import GgSeat, GgTableSnapshot
+from .models import GgCard, GgSeat, GgTableSnapshot
 
 
 PUBLISH_INTERVAL_SECONDS = 1.0
@@ -46,6 +46,16 @@ class _SeatPositionRecord:
     pending_stack_confidence: float = 0.0
 
 
+@dataclass
+class _CardSlotRecord:
+    card_id: str = ""
+    confidence: float = 0.0
+    updated_at: float = 0.0
+    pending_card_id: str = ""
+    pending_hits: int = 0
+    pending_confidence: float = 0.0
+
+
 class TableStateStabilizer:
     """Field-level smoothing for noisy OCR snapshots.
 
@@ -58,6 +68,7 @@ class TableStateStabilizer:
         self._stable: GgTableSnapshot | None = None
         self._seat_states: dict[int, _SeatState] = {}
         self._seat_database: dict[int, _SeatPositionRecord] = {}
+        self._board_database: dict[int, _CardSlotRecord] = {}
         self._last_publish_at = 0.0
         self._last_metrics: dict[str, Any] = {}
 
@@ -74,6 +85,7 @@ class TableStateStabilizer:
             stable = raw.model_copy(deep=True)
             self._sanitize_placeholder_names(stable, metrics)
             self._apply_seat_database_to_snapshot(stable, current_time, metrics)
+            self._apply_board_database_to_snapshot(stable, current_time, metrics)
             metrics["initialStableSnapshot"] = True
             stable.metrics = {**raw.metrics, "stabilizer": metrics}
             self._stable = stable.model_copy(deep=True)
@@ -114,6 +126,7 @@ class TableStateStabilizer:
         if not stable.board and previous.board and raw.street == previous.street:
             stable.board = [card.model_copy(deep=True) for card in previous.board]
             metrics["fieldsHeld"].append("board")
+        self._apply_board_database_to_snapshot(stable, current_time, metrics)
 
         if raw.dealerSeatIndex < 0 and previous.dealerSeatIndex >= 0:
             stable.dealerSeatIndex = previous.dealerSeatIndex
@@ -452,6 +465,75 @@ class TableStateStabilizer:
             })
         return rows
 
+    def _apply_board_database_to_snapshot(
+        self,
+        snapshot: GgTableSnapshot,
+        now: float,
+        metrics: dict[str, Any],
+    ) -> None:
+        if snapshot.street == "preflop" or not snapshot.board:
+            if self._board_database:
+                metrics["fieldsAccepted"].append("board-database-clear")
+            self._board_database.clear()
+            metrics["boardDatabase"] = []
+            return
+
+        accepted_board: list[GgCard] = []
+        for index, card in enumerate(snapshot.board[:5]):
+            record = self._board_database.setdefault(index, _CardSlotRecord())
+            observed_id = _card_id(card)
+            confidence = float(card.confidence or 0.0)
+            accepted = False
+            if observed_id and confidence >= 0.70:
+                accepted = self._accept_board_card_candidate(record, observed_id, confidence)
+                if accepted:
+                    metrics["fieldsAccepted"].append(f"board-{index}-database-card")
+            if record.card_id:
+                if observed_id and not accepted and observed_id != record.card_id:
+                    metrics["fieldsHeld"].append(f"board-{index}-database-card")
+                accepted_board.append(_card_from_id(record.card_id, min(max(record.confidence, confidence), 0.92)))
+            elif observed_id:
+                accepted_board.append(card)
+        snapshot.board = accepted_board
+        metrics["boardDatabase"] = self._board_database_rows()
+
+    def _accept_board_card_candidate(self, record: _CardSlotRecord, card_id: str, confidence: float) -> bool:
+        if not record.card_id:
+            _set_board_card(record, card_id, confidence)
+            return True
+        if card_id == record.card_id:
+            record.confidence = max(record.confidence, confidence)
+            record.pending_card_id = ""
+            record.pending_hits = 0
+            record.pending_confidence = 0.0
+            return True
+        if confidence >= 0.94:
+            _set_board_card(record, card_id, confidence)
+            return True
+        if record.pending_card_id == card_id:
+            record.pending_hits += 1
+            record.pending_confidence = max(record.pending_confidence, confidence)
+        else:
+            record.pending_card_id = card_id
+            record.pending_hits = 1
+            record.pending_confidence = confidence
+        if confidence >= 0.78 and record.pending_hits >= 2:
+            _set_board_card(record, card_id, confidence)
+            return True
+        return False
+
+    def _board_database_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "slot": index,
+                "card": record.card_id,
+                "confidence": round(float(record.confidence or 0.0), 4),
+                "pendingCard": record.pending_card_id,
+                "pendingHits": int(record.pending_hits),
+            }
+            for index, record in sorted(self._board_database.items())
+        ]
+
 
 def _amount_confidence(snapshot: GgTableSnapshot, key: str) -> float:
     for field in snapshot.metrics.get("amountFields") or []:
@@ -533,6 +615,28 @@ def _stage_stack_candidate(record: _SeatPositionRecord, stack: float, confidence
 
 def _close_amount(left: float, right: float) -> bool:
     return abs(float(left or 0.0) - float(right or 0.0)) <= max(0.05, max(abs(left), abs(right)) * 0.002)
+
+
+def _card_id(card: GgCard | None) -> str:
+    if not card or card.hidden or not card.rank or not card.suit:
+        return ""
+    return f"{card.rank}{card.suit}".upper()
+
+
+def _card_from_id(card_id: str, confidence: float) -> GgCard:
+    value = str(card_id or "").upper()
+    suit = value[-1:] if value[-1:] in {"S", "H", "D", "C"} else ""
+    rank = value[:-1] if suit else ""
+    return GgCard(rank=rank or None, suit=suit or None, visible=bool(rank and suit), hidden=False, confidence=confidence)
+
+
+def _set_board_card(record: _CardSlotRecord, card_id: str, confidence: float) -> None:
+    record.card_id = str(card_id or "").upper()
+    record.confidence = float(confidence or 0.0)
+    record.updated_at = time.monotonic()
+    record.pending_card_id = ""
+    record.pending_hits = 0
+    record.pending_confidence = 0.0
 
 
 def _amount_is_sane(previous: float, current: float, confidence: float) -> bool:

@@ -79,6 +79,7 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
     amount_fields = payload_metrics.get("amountFields") or snapshot.metrics.get("amountFields") or []
     pot_field = next((field for field in amount_fields if isinstance(field, dict) and field.get("key") == "pot"), {})
     seat_database = _seat_database_payload(payload_metrics or snapshot.metrics or {})
+    board_database = _board_database_payload(payload_metrics or snapshot.metrics or {})
     visible_bets = [
         round(float(seat.currentBet or 0.0), 4)
         for seat in snapshot.seats
@@ -135,6 +136,7 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
         },
         "seats": normalized_seats,
         "seat_database": seat_database,
+        "board_database": board_database,
     }
 
 
@@ -179,6 +181,29 @@ def _seat_database_payload(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             "pending_name_hits": int(record.get("pendingNameHits") or 0),
             "pending_stack_bb": round(pending_stack, 4) if pending_stack > 0 else None,
             "pending_stack_hits": int(record.get("pendingStackHits") or 0),
+        })
+    return normalized
+
+
+def _board_database_payload(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    stabilizer = metrics.get("stabilizer") if isinstance(metrics, dict) else None
+    records = stabilizer.get("boardDatabase") if isinstance(stabilizer, dict) else []
+    if not isinstance(records, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            slot = int(record.get("slot"))
+        except (TypeError, ValueError):
+            continue
+        normalized.append({
+            "slot": slot,
+            "card": str(record.get("card") or ""),
+            "confidence": round(_safe_float(record.get("confidence")), 4),
+            "pending_card": str(record.get("pendingCard") or ""),
+            "pending_hits": int(record.get("pendingHits") or 0),
         })
     return normalized
 

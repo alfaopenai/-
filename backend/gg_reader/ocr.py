@@ -554,16 +554,17 @@ def read_card(image: np.ndarray) -> dict[str, object]:
     brightness = (blue + green + red) / 3
     bright_ratio = _bright_ratio(channels)
     white_ratio = _white_card_ratio(channels)
+    dimmed_card_ratio = _dimmed_visible_card_ratio(channels)
 
     if white_ratio < 0.35 and blue > red * 1.12 and blue > green * 1.05 and brightness > 35:
         return {"hidden": True, "display": "X", "visible": False, "confidence": 0.78}
-    if bright_ratio < 0.12:
+    if bright_ratio < 0.12 and dimmed_card_ratio < 0.50:
         return {"hidden": False, "visible": False, "confidence": 0.0}
     if _looks_like_card_back(channels):
         return {"hidden": True, "display": "X", "visible": False, "confidence": 0.82}
-    if bright_ratio < 0.30:
+    if bright_ratio < 0.30 and dimmed_card_ratio < 0.50:
         return {"hidden": False, "visible": False, "confidence": 0.0}
-    if white_ratio < 0.62:
+    if white_ratio < 0.45 and dimmed_card_ratio < 0.50:
         return {"hidden": False, "visible": False, "confidence": 0.0}
 
     visible = _read_visible_card(image)
@@ -599,6 +600,29 @@ def _card_symbol_mask(image: np.ndarray) -> np.ndarray:
     rgb = cv2.cvtColor(channels, cv2.COLOR_BGR2RGB)
     distance_from_white = np.max(255 - rgb, axis=2)
     return (distance_from_white > 60).astype(np.uint8) * 255
+
+
+def _card_dark_symbol_mask(image: np.ndarray) -> np.ndarray:
+    import cv2
+
+    channels = image[:, :, :3] if image.ndim == 3 else np.stack([image, image, image], axis=2)
+    blue = channels[:, :, 0].astype(np.int16)
+    green = channels[:, :, 1].astype(np.int16)
+    red = channels[:, :, 2].astype(np.int16)
+    gray = cv2.cvtColor(channels, cv2.COLOR_BGR2GRAY)
+    dark = gray < 65
+    red_symbol = (red > 65) & (red > green + 15) & (red > blue + 15)
+    return (dark | red_symbol).astype(np.uint8) * 255
+
+
+def _dimmed_visible_card_ratio(channels: np.ndarray) -> float:
+    import cv2
+
+    if channels.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(channels[:, :, :3], cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(channels[:, :, :3], cv2.COLOR_BGR2HSV)
+    return float(((gray > 55) & (gray < 185) & (hsv[:, :, 1] < 60)).mean())
 
 
 def _component_mask(mask: np.ndarray, *, rank: bool) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
@@ -674,10 +698,20 @@ def _match_template(component: np.ndarray, templates: tuple[tuple[str, np.ndarra
 def _recognize_rank(image: np.ndarray) -> dict[str, object] | None:
     mask = _card_symbol_mask(image)
     component = _component_mask(mask, rank=True)
+    if component and float((component[0] > 0).mean()) > 0.92:
+        mask = _card_dark_symbol_mask(image)
+    if _looks_like_ten_rank(mask):
+        return {"rank": "10", "confidence": 0.86}
+    component = _component_mask(mask, rank=True)
     if not component:
         return None
     component_mask, _box = component
     rank, score = _match_template(component_mask, _rank_templates())
+    if rank and score >= 0.80:
+        return {"rank": rank, "confidence": min(0.98, max(0.72, score))}
+    fallback_rank = _rank_shape_fallback(mask)
+    if fallback_rank:
+        return {"rank": fallback_rank, "confidence": 0.84}
     if not rank or score < 0.55:
         return None
     return {"rank": rank, "confidence": min(0.98, max(0.72, score))}
@@ -692,6 +726,12 @@ def _recognize_suit(image: np.ndarray) -> dict[str, object] | None:
     if not component:
         return None
     component_mask, (x, y, width, height) = component
+    if float((component_mask > 0).mean()) > 0.92:
+        mask = _card_dark_symbol_mask(image)
+        component = _component_mask(mask, rank=False)
+        if not component:
+            return None
+        component_mask, (x, y, width, height) = component
     roi = channels[y:y + height, x:x + width]
     if roi.size == 0:
         return None
@@ -702,15 +742,106 @@ def _recognize_suit(image: np.ndarray) -> dict[str, object] | None:
         suit = "H" if density > 0.58 else "D"
         confidence = 0.84 if suit == "H" else 0.88
     else:
-        rows = np.where(component_mask > 0)[0]
-        top_half = component_mask[: max(1, component_mask.shape[0] // 2)]
-        bottom_half = component_mask[max(1, component_mask.shape[0] // 2):]
-        top_density = float((top_half > 0).sum() / max(1, top_half.size))
-        bottom_density = float((bottom_half > 0).sum() / max(1, bottom_half.size))
-        suit = "C" if top_density > bottom_density * 1.15 and rows.size else "S"
-        confidence = 0.76
+        solidity = _component_solidity(component_mask)
+        aspect = float(height / max(1, width))
+        density = float((component_mask > 0).mean())
+        if _white_card_ratio(channels) > 0.45 and aspect < 1.25:
+            suit = "S"
+        else:
+            suit = "C" if solidity < 0.90 and (aspect >= 1.65 or density < 0.66) else "S"
+        confidence = 0.82 if suit == "C" else 0.80
 
     return {"suit": suit, "confidence": confidence}
+
+
+def _looks_like_ten_rank(mask: np.ndarray) -> bool:
+    import cv2
+
+    if mask.size == 0:
+        return False
+    height, width = mask.shape[:2]
+    search = mask[: max(1, int(height * 0.38)), : max(1, int(width * 0.58))]
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(search, 8)
+    boxes: list[tuple[int, int, int, int, int]] = []
+    for component_index in range(1, component_count):
+        x, y, component_width, component_height, area = [int(value) for value in stats[component_index]]
+        if area < max(6, int(width * height * 0.001)):
+            continue
+        if component_height < max(5, int(height * 0.10)) or component_width < 2:
+            continue
+        boxes.append((x, y, component_width, component_height, area))
+    if len(boxes) < 2:
+        return False
+    boxes = sorted(boxes, key=lambda item: item[0])
+    for left in boxes:
+        lx, ly, lw, lh, _la = left
+        for right in boxes:
+            rx, ry, rw, rh, _ra = right
+            if rx <= lx:
+                continue
+            vertical_overlap = min(ly + lh, ry + rh) - max(ly, ry)
+            overlap_ratio = vertical_overlap / max(1, min(lh, rh))
+            gap = rx - (lx + lw)
+            combined_width = (rx + rw) - lx
+            if (
+                overlap_ratio >= 0.45
+                and -2 <= gap <= max(8, int(width * 0.12))
+                and lw <= max(6, rw * 0.70)
+                and combined_width >= width * 0.22
+            ):
+                return True
+    return False
+
+
+def _rank_shape_fallback(mask: np.ndarray) -> str:
+    import cv2
+
+    if mask.size == 0:
+        return ""
+    height, width = mask.shape[:2]
+    search = mask[: max(1, int(height * 0.42)), : max(1, int(width * 0.55))]
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(search, 8)
+    boxes: list[tuple[int, int, int, int, int]] = []
+    for component_index in range(1, component_count):
+        x, y, component_width, component_height, area = [int(value) for value in stats[component_index]]
+        if area < max(10, int(width * height * 0.002)):
+            continue
+        if component_height < 4 or component_width < 2:
+            continue
+        if y > height * 0.34:
+            continue
+        boxes.append((x, y, component_width, component_height, area))
+    if len(boxes) < 2:
+        return ""
+    upper = [box for box in boxes if box[1] <= height * 0.08]
+    lower = [box for box in boxes if box[1] > height * 0.08]
+    if not upper or not lower:
+        return ""
+    top_area = sum(box[4] for box in upper)
+    top_width = max(box[0] + box[2] for box in upper) - min(box[0] for box in upper)
+    main_width = max(box[2] for box in lower)
+    all_width = max(box[0] + box[2] for box in boxes) - min(box[0] for box in boxes)
+    if top_area >= 75 and top_width >= main_width * 0.65:
+        return "Q"
+    if all_width >= main_width * 1.30:
+        return "8"
+    if 35 <= top_area < 75:
+        return "9"
+    return ""
+
+
+def _component_solidity(component_mask: np.ndarray) -> float:
+    import cv2
+
+    contours, _hierarchy = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 1.0
+    contour = max(contours, key=cv2.contourArea)
+    area = float(cv2.contourArea(contour))
+    hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+    if hull_area <= 0:
+        return 1.0
+    return area / hull_area
 
 
 def _looks_like_card_back(channels: np.ndarray) -> bool:
