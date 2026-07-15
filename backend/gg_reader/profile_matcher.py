@@ -150,27 +150,39 @@ def choose_and_fit_profile(
     # OCR hint can still be enabled for calibration/debug sessions.
     title_layout_hint = _title_text_hint(frame) if os.environ.get("GG_READER_TITLE_OCR_HINT") == "1" else ""
 
+    canonical_client = _looks_like_canonical_client(frame)
+    frame_height, frame_width = frame.shape[:2]
+    identity_only_client = bool(canonical_client and frame_width >= 640 and frame_height >= 470)
+    # A correctly cropped ClubGG client has a stable 850:631 surface at every
+    # scale.  Searching 20 transforms for four layouts on such a frame was the
+    # dominant 4-25 second first-frame cost and could even choose a shrunken
+    # fixed profile that displaced every ROI.  Exact client crops only need the
+    # four layout identities; transform search remains for legacy padded crops.
     search_points = (
-        (0.0, 0.0, 1.0, 1.0),
-        (-0.025, 0.0, 1.0, 1.0),
-        (0.025, 0.0, 1.0, 1.0),
-        (0.0, -0.025, 1.0, 1.0),
-        (0.0, 0.025, 1.0, 1.0),
-        (-0.050, 0.0, 1.0, 1.0),
-        (0.050, 0.0, 1.0, 1.0),
-        (0.0, -0.050, 1.0, 1.0),
-        (0.0, 0.050, 1.0, 1.0),
-        (0.0, 0.0, 0.96, 0.96),
-        (0.0, 0.0, 1.04, 1.04),
-        (0.0, 0.0, 0.98, 1.02),
-        (0.0, 0.0, 1.02, 0.98),
-        (0.0, -0.010, 0.955, 0.930),
-        (0.0, 0.010, 0.955, 0.930),
-        (0.0, -0.015, 0.960, 0.940),
-        (-0.025, -0.025, 0.98, 0.98),
-        (0.025, 0.025, 0.98, 0.98),
-        (-0.025, 0.025, 1.02, 1.02),
-        (0.025, -0.025, 1.02, 1.02),
+        ((0.0, 0.0, 1.0, 1.0),)
+        if identity_only_client
+        else (
+            (0.0, 0.0, 1.0, 1.0),
+            (-0.025, 0.0, 1.0, 1.0),
+            (0.025, 0.0, 1.0, 1.0),
+            (0.0, -0.025, 1.0, 1.0),
+            (0.0, 0.025, 1.0, 1.0),
+            (-0.050, 0.0, 1.0, 1.0),
+            (0.050, 0.0, 1.0, 1.0),
+            (0.0, -0.050, 1.0, 1.0),
+            (0.0, 0.050, 1.0, 1.0),
+            (0.0, 0.0, 0.96, 0.96),
+            (0.0, 0.0, 1.04, 1.04),
+            (0.0, 0.0, 0.98, 1.02),
+            (0.0, 0.0, 1.02, 0.98),
+            (0.0, -0.010, 0.955, 0.930),
+            (0.0, 0.010, 0.955, 0.930),
+            (0.0, -0.015, 0.960, 0.940),
+            (-0.025, -0.025, 0.98, 0.98),
+            (0.025, 0.025, 0.98, 0.98),
+            (-0.025, 0.025, 1.02, 1.02),
+            (0.025, -0.025, 1.02, 1.02),
+        )
     )
     for base in bases:
         for offset_x, offset_y, scale_x, scale_y in search_points:
@@ -200,11 +212,22 @@ def choose_and_fit_profile(
                 scale_x=scale_x,
                 scale_y=scale_y,
             )
+            # Treat aligned stack coverage as a layout discriminator, not as
+            # another absolute fit component.  Centering the adjustment keeps
+            # ordinary 6/7/8-max scores in their historic range while a strong
+            # coverage difference still resolves sparse tables.  In the live
+            # eight-seat regression the aligned fractions are 0.8 (8-max) and
+            # 0.4 (7-max), producing +0.04/-0.04 respectively.
+            stack_alignment_adjustment = max(
+                -0.08,
+                min(0.08, (float(diagnostics.get("stackAlignmentScore") or 0.0) - 0.60) * 0.20),
+            )
             adjusted_score = (
                 score
                 + layout_bonus
                 + exact_window_bonus
                 + padded_crop_bonus
+                + stack_alignment_adjustment
                 - (abs(offset_x) + abs(offset_y)) * 0.08
                 - (abs(scale_x - 1.0) + abs(scale_y - 1.0)) * 0.05
             )
@@ -222,7 +245,11 @@ def choose_and_fit_profile(
                     "layoutTitleBonus": round(layout_bonus, 4),
                     "exactWindowBonus": round(exact_window_bonus, 4),
                     "paddedCropBonus": round(padded_crop_bonus, 4),
+                    "stackAlignmentAdjustment": round(stack_alignment_adjustment, 4),
                     "titleLayoutHint": title_layout_hint,
+                    "canonicalClient": bool(canonical_client),
+                    "identityOnlyClient": bool(identity_only_client),
+                    "searchPointCount": len(search_points),
                 }
 
     if best is None:
@@ -234,7 +261,7 @@ def choose_and_fit_profile(
         offset_y=best.offset_y,
         scale_x=best.scale_x,
         scale_y=best.scale_y,
-        fit_score=best_score,
+        fit_score=max(0.0, min(1.0, best_score)),
         diagnostics=best_diagnostics,
     )
 
@@ -267,6 +294,18 @@ def score_profile_fit(frame: np.ndarray, profile: FittedGgProfile) -> tuple[floa
     top_names = sorted(name_scores, reverse=True)[:5]
     top_active = sorted(active_scores, reverse=True)[:6]
     top_bets = sorted(bet_scores, reverse=True)[:4]
+    # The best-signal averages deliberately ignore zeroes so an otherwise
+    # correct layout still fits a short-handed table.  That also means a wrong
+    # layout which happens to cross only two occupied player panels can score
+    # the same stack component as one aligned with four or five panels.  Keep
+    # that tolerant signal, but add a bounded coverage term which rewards the
+    # number of *aligned* cyan stack strips.  Capping the denominator at five
+    # avoids a structural preference for layouts merely because they contain
+    # more physical seats.
+    stack_alignment_score = min(
+        1.0,
+        sum(1 for value in stack_scores if value >= 0.30) / max(1, min(5, len(stack_scores))),
+    )
     score = (
         pot_score * 0.12
         + _avg(top_stacks) * 0.24
@@ -286,6 +325,7 @@ def score_profile_fit(frame: np.ndarray, profile: FittedGgProfile) -> tuple[floa
         "scaleY": round(profile.scale_y, 4),
         "potSignalScore": round(pot_score, 4),
         "stackSignalScore": round(_avg(top_stacks), 4),
+        "stackAlignmentScore": round(stack_alignment_score, 4),
         "cardSignalScore": round(_avg(top_cards), 4),
         "nameSignalScore": round(_avg(top_names), 4),
         "activeSignalScore": round(_avg(top_active), 4),
@@ -408,6 +448,16 @@ def _looks_like_unpadded_compact_window(frame: np.ndarray, profile: FixedGgProfi
         return False
     height, width = frame.shape[:2]
     return 800 <= width <= 870 and 590 <= height <= 650
+
+
+def _looks_like_canonical_client(frame: np.ndarray) -> bool:
+    if frame is None or frame.size == 0 or frame.ndim < 2:
+        return False
+    height, width = frame.shape[:2]
+    if width < 400 or height < 280:
+        return False
+    aspect = width / max(1, height)
+    return abs(aspect - (850.0 / 631.0)) <= 0.035
 
 
 def _padded_compact_crop_bonus(

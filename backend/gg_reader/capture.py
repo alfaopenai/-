@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 
 
+WGC_INITIAL_FRAME_TIMEOUT_SECONDS = 1.5
+WGC_SUBSEQUENT_FRAME_TIMEOUT_SECONDS = 0.35
+WINDOW_CAPTURE_RETRY_BACKOFF_SECONDS = 5.0
+
+
 def list_monitors() -> list[dict[str, int]]:
     import mss
 
@@ -231,6 +236,8 @@ class ScreenCapture:
     capture_mode: str = "auto"
     last_source: str = "monitor"
     last_window: dict[str, Any] | None = None
+    last_capture_warning: str | None = None
+    last_capture_diagnostics: dict[str, Any] = field(default_factory=dict)
     _sct: Any = field(default=None, init=False, repr=False)
     _cached_window: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _window_checked_at: float = field(default=0.0, init=False, repr=False)
@@ -242,6 +249,9 @@ class ScreenCapture:
     _wgc_frame_event: Event = field(default_factory=Event, init=False, repr=False)
     _wgc_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _wgc_closed: bool = field(default=False, init=False, repr=False)
+    _wgc_retry_after: float = field(default=0.0, init=False, repr=False)
+    _window_retry_after: float = field(default=0.0, init=False, repr=False)
+    _last_window_failure: str = field(default="", init=False, repr=False)
 
     def _get_sct(self) -> Any:
         if self._sct is None:
@@ -264,47 +274,126 @@ class ScreenCapture:
         return self._resolved_monitor_index
 
     def grab(self) -> np.ndarray:
+        self.last_capture_warning = None
+        self.last_capture_diagnostics = {"requestedMode": self.capture_mode}
+        monitor_fallback_reason = ""
         if self.capture_mode in {"auto", "window"}:
             window = self._get_cached_window()
             if window:
-                wgc_error: Exception | None = None
-                try:
-                    return self._grab_window_with_wgc(window)
-                except Exception as exc:
-                    wgc_error = exc
-                try:
-                    sct = self._get_sct()
-                    shot = sct.grab({
-                        "left": int(window["left"]),
-                        "top": int(window["top"]),
-                        "width": int(window["width"]),
-                        "height": int(window["height"]),
-                    })
-                except Exception as exc:
-                    raise RuntimeError(
-                        "ClubGG table window was found, but Windows blocked the screen capture. "
-                        "Make sure the GG table is visible in the same Windows session and not minimized. "
-                        f"Windows Graphics Capture error: {wgc_error}. GDI error: {exc}"
-                    )
-                self.last_source = "window"
-                self.last_window = window
-                return np.array(shot)
+                now = time.monotonic()
+                if self.capture_mode == "auto" and now < self._window_retry_after:
+                    monitor_fallback_reason = self._last_window_failure or "window capture retry backoff"
+                else:
+                    wgc_error: Exception | None = None
+                    if self.capture_mode == "window" or now >= self._wgc_retry_after:
+                        try:
+                            frame = self._grab_window_with_wgc(window)
+                            self._window_retry_after = 0.0
+                            self._last_window_failure = ""
+                            self.last_capture_diagnostics.update({
+                                "captureMethod": "windows-graphics-capture",
+                                "windowFallback": False,
+                            })
+                            return frame
+                        except Exception as exc:
+                            wgc_error = exc
+                            self._wgc_retry_after = now + WINDOW_CAPTURE_RETRY_BACKOFF_SECONDS
+                    else:
+                        wgc_error = RuntimeError("Windows Graphics Capture retry is in backoff.")
+                    try:
+                        sct = self._get_sct()
+                        shot = sct.grab({
+                            "left": int(window["left"]),
+                            "top": int(window["top"]),
+                            "width": int(window["width"]),
+                            "height": int(window["height"]),
+                        })
+                    except Exception as exc:
+                        error_message = (
+                            "ClubGG table window was found, but Windows blocked the window capture. "
+                            "Make sure the GG table is visible in the same Windows session and not minimized. "
+                            f"Windows Graphics Capture error: {wgc_error}. GDI error: {exc}"
+                        )
+                        self.last_source = "window"
+                        self.last_window = window
+                        self.last_capture_warning = error_message
+                        self.last_capture_diagnostics.update({
+                            "captureMethod": "window-failed",
+                            "windowFallback": self.capture_mode == "auto",
+                            "wgcError": str(wgc_error or ""),
+                            "gdiError": str(exc),
+                        })
+                        if self.capture_mode == "window":
+                            raise RuntimeError(error_message) from exc
+                        self._window_retry_after = now + WINDOW_CAPTURE_RETRY_BACKOFF_SECONDS
+                        self._last_window_failure = error_message
+                        monitor_fallback_reason = error_message
+                    else:
+                        self._window_retry_after = 0.0
+                        self._last_window_failure = ""
+                        self.last_source = "window"
+                        self.last_window = window
+                        if wgc_error is not None:
+                            self.last_capture_warning = (
+                                "Windows Graphics Capture failed; using the GDI window-region fallback. "
+                                f"{wgc_error}"
+                            )
+                        self.last_capture_diagnostics.update({
+                            "captureMethod": "mss-window-region",
+                            "windowFallback": True,
+                            "wgcError": str(wgc_error or ""),
+                        })
+                        return np.array(shot)
             if self.capture_mode == "window":
+                self.last_source = "window"
+                self.last_window = None
+                self.last_capture_diagnostics.update({
+                    "captureMethod": "window-not-found",
+                    "windowFallback": False,
+                })
                 raise ValueError("No visible ClubGG table window was found.")
+            if not window:
+                monitor_fallback_reason = "No visible ClubGG table window was found; using monitor capture."
 
         resolved = self.get_monitor_index()
         sct = self._get_sct()
         monitors: list[dict[str, Any]] = sct.monitors
-        shot = sct.grab(monitors[resolved])
+        try:
+            shot = sct.grab(monitors[resolved])
+        except Exception as exc:
+            self.last_source = "monitor"
+            self.last_window = None
+            prefix = f"{monitor_fallback_reason} " if monitor_fallback_reason else ""
+            error_message = (
+                f"{prefix}Monitor capture also failed: {exc}"
+            ).strip()
+            self.last_capture_warning = error_message
+            self.last_capture_diagnostics.update({
+                "captureMethod": "monitor-failed",
+                "windowFallback": bool(monitor_fallback_reason),
+                "monitorIndex": int(resolved),
+                "monitorError": str(exc),
+            })
+            raise RuntimeError(error_message) from exc
         self.last_source = "monitor"
         self.last_window = None
+        self.last_capture_warning = monitor_fallback_reason or None
+        self.last_capture_diagnostics.update({
+            "captureMethod": "mss-monitor",
+            "windowFallback": bool(monitor_fallback_reason),
+            "monitorIndex": int(resolved),
+        })
         return np.array(shot)
 
     def _grab_window_with_wgc(self, window: dict[str, Any]) -> np.ndarray:
         hwnd = int(window["hwnd"])
         if self._wgc_hwnd != hwnd or self._wgc_capture is None or self._wgc_closed:
             self._start_window_capture(hwnd)
-        wait_timeout = 5.0 if self._wgc_frame is None else 0.5
+        wait_timeout = (
+            WGC_INITIAL_FRAME_TIMEOUT_SECONDS
+            if self._wgc_frame is None
+            else WGC_SUBSEQUENT_FRAME_TIMEOUT_SECONDS
+        )
         if not self._wgc_frame_event.wait(timeout=wait_timeout):
             raise TimeoutError("Timed out waiting for Windows Graphics Capture frame.")
         with self._wgc_lock:
@@ -365,3 +454,6 @@ class ScreenCapture:
             except Exception:
                 pass
         self._sct = None
+        self._wgc_retry_after = 0.0
+        self._window_retry_after = 0.0
+        self._last_window_failure = ""

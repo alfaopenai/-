@@ -47,63 +47,63 @@
     ]);
     const SEAT_LAYOUTS = Object.freeze({
         2: Object.freeze([
-            { top: "-4%", left: "50%" },
-            { top: "104%", left: "50%" }
+            { top: "2%", left: "50%" },
+            { top: "98%", left: "50%" }
         ]),
         3: Object.freeze([
-            { top: "-4%", left: "50%" },
-            { top: "70%", left: "97%" },
-            { top: "70%", left: "3%" }
+            { top: "2%", left: "50%" },
+            { top: "78%", left: "85%" },
+            { top: "78%", left: "15%" }
         ]),
         4: Object.freeze([
-            { top: "-4%", left: "50%" },
-            { top: "48%", left: "102%" },
-            { top: "104%", left: "62%" },
-            { top: "104%", left: "38%" }
+            { top: "2%", left: "50%" },
+            { top: "50%", left: "96%" },
+            { top: "98%", left: "68%" },
+            { top: "98%", left: "32%" }
         ]),
         5: Object.freeze([
-            { top: "-4%", left: "50%" },
-            { top: "26%", left: "94%" },
-            { top: "83%", left: "84%" },
-            { top: "83%", left: "16%" },
-            { top: "26%", left: "6%" }
+            { top: "2%", left: "50%" },
+            { top: "28%", left: "90%" },
+            { top: "84%", left: "82%" },
+            { top: "84%", left: "18%" },
+            { top: "28%", left: "10%" }
         ]),
         6: Object.freeze([
-            { top: "-4%", left: "50%" },
-            { top: "24%", left: "92%" },
-            { top: "68%", left: "101%" },
-            { top: "104%", left: "50%" },
-            { top: "68%", left: "-1%" },
-            { top: "24%", left: "8%" }
+            { top: "2%", left: "50%" },
+            { top: "23%", left: "85%" },
+            { top: "72%", left: "95%" },
+            { top: "98%", left: "50%" },
+            { top: "72%", left: "5%" },
+            { top: "23%", left: "15%" }
         ]),
         7: Object.freeze([
-            { top: "-4%", left: "50%" },
+            { top: "2%", left: "50%" },
             { top: "18%", left: "82%" },
-            { top: "50%", left: "102%" },
+            { top: "50%", left: "96%" },
             { top: "88%", left: "80%" },
-            { top: "105%", left: "50%" },
+            { top: "98%", left: "50%" },
             { top: "88%", left: "20%" },
-            { top: "50%", left: "-2%" }
+            { top: "50%", left: "4%" }
         ]),
         8: Object.freeze([
-            { top: "-4%", left: "50%" },
+            { top: "2%", left: "50%" },
             { top: "15%", left: "76%" },
-            { top: "45%", left: "102%" },
+            { top: "45%", left: "96%" },
             { top: "82%", left: "86%" },
-            { top: "105%", left: "50%" },
+            { top: "98%", left: "50%" },
             { top: "82%", left: "14%" },
-            { top: "45%", left: "-2%" },
+            { top: "45%", left: "4%" },
             { top: "15%", left: "24%" }
         ]),
         9: Object.freeze([
-            { top: "-4%", left: "50%" },
+            { top: "2%", left: "50%" },
             { top: "12%", left: "74%" },
-            { top: "38%", left: "100%" },
-            { top: "72%", left: "98%" },
-            { top: "99%", left: "70%" },
-            { top: "103%", left: "30%" },
-            { top: "72%", left: "2%" },
-            { top: "38%", left: "0%" },
+            { top: "38%", left: "96%" },
+            { top: "72%", left: "93%" },
+            { top: "97%", left: "68%" },
+            { top: "97%", left: "32%" },
+            { top: "72%", left: "7%" },
+            { top: "38%", left: "4%" },
             { top: "12%", left: "26%" }
         ])
     });
@@ -144,39 +144,29 @@
         betParametersMissing: "\u05e7\u05d1\u05e2\u05d5 \u05d2\u05d5\u05d3\u05dc \u05e7\u05d5\u05e4\u05d4 \u05d5\u05e1\u05d8\u05d0\u05e7 \u05d0\u05e4\u05e7\u05d8\u05d9\u05d1\u05d9 \u05d7\u05d9\u05d5\u05d1\u05d9 \u05db\u05d3\u05d9 \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d4\u05d9\u05de\u05d5\u05e8 GTO.",
         villainMustFold: "\u05d4\u05d9\u05e8\u05d9\u05d1 \u05e6\u05e8\u05d9\u05da \u05dc\u05e7\u05e4\u05dc \u05d0\u05ea \u05d4\u05d8\u05d5\u05d5\u05d7 \u05d4\u05de\u05dc\u05d0 \u05de\u05d5\u05dc \u05d4\u05d4\u05d9\u05de\u05d5\u05e8 \u05d4\u05de\u05d5\u05e6\u05e2."
     });
-    const POSITION_SEQUENCE = [
-        "דילר",
-        "סמול בליינד",
-        "ביג בליינד",
-        "UTG",
-        "UTG+1",
-        "UTG+2",
-        "מידל פוזישן",
-        "הייג'ק",
-        "קאט-אוף"
-    ];
-    const HEADS_UP_POSITIONS = [
-        "דילר / סמול בליינד",
-        "ביג בליינד"
-    ];
     const GG_READER_API_BASE = "http://127.0.0.1:8787";
     const GG_READER_WS_URL = "ws://127.0.0.1:8787/ws/gg-reader";
     const GG_READER_MOCK_URL = "mock/gg_snapshot_example.json";
     const GG_READER_CONFIDENCE_MIN = 0.75;
     const GG_READER_CONFIDENCE_DIRECT = 0.9;
+    const GG_READER_AMOUNT_CONFIDENCE_MIN = 0.5;
+    const GG_READER_CARD_CONFIDENCE_MIN = 0.6;
     const GG_READER_HISTORY_LIMIT = 80;
     const GG_READER_MIN_READ_FPS = 2;
-    const GG_READER_BROWSER_FPS = 2.25;
+    const GG_READER_BROWSER_FPS = 3;
     const GG_READER_BROWSER_FRAME_INTERVAL_MS = Math.round(1000 / GG_READER_BROWSER_FPS);
     const GG_READER_MAX_FRAME_LATENCY_MS = 500;
     const GG_READER_RENDER_INTERVAL_MS = 250;
     const GG_READER_BROWSER_MAX_FRAME_WIDTH = 1920;
     const GG_READER_BROWSER_JPEG_QUALITY = 0.9;
     const GG_READER_MAX_IN_FLIGHT_FRAMES = 2;
-    const GG_READER_PROBABILITY_THROTTLE_MS = 5000;
+    const GG_READER_PROBABILITY_THROTTLE_MS = 750;
     const GG_READER_STATUS_LOG_INTERVAL_MS = 1000;
     const GG_READER_LIVE_ENUMERATION_LIMIT = 50000;
     const GG_READER_LIVE_PREFLOP_SIMULATIONS = 8000;
+    const POKER_POSITION_POLICY = window.AlphaPokerPositionPolicy;
+    const GG_READER_SESSION_POLICY = window.AlphaPokerReaderSessionPolicy;
+    const RUNTIME_CAPABILITIES = window.AlphaPokerRuntimeCapabilityPolicy.getRuntimeCapabilities(window.location);
 
 
     let probabilityUpdateTimer = null;
@@ -262,6 +252,7 @@
     const elements = {
         table: document.getElementById("table"),
         board: document.getElementById("board-cards"),
+        ggRunoutBoards: document.getElementById("gg-runout-boards"),
         tablePot: document.getElementById("table-pot"),
         deck: document.getElementById("deck"),
         deckOverlay: document.getElementById("deck-overlay"),
@@ -283,6 +274,8 @@
         ggReaderHistoryList: document.getElementById("gg-reader-history-list"),
         ggReaderHistoryDownload: document.getElementById("gg-reader-history-download"),
         ggReaderDebug: document.getElementById("gg-reader-debug"),
+        ggReaderDebugToggle: document.getElementById("gg-reader-debug-toggle"),
+        ggReaderDebugClose: document.getElementById("gg-reader-debug-close"),
         ggReaderTableInfo: document.getElementById("gg-reader-table-info"),
         ggReaderSeats: document.getElementById("gg-reader-seats"),
         ggReaderDebugOutput: document.getElementById("gg-reader-debug-output"),
@@ -332,6 +325,12 @@
     function createInitialGgReaderState() {
         return {
             running: false,
+            starting: false,
+            stopping: false,
+            sessionId: 0,
+            startController: null,
+            browserFrameControllers: new Set(),
+            browserAuxControllers: new Set(),
             status: "idle",
             lastSnapshot: null,
             latestSnapshot: null,
@@ -352,6 +351,8 @@
             browserFrameInFlightStartedAt: 0,
             browserFrameInFlightStartedAts: [],
             renderTimer: null,
+            renderRequestId: null,
+            renderRequestType: null,
             frameTimes: [],
             captureTimes: [],
             responseTimes: [],
@@ -380,13 +381,19 @@
             lastProbabilityMs: 0,
             lastProbabilitySnapshotSignature: "",
             lastProbabilityUpdateAt: 0,
+            probabilityTimer: null,
+            pendingProbabilitySnapshot: null,
+            pendingProbabilitySignature: "",
             lastPipelineLogAt: 0,
+            lastDebugRenderAt: 0,
+            lastDebugRenderKey: "",
             droppedFrames: 0,
             staleResponsesIgnored: 0,
             failedReads: 0,
             errors: [],
             potOverride: null,
             isHistoryOpen: false,
+            isDebugOpen: false,
             lastStatusText: "GG מנותק"
         };
     }
@@ -604,6 +611,8 @@
         const seat = document.createElement("div");
         seat.className = `seat seat-${index}`;
         seat.dataset.playerIndex = String(index);
+        seat.setAttribute("role", "group");
+        seat.setAttribute("aria-label", `שחקן ${index + 1}`);
 
         const probability = document.createElement("div");
         probability.className = "seat-probability";
@@ -622,6 +631,7 @@
         label.className = "seat-label";
         const labelName = document.createElement("span");
         labelName.className = "seat-label__name";
+        labelName.setAttribute("dir", "auto");
         labelName.textContent = `שחקן ${index + 1}`;
         const positionLabel = document.createElement("span");
         positionLabel.className = "seat-position";
@@ -700,6 +710,7 @@
             input.step = '0.5';
             input.dataset.playerIndex = String(playerIndex);
             input.dataset.economyField = fieldKey;
+            input.setAttribute("aria-label", `${caption.textContent} — שחקן ${playerIndex + 1}`);
             input.addEventListener('input', handleEconomyInput);
             input.addEventListener('change', handleEconomyInput);
             input.addEventListener('blur', handleEconomyInput);
@@ -714,6 +725,7 @@
                 commitButton.className = 'seat-economy__commit';
                 commitButton.textContent = '\u05d4\u05de\u05e8';
                 commitButton.dataset.playerIndex = String(playerIndex);
+                commitButton.setAttribute("aria-label", `אישור הימור — שחקן ${playerIndex + 1}`);
                 commitButton.addEventListener('click', handleCommitBetClick);
 
                 controlRow.appendChild(commitButton);
@@ -788,7 +800,7 @@
         const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
         const seat = seats.find((item) => Number(item?.physicalSeatIndex) === Number(index));
         if (!seat) {
-            return index < state.playersCount;
+            return snapshot ? false : index < state.playersCount;
         }
         return seat.active !== false;
     }
@@ -902,6 +914,7 @@
             : null;
         const totalPot = importedPot !== null ? importedPot : calculateTotalBetAmount();
         elements.tablePot.textContent = `${TABLE_POT_LABEL}: ${formatChipAmount(totalPot)}`;
+        elements.table?.classList.toggle("table--has-pot", totalPot > 0);
     }
 
     function commitPendingBetForPlayer(index) {
@@ -1049,13 +1062,9 @@
     }
 
     function getPositionSequence(count) {
-        if (count < MIN_PLAYERS) {
-            return [];
-        }
-        if (count === 2) {
-            return HEADS_UP_POSITIONS.slice(0, count);
-        }
-        return POSITION_SEQUENCE.slice(0, Math.min(count, POSITION_SEQUENCE.length));
+        return POKER_POSITION_POLICY.getPositionSequence(count).map((position) => (
+            POKER_POSITION_POLICY.formatPositionLabel(position, count)
+        ));
     }
 
     function updateSeatPositionLabels() {
@@ -1204,12 +1213,14 @@
     }
 
     function createCardSlot({ key, placeholder, type, order, playerIndex, holeIndex }) {
-        const slot = document.createElement("div");
+        const slot = document.createElement("button");
+        slot.type = "button";
         slot.className = "card-slot";
         slot.dataset.slotKey = key;
         slot.dataset.slotType = type;
         slot.dataset.order = order;
         slot.dataset.placeholder = placeholder;
+        slot.setAttribute("aria-label", placeholder);
         if (typeof playerIndex === "number") {
             slot.dataset.playerIndex = String(playerIndex);
         }
@@ -1319,6 +1330,7 @@
                 if (placeholderEl) {
                     placeholderEl.textContent = "??";
                 }
+                slot.setAttribute("aria-label", "קלף מוסתר");
             } else {
                 slot.classList.remove("card-slot--hidden");
                 delete slot.dataset.liveHidden;
@@ -1328,6 +1340,7 @@
                 if (placeholderEl) {
                     placeholderEl.textContent = slot.dataset.placeholder || placeholderEl.textContent;
                 }
+                slot.setAttribute("aria-label", `${card.rank.label}${card.suit.symbol}`);
             }
         };
 
@@ -1335,9 +1348,11 @@
             if (lock) {
                 slot.dataset.locked = "true";
                 slot.classList.add("card-slot--locked");
+                slot.disabled = true;
             } else {
                 delete slot.dataset.locked;
                 slot.classList.remove("card-slot--locked");
+                slot.disabled = false;
             }
         };
 
@@ -1430,6 +1445,8 @@
         if (placeholderEl) {
             placeholderEl.textContent = display || "X";
         }
+        slot.setAttribute("aria-label", "קלף מוסתר");
+        slot.disabled = Boolean(lock);
     }
 
     function clearHiddenMarker(slot) {
@@ -1440,6 +1457,7 @@
         delete slot.dataset.ggHidden;
         delete slot.dataset.liveHidden;
         delete slot.dataset.locked;
+        slot.disabled = false;
 
         const valueEl = slot.querySelector(".card-value");
         if (valueEl) {
@@ -1458,6 +1476,7 @@
         if (placeholderEl) {
             placeholderEl.textContent = slot.dataset.placeholder || "";
         }
+        slot.setAttribute("aria-label", slot.dataset.placeholder || "קלף ריק");
     }
 
 
@@ -1485,6 +1504,7 @@
         delete slot.dataset.liveHidden;
         delete slot.dataset.ggHidden;
         delete slot.dataset.locked;
+        slot.disabled = false;
 
         const valueEl = slot.querySelector(".card-value");
         delete valueEl.dataset.suit;
@@ -1495,6 +1515,7 @@
         if (placeholderEl) {
             placeholderEl.textContent = slot.dataset.placeholder || placeholderEl.textContent;
         }
+        slot.setAttribute("aria-label", slot.dataset.placeholder || "קלף ריק");
 
         state.cardAssignments.delete(cardId);
 
@@ -1688,6 +1709,14 @@ function advanceActiveSlot(fromSlot) {
             seat.style.left = position.left;
             seat.style.setProperty("--seat-offset-x", "0px");
             seat.style.setProperty("--seat-offset-y", "0px");
+            const top = Number.parseFloat(position.top);
+            const left = Number.parseFloat(position.left);
+            const zone = top <= 22
+                ? "top"
+                : (top >= 78
+                    ? "bottom"
+                    : (left <= 22 ? "left" : (left >= 78 ? "right" : "center")));
+            seat.dataset.seatZone = zone;
         });
 
         if (elements.table) {
@@ -2032,26 +2061,91 @@ function advanceActiveSlot(fromSlot) {
         return players;
     }
 
+    function isGgSeatEligibleForEquity(seat) {
+        if (!seat || seat.active === false) {
+            return false;
+        }
+        if (typeof seat.inHand === "boolean") {
+            return seat.inHand;
+        }
+        const status = String(seat.status || "")
+            .trim()
+            .toLowerCase()
+            .replace(/[\s-]+/g, "_");
+        const action = String(seat.action || "").trim().toLowerCase();
+        return !["empty", "folded", "sitting_out"].includes(status) && action !== "fold";
+    }
+
     function getEquityPlayerIndexes() {
         const snapshot = state.ggReader && state.ggReader.lastSnapshot;
         const seats = Array.isArray(snapshot?.seats) ? snapshot.seats : [];
-        if (state.ggReader?.running && seats.length) {
-            const indexes = seats
-                .filter((seat) => seat && seat.active !== false)
+        if (seats.length) {
+            return [...new Set(seats
+                .filter(isGgSeatEligibleForEquity)
                 .map((seat) => Number(seat.physicalSeatIndex))
                 .filter((index) => Number.isInteger(index) && index >= 0 && index < state.playersCount)
-                .sort((left, right) => left - right);
-            if (indexes.length >= MIN_PLAYERS) {
-                return indexes;
-            }
+            )].sort((left, right) => left - right);
         }
         return Array.from({ length: state.playersCount }, (_item, index) => index);
+    }
+
+    function clearNonParticipantProbabilityLabels(participantIndexes) {
+        const participants = participantIndexes instanceof Set
+            ? participantIndexes
+            : new Set(participantIndexes || []);
+        state.probabilityDisplays.forEach((_display, index) => {
+            if (participants.has(index)) {
+                return;
+            }
+            updateProbabilityLabel(index, {
+                win: PROBABILITY_PLACEHOLDER,
+                tie: PROBABILITY_PLACEHOLDER
+            });
+            setProbabilityHighlight(index, false);
+        });
     }
 
     function collectBoardCards() {
         return getSlotsByType("board")
             .map((slot) => getCardById(slot.dataset.cardId))
             .filter(Boolean);
+    }
+
+    function getGgEquityBoardContext(snapshot) {
+        const multiRun = getGgMultiRunContext(snapshot);
+        if (!multiRun) {
+            return null;
+        }
+
+        const incompleteRunIndex = multiRun.runouts.findIndex((run) => !run.complete);
+        const activeRunIndex = incompleteRunIndex >= 0
+            ? incompleteRunIndex
+            : multiRun.runouts.length - 1;
+        const activeRun = multiRun.runouts[activeRunIndex];
+        const deadCards = [];
+        const deadCardIds = new Set();
+
+        multiRun.runouts.forEach((run, index) => {
+            if (index === activeRunIndex) {
+                return;
+            }
+            run.cards.forEach((card) => {
+                if (!deadCardIds.has(card.id)) {
+                    deadCardIds.add(card.id);
+                    deadCards.push(card);
+                }
+            });
+        });
+
+        return {
+            ...multiRun,
+            activeRunIndex,
+            boardCards: [...multiRun.sharedCards, ...activeRun.cards],
+            deadCards,
+            completedBoards: incompleteRunIndex < 0
+                ? multiRun.runouts.map((run) => [...multiRun.sharedCards, ...run.cards])
+                : []
+        };
     }
 
     function handleCalculate() {
@@ -2119,7 +2213,10 @@ function advanceActiveSlot(fromSlot) {
         const { userInitiated = false } = options;
 
         const players = collectPlayersData();
-        const boardCards = collectBoardCards();
+        const ggBoardContext = getGgEquityBoardContext(state.ggReader?.lastSnapshot);
+        const boardCards = ggBoardContext?.boardCards || collectBoardCards();
+        const deadCards = ggBoardContext?.deadCards || [];
+        clearNonParticipantProbabilityLabels(new Set(players.map((player) => player.index)));
 
         const usedCardIds = new Set();
         players.forEach((player) => {
@@ -2130,6 +2227,9 @@ function advanceActiveSlot(fromSlot) {
         boardCards.forEach((card) => {
             usedCardIds.add(card.id);
         });
+        deadCards.forEach((card) => {
+            usedCardIds.add(card.id);
+        });
 
         const remainingCards = [];
         state.deck.forEach((card) => {
@@ -2138,7 +2238,27 @@ function advanceActiveSlot(fromSlot) {
             }
         });
 
-        const { shares, winCounts, tieCounts, simulations } = calculateWinShares(players, boardCards, remainingCards);
+        let equityResult;
+        if (ggBoardContext?.completedBoards?.length > 1) {
+            equityResult = {
+                shares: new Array(players.length).fill(0),
+                winCounts: new Array(players.length).fill(0),
+                tieCounts: new Array(players.length).fill(0),
+                simulations: 0
+            };
+            ggBoardContext.completedBoards.forEach((completeBoard) => {
+                const runResult = calculateWinShares(players, completeBoard, remainingCards);
+                runResult.shares.forEach((value, index) => {
+                    equityResult.shares[index] += value;
+                    equityResult.winCounts[index] += runResult.winCounts[index];
+                    equityResult.tieCounts[index] += runResult.tieCounts[index];
+                });
+                equityResult.simulations += runResult.simulations;
+            });
+        } else {
+            equityResult = calculateWinShares(players, boardCards, remainingCards);
+        }
+        const { shares, winCounts, tieCounts, simulations } = equityResult;
 
         clearProbabilityHighlights();
 
@@ -2172,10 +2292,11 @@ function advanceActiveSlot(fromSlot) {
             }
         });
 
-        probabilityData.forEach(({ winRatio, tieRatio }, index) => {
+        const probabilityFormatter = state.ggReader?.lastSnapshot ? formatGgProbability : formatProbability;
+        probabilityData.forEach(({ shareRatio, tieRatio }, index) => {
             updateProbabilityLabel(players[index].index, {
-                win: formatProbability(winRatio),
-                tie: formatProbability(tieRatio)
+                win: probabilityFormatter(shareRatio, 2),
+                tie: probabilityFormatter(tieRatio, 2)
             });
         });
 
@@ -2192,7 +2313,7 @@ function advanceActiveSlot(fromSlot) {
         if (elements.results) {
             elements.results.innerHTML = "";
         }
-        if (isBoardComplete && allPlayersComplete) {
+        if (isBoardComplete && allPlayersComplete && !ggBoardContext?.completedBoards?.length) {
             renderFinalResults(players, boardCards);
         }
     }
@@ -2814,15 +2935,22 @@ function advanceActiveSlot(fromSlot) {
         });
     }
 
-    function formatProbability(value) {
-        if (!Number.isFinite(value) || value <= 0) {
-            return "0.0%";
-        }
-        if (value >= 0.9995) {
-            return "100%";
-        }
-        const percentage = value * 100;
-        return `${percentage.toFixed(1)}%`;
+    function formatProbability(value, decimals = 1) {
+        const precision = Number.isInteger(decimals) ? Math.max(0, Math.min(4, decimals)) : 1;
+        const percentage = Number.isFinite(value)
+            ? Math.max(0, Math.min(1, value)) * 100
+            : 0;
+        return `${percentage.toFixed(precision)}%`;
+    }
+
+    function formatGgProbability(value, decimals = 2) {
+        const precision = Number.isInteger(decimals) ? Math.max(0, Math.min(4, decimals)) : 2;
+        const scale = 10 ** precision;
+        const percentage = Number.isFinite(value)
+            ? Math.max(0, Math.min(1, value)) * 100
+            : 0;
+        const truncated = Math.floor((percentage * scale) + 1e-9) / scale;
+        return `${truncated.toFixed(precision)}%`;
     }
 
     function renderFinalResults(players, boardCards) {
@@ -3349,7 +3477,24 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function bindGgReaderControls() {
-        populateGgMonitorOptions();
+        document.documentElement.dataset.runtime = RUNTIME_CAPABILITIES.hosted ? "hosted" : "local";
+        if (RUNTIME_CAPABILITIES.localReaderAvailable) {
+            populateGgMonitorOptions();
+        } else {
+            state.ggReader.status = "hosted";
+            state.ggReader.lastStatusText = isGgMockMode()
+                ? "מצב הדגמה מקוון"
+                : "קריאת GG זמינה באפליקציית שולחן העבודה";
+            if (elements.ggReaderMonitor) {
+                elements.ggReaderMonitor.closest("label")?.setAttribute("hidden", "");
+            }
+            if (elements.ggReaderHistoryToggle) {
+                elements.ggReaderHistoryToggle.hidden = true;
+            }
+            if (elements.ggReaderDebugToggle) {
+                elements.ggReaderDebugToggle.hidden = true;
+            }
+        }
 
         if (elements.readGgTable) {
             elements.readGgTable.addEventListener("click", (event) => {
@@ -3378,6 +3523,10 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderHistoryToggle) {
             elements.ggReaderHistoryToggle.addEventListener("click", () => {
                 state.ggReader.isHistoryOpen = !state.ggReader.isHistoryOpen;
+                if (state.ggReader.isHistoryOpen) {
+                    state.ggReader.isDebugOpen = false;
+                    renderGgReaderDebugPanel();
+                }
                 renderGgReaderHistory();
             });
         }
@@ -3393,10 +3542,41 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderFieldCrops) {
             elements.ggReaderFieldCrops.addEventListener("click", () => fetchGgReaderDebugArtifact("field-crops"));
         }
+
+        if (elements.ggReaderDebugToggle) {
+            elements.ggReaderDebugToggle.addEventListener("click", () => {
+                state.ggReader.isDebugOpen = !state.ggReader.isDebugOpen;
+                if (state.ggReader.isDebugOpen) {
+                    state.ggReader.isHistoryOpen = false;
+                    renderGgReaderHistory();
+                }
+                renderGgReaderDebugPanel();
+            });
+        }
+
+        if (elements.ggReaderDebugClose) {
+            elements.ggReaderDebugClose.addEventListener("click", () => {
+                state.ggReader.isDebugOpen = false;
+                renderGgReaderDebugPanel();
+                elements.ggReaderDebugToggle?.focus();
+            });
+        }
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape" || (!state.ggReader.isDebugOpen && !state.ggReader.isHistoryOpen)) {
+                return;
+            }
+            const closedDebug = state.ggReader.isDebugOpen;
+            state.ggReader.isDebugOpen = false;
+            state.ggReader.isHistoryOpen = false;
+            renderGgReaderDebugPanel();
+            renderGgReaderHistory();
+            (closedDebug ? elements.ggReaderDebugToggle : elements.ggReaderHistoryToggle)?.focus();
+        });
     }
 
     async function populateGgMonitorOptions() {
-        if (!elements.ggReaderMonitor) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable || !elements.ggReaderMonitor) {
             return;
         }
         try {
@@ -3458,45 +3638,198 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function toggleGgTableReader() {
-        if (state.ggReader.running) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable && !isGgMockMode()) {
+            setGgReaderStatus("hosted", "קריאת GG זמינה באפליקציית שולחן העבודה");
+            showError("המחשבון המקוון פעיל. קריאת מסך GG זמינה בגרסת שולחן העבודה בלבד.");
+            return;
+        }
+        if (state.ggReader.stopping) {
+            return;
+        }
+        if (state.ggReader.running || state.ggReader.starting) {
             stopGgTableReader();
             return;
         }
         startGgTableReader();
     }
 
+    function isCurrentGgSession(sessionId) {
+        return GG_READER_SESSION_POLICY.isCurrentSession(sessionId, state.ggReader.sessionId);
+    }
+
+    function registerGgBrowserRequestController(kind, sessionId) {
+        const controller = new AbortController();
+        const collection = kind === "frame"
+            ? state.ggReader.browserFrameControllers
+            : state.ggReader.browserAuxControllers;
+        return GG_READER_SESSION_POLICY.registerAbortController(
+            collection,
+            controller,
+            sessionId,
+            state.ggReader.sessionId
+        );
+    }
+
+    function releaseGgBrowserRequestController(kind, entry) {
+        const collection = kind === "frame"
+            ? state.ggReader.browserFrameControllers
+            : state.ggReader.browserAuxControllers;
+        GG_READER_SESSION_POLICY.releaseAbortController(collection, entry);
+    }
+
+    function abortGgBrowserRequests() {
+        [state.ggReader.browserFrameControllers, state.ggReader.browserAuxControllers].forEach((collection) => {
+            GG_READER_SESSION_POLICY.abortControllerEntries(collection);
+        });
+    }
+
+    function cancelGgReaderProbabilityUpdate() {
+        if (state.ggReader.probabilityTimer !== null) {
+            window.clearTimeout(state.ggReader.probabilityTimer);
+            state.ggReader.probabilityTimer = null;
+        }
+        state.ggReader.pendingProbabilitySnapshot = null;
+        state.ggReader.pendingProbabilitySignature = "";
+    }
+
+    function resetGgReaderTransportForSession() {
+        cancelGgReaderProbabilityUpdate();
+        state.ggReader.latestSnapshot = null;
+        state.ggReader.latestSnapshotSeq = 0;
+        state.ggReader.lastRenderedSnapshotSeq = 0;
+        state.ggReader.latestServerReceivedAt = 0;
+        state.ggReader.lastSnapshotReceivedAt = 0;
+        state.ggReader.lastResponseAt = 0;
+        state.ggReader.pendingSnapshot = null;
+        state.ggReader.browserFrameSeq = 0;
+        state.ggReader.lastProbabilitySnapshotSignature = "";
+        state.ggReader.frameTimes = [];
+        state.ggReader.captureTimes = [];
+        state.ggReader.responseTimes = [];
+        state.ggReader.renderTimes = [];
+        state.ggReader.actualFps = 0;
+        state.ggReader.captureFps = 0;
+        state.ggReader.parseFps = 0;
+        state.ggReader.renderFps = 0;
+        state.ggReader.lastFrameMs = null;
+        state.ggReader.lastParseMs = null;
+        state.ggReader.lastCaptureAt = 0;
+        state.ggReader.lastRenderAt = 0;
+        state.ggReader.droppedFrames = 0;
+        state.ggReader.staleResponsesIgnored = 0;
+        state.ggReader.failedReads = 0;
+        state.ggReader.errors = [];
+    }
+
+    async function requestGgBackendStop(timeoutMs = 2000) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            return true;
+        }
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, {
+                method: "POST",
+                signal: controller.signal
+            });
+            return response.ok;
+        } catch (error) {
+            return false;
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    }
+
+    async function failCurrentGgReaderSession(sessionId, socket, statusText, userMessage) {
+        if (
+            !isCurrentGgSession(sessionId)
+            || (socket && state.ggReader.connection !== socket)
+            || state.ggReader.stopping
+        ) {
+            return;
+        }
+        state.ggReader.stopping = true;
+        state.ggReader.running = false;
+        state.ggReader.connection = null;
+        stopGgBrowserCapture();
+        stopGgRenderLoop();
+        if (socket && socket.readyState <= WebSocket.OPEN) {
+            socket.close();
+        }
+        setGgReaderStatus("error", statusText);
+        showError(userMessage);
+        await requestGgBackendStop();
+        if (isCurrentGgSession(sessionId)) {
+            state.ggReader.stopping = false;
+            renderGgReaderStatus();
+        }
+    }
+
     async function startGgTableReader() {
+        if (state.ggReader.stopping) {
+            return;
+        }
+        if (state.ggReader.startController) {
+            state.ggReader.startController.abort();
+        }
+        abortGgBrowserRequests();
+        const sessionId = state.ggReader.sessionId + 1;
+        state.ggReader.sessionId = sessionId;
+        resetGgReaderTransportForSession();
+        state.ggReader.starting = true;
         setGgReaderStatus("connecting", "מתחבר לקורא GG...");
         showError("מתחבר לקורא GG מקומי...");
 
         if (isGgMockMode()) {
             try {
                 const snapshot = await loadGgMockSnapshot();
+                if (!isCurrentGgSession(sessionId)) {
+                    return;
+                }
                 applyGgSnapshot(snapshot, { source: "mock" });
                 setGgReaderStatus("mock", "GG mock נטען");
                 showError("נטען snapshot לדוגמה של GG.");
             } catch (error) {
+                if (!isCurrentGgSession(sessionId)) {
+                    return;
+                }
                 setGgReaderStatus("error", "שגיאה בטעינת GG mock");
                 showError("לא ניתן לטעון snapshot לדוגמה של GG.");
                 state.ggReader.errors.push(String(error && error.message ? error.message : error));
+            } finally {
+                if (state.ggReader.sessionId === sessionId) {
+                    state.ggReader.starting = false;
+                    renderGgReaderStatus();
+                }
             }
+            return;
+        }
+
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            state.ggReader.starting = false;
+            setGgReaderStatus("hosted", "קריאת GG זמינה באפליקציית שולחן העבודה");
+            showError("המחשבון המקוון פעיל. קריאת מסך GG זמינה בגרסת שולחן העבודה בלבד.");
             return;
         }
 
         let timeoutId = null;
         let streamPromise = null;
         let backendStarted = false;
+        let startRequestDispatched = false;
         const useBrowserCapture = shouldUseBrowserGgCapture();
         try {
             if (useBrowserCapture) {
                 setGgReaderStatus("connecting", "בחר את חלון NLH 2-4 של GG...");
                 showError("בחר בחלון GG בחלון השיתוף של הדפדפן. אם בוחרים מסך מלא, ודא ש-GG גלוי.");
                 streamPromise = requestGgDisplayMedia();
+                streamPromise.catch(() => {});
             }
 
             const monitorIndex = getGgMonitorIndex();
             const controller = new AbortController();
-            timeoutId = window.setTimeout(() => controller.abort(), 2500);
+            state.ggReader.startController = controller;
+            timeoutId = window.setTimeout(() => controller.abort(), 5000);
+            startRequestDispatched = true;
             const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/start`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -3505,44 +3838,70 @@ function advanceActiveSlot(fromSlot) {
                     monitorIndex,
                     fps: GG_READER_BROWSER_FPS,
                     profile: "ggclub_9max",
-                    captureMode: useBrowserCapture ? "browser" : "window"
+                    captureMode: GG_READER_SESSION_POLICY.selectCaptureMode(useBrowserCapture)
                 })
             });
 
             if (!response.ok) {
                 throw new Error(`GG reader start failed: ${response.status}`);
             }
-
-            state.ggReader.running = true;
             backendStarted = true;
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
+
+            let startStatus = null;
             try {
-                const startStatus = await response.json();
-                if (startStatus && Number.isInteger(Number(startStatus.monitorIndex))) {
-                    localStorage.setItem("ggMonitorIndex", String(startStatus.monitorIndex));
-                    if (elements.ggReaderMonitor) {
-                        elements.ggReaderMonitor.value = String(startStatus.monitorIndex);
-                    }
-                    if (startStatus.message && startStatus.message !== "running") {
-                        setGgReaderStatus("connecting", startStatus.message);
-                    }
-                }
+                startStatus = await response.json();
             } catch (error) {
-                state.ggReader.errors.push(String(error && error.message ? error.message : error));
+                if (isCurrentGgSession(sessionId)) {
+                    state.ggReader.errors.push(String(error && error.message ? error.message : error));
+                }
+            }
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
+            state.ggReader.running = true;
+            if (startStatus && Number.isInteger(Number(startStatus.monitorIndex))) {
+                localStorage.setItem("ggMonitorIndex", String(startStatus.monitorIndex));
+                if (elements.ggReaderMonitor) {
+                    elements.ggReaderMonitor.value = String(startStatus.monitorIndex);
+                }
+                if (startStatus.message && startStatus.message !== "running") {
+                    setGgReaderStatus("connecting", startStatus.message);
+                }
             }
             if (useBrowserCapture) {
                 const stream = await streamPromise;
-                await startGgBrowserCapture(stream);
+                if (!isCurrentGgSession(sessionId)) {
+                    stopGgMediaStream(stream);
+                    return;
+                }
+                await startGgBrowserCapture(stream, sessionId);
             } else {
-                connectGgReaderSocket();
+                connectGgReaderSocket(sessionId);
             }
         } catch (error) {
-            state.ggReader.running = false;
+            const cancelled = !isCurrentGgSession(sessionId);
             if (streamPromise) {
                 streamPromise.then(stopGgMediaStream).catch(() => {});
             }
-            if (error && (error.name === "NotAllowedError" || error.name === "AbortError")) {
+            if (cancelled) {
+                return;
+            }
+            if (startRequestDispatched || backendStarted) {
+                await requestGgBackendStop();
+            }
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
+            state.ggReader.running = false;
+            if (error && error.name === "NotAllowedError") {
                 setGgReaderStatus("idle", "שיתוף GG בוטל");
                 showError("שיתוף המסך בוטל. לחץ שוב ובחר את חלון GG.");
+            } else if (error && error.name === "AbortError") {
+                setGgReaderStatus("error", "שרת GG לא הגיב בזמן");
+                showError("שרת GG המקומי לא הגיב בזמן. ודא שה-backend פועל ונסה שוב.");
             } else if (backendStarted && useBrowserCapture) {
                 setGgReaderStatus("error", "שיתוף GG לא זמין");
                 showError("הדפדפן לא הצליח להתחיל שיתוף מסך. לחץ שוב ובחר את חלון GG או פתח עם ?ggNative=1 לניסיון צילום מקומי.");
@@ -3555,10 +3914,25 @@ function advanceActiveSlot(fromSlot) {
             if (timeoutId !== null) {
                 window.clearTimeout(timeoutId);
             }
+            if (state.ggReader.sessionId === sessionId) {
+                state.ggReader.starting = false;
+                state.ggReader.startController = null;
+                renderGgReaderStatus();
+            }
         }
     }
 
     async function stopGgTableReader() {
+        if (state.ggReader.stopping) {
+            return;
+        }
+        state.ggReader.stopping = true;
+        state.ggReader.sessionId += 1;
+        state.ggReader.starting = false;
+        if (state.ggReader.startController) {
+            state.ggReader.startController.abort();
+        }
+        state.ggReader.startController = null;
         const connection = state.ggReader.connection;
         state.ggReader.running = false;
         state.ggReader.connection = null;
@@ -3567,32 +3941,43 @@ function advanceActiveSlot(fromSlot) {
             connection.close();
         }
 
-        try {
-            await fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, { method: "POST" });
-        } catch (error) {
-            state.ggReader.errors.push(String(error && error.message ? error.message : error));
-        }
-
         setGgReaderStatus("idle", "GG מנותק");
         showError("קריאת GG הופסקה.");
+        try {
+            const stopped = await requestGgBackendStop();
+            if (!stopped) {
+                state.ggReader.errors.push("GG reader stop request did not complete");
+            }
+        } finally {
+            state.ggReader.stopping = false;
+            renderGgReaderStatus();
+        }
     }
 
     function shouldUseBrowserGgCapture() {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            return false;
+        }
         try {
             const params = new URLSearchParams(window.location.search);
-            if (params.get("ggBrowser") === "1") {
-                return Boolean(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-            }
-            if (params.get("ggNative") === "1" || params.get("ggBrowser") === "0") {
-                return false;
-            }
+            return GG_READER_SESSION_POLICY.shouldUseBrowserCapture({
+                browserOverride: params.get("ggBrowser"),
+                nativeOverride: params.get("ggNative"),
+                displayMediaAvailable: Boolean(
+                    navigator.mediaDevices
+                    && navigator.mediaDevices.getDisplayMedia
+                ),
+                userAgent: navigator.userAgent
+            });
         } catch (error) {
             return false;
         }
-        return false;
     }
 
     function requestGgDisplayMedia() {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            return Promise.reject(new Error("GG display capture is available only in the desktop app"));
+        }
         return navigator.mediaDevices.getDisplayMedia({
             audio: false,
             video: {
@@ -3603,8 +3988,56 @@ function advanceActiveSlot(fromSlot) {
         });
     }
 
-    async function startGgBrowserCapture(stream) {
+    function waitForGgVideoMetadata(video, sessionId) {
+        const requestEntry = registerGgBrowserRequestController("aux", sessionId);
+        const signal = requestEntry.controller.signal;
+        return new Promise((resolve, reject) => {
+            let timeoutId = null;
+            let settled = false;
+            const cleanup = () => {
+                if (timeoutId !== null) {
+                    window.clearTimeout(timeoutId);
+                }
+                video.removeEventListener("loadedmetadata", handleLoaded);
+                video.removeEventListener("error", handleError);
+                signal.removeEventListener("abort", handleAbort);
+                releaseGgBrowserRequestController("aux", requestEntry);
+            };
+            const finish = (callback, value) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                cleanup();
+                callback(value);
+            };
+            const handleLoaded = () => finish(resolve);
+            const handleError = () => finish(reject, new Error("GG shared video metadata is unavailable"));
+            const handleAbort = () => {
+                const error = new Error("GG shared video metadata wait was cancelled");
+                error.name = "AbortError";
+                finish(reject, error);
+            };
+            video.addEventListener("loadedmetadata", handleLoaded, { once: true });
+            video.addEventListener("error", handleError, { once: true });
+            signal.addEventListener("abort", handleAbort, { once: true });
+            timeoutId = window.setTimeout(handleError, 3000);
+            if (signal.aborted) {
+                handleAbort();
+            }
+        });
+    }
+
+    async function startGgBrowserCapture(stream, sessionId) {
+        if (!isCurrentGgSession(sessionId)) {
+            stopGgMediaStream(stream);
+            return false;
+        }
         stopGgBrowserCapture();
+        if (!isCurrentGgSession(sessionId)) {
+            stopGgMediaStream(stream);
+            return false;
+        }
         const video = document.createElement("video");
         video.muted = true;
         video.playsInline = true;
@@ -3615,29 +4048,53 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.browserCanvas = state.ggReader.browserCanvas || document.createElement("canvas");
 
         const endedHandler = () => {
-            if (state.ggReader.running) {
+            if (
+                isCurrentGgSession(sessionId)
+                && state.ggReader.browserStream === stream
+                && state.ggReader.running
+            ) {
                 stopGgTableReader();
             }
         };
         stream.getTracks().forEach((track) => track.addEventListener("ended", endedHandler, { once: true }));
 
         await video.play();
-        if (!video.videoWidth || !video.videoHeight) {
-            await new Promise((resolve) => {
-                video.addEventListener("loadedmetadata", resolve, { once: true });
-            });
+        if (!isCurrentGgSession(sessionId)) {
+            video.pause();
+            video.srcObject = null;
+            stopGgMediaStream(stream);
+            return false;
         }
-        state.ggReader.browserCrop = await getGgBrowserCaptureCrop(video).catch(() => null);
+        if (!video.videoWidth || !video.videoHeight) {
+            await waitForGgVideoMetadata(video, sessionId);
+        }
+        if (!isCurrentGgSession(sessionId)) {
+            video.pause();
+            video.srcObject = null;
+            stopGgMediaStream(stream);
+            return false;
+        }
+        const crop = await getGgBrowserCaptureCrop(video, sessionId).catch(() => null);
+        if (!isCurrentGgSession(sessionId)) {
+            video.pause();
+            video.srcObject = null;
+            stopGgMediaStream(stream);
+            return false;
+        }
+        state.ggReader.browserCrop = crop;
 
         state.ggReader.running = true;
         setGgReaderStatus("running", "קורא GG מהחלון שבחרת...");
         showError("קורא את שולחן GG מהשיתוף לפחות פעמיים בשנייה.");
         startGgRenderLoop();
         state.ggReader.browserFrameNextAt = performance.now();
-        scheduleNextGgBrowserFrame(0);
+        scheduleNextGgBrowserFrame(0, sessionId);
+        return true;
     }
 
     function stopGgBrowserCapture() {
+        abortGgBrowserRequests();
+        cancelGgReaderProbabilityUpdate();
         if (state.ggReader.browserFrameTimer) {
             window.clearTimeout(state.ggReader.browserFrameTimer);
         }
@@ -3681,68 +4138,90 @@ function advanceActiveSlot(fromSlot) {
         stream.getTracks().forEach((track) => track.stop());
     }
 
-    async function getGgBrowserCaptureCrop(video) {
-        const [windowsResponse, monitorsResponse] = await Promise.all([
-            fetch(`${GG_READER_API_BASE}/api/gg-reader/windows`),
-            fetch(`${GG_READER_API_BASE}/api/gg-reader/monitors`)
-        ]);
-        if (!windowsResponse.ok || !monitorsResponse.ok) {
+    async function getGgBrowserCaptureCrop(video, sessionId) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
             return null;
         }
-        const windows = await windowsResponse.json();
-        const monitors = await monitorsResponse.json();
-        const ggWindow = Array.isArray(windows) ? windows[0] : null;
-        if (!ggWindow || !Array.isArray(monitors) || !monitors.length) {
-            return null;
-        }
+        const requestEntry = registerGgBrowserRequestController("aux", sessionId);
+        try {
+            const [windowsResponse, monitorsResponse] = await Promise.all([
+                fetch(`${GG_READER_API_BASE}/api/gg-reader/windows`, {
+                    signal: requestEntry.controller.signal
+                }),
+                fetch(`${GG_READER_API_BASE}/api/gg-reader/monitors`, {
+                    signal: requestEntry.controller.signal
+                })
+            ]);
+            if (!isCurrentGgSession(sessionId) || !windowsResponse.ok || !monitorsResponse.ok) {
+                return null;
+            }
+            const [windows, monitors] = await Promise.all([
+                windowsResponse.json(),
+                monitorsResponse.json()
+            ]);
+            if (!isCurrentGgSession(sessionId)) {
+                return null;
+            }
+            const ggWindow = Array.isArray(windows) ? windows[0] : null;
+            if (!ggWindow || !Array.isArray(monitors) || !monitors.length) {
+                return null;
+            }
 
-        const videoWidth = Number(video.videoWidth) || 0;
-        const videoHeight = Number(video.videoHeight) || 0;
-        const windowWidth = Number(ggWindow.width) || 0;
-        const windowHeight = Number(ggWindow.height) || 0;
-        if (!videoWidth || !videoHeight || !windowWidth || !windowHeight) {
-            return null;
-        }
-        if (videoWidth <= windowWidth * 1.35 && videoHeight <= windowHeight * 1.35) {
-            return null;
-        }
+            const videoWidth = Number(video.videoWidth) || 0;
+            const videoHeight = Number(video.videoHeight) || 0;
+            const windowWidth = Number(ggWindow.width) || 0;
+            const windowHeight = Number(ggWindow.height) || 0;
+            if (!videoWidth || !videoHeight || !windowWidth || !windowHeight) {
+                return null;
+            }
+            if (videoWidth <= windowWidth * 1.35 && videoHeight <= windowHeight * 1.35) {
+                return null;
+            }
 
-        const monitor = monitors.find((item) => {
-            const left = Number(item.left) || 0;
-            const top = Number(item.top) || 0;
-            const width = Number(item.width) || 0;
-            const height = Number(item.height) || 0;
-            return Number(ggWindow.left) >= left
-                && Number(ggWindow.left) < left + width
-                && Number(ggWindow.top) >= top
-                && Number(ggWindow.top) < top + height;
-        }) || monitors[0];
-        const scaleX = videoWidth / Math.max(1, Number(monitor.width) || videoWidth);
-        const scaleY = videoHeight / Math.max(1, Number(monitor.height) || videoHeight);
-        const left = Math.max(0, Math.round((Number(ggWindow.left) - Number(monitor.left || 0)) * scaleX));
-        const top = Math.max(0, Math.round((Number(ggWindow.top) - Number(monitor.top || 0)) * scaleY));
-        const width = Math.min(videoWidth - left, Math.round(windowWidth * scaleX));
-        const height = Math.min(videoHeight - top, Math.round(windowHeight * scaleY));
-        if (width < 320 || height < 240) {
-            return null;
+            const monitor = monitors.find((item) => {
+                const left = Number(item.left) || 0;
+                const top = Number(item.top) || 0;
+                const width = Number(item.width) || 0;
+                const height = Number(item.height) || 0;
+                return Number(ggWindow.left) >= left
+                    && Number(ggWindow.left) < left + width
+                    && Number(ggWindow.top) >= top
+                    && Number(ggWindow.top) < top + height;
+            }) || monitors[0];
+            const scaleX = videoWidth / Math.max(1, Number(monitor.width) || videoWidth);
+            const scaleY = videoHeight / Math.max(1, Number(monitor.height) || videoHeight);
+            const left = Math.max(0, Math.round((Number(ggWindow.left) - Number(monitor.left || 0)) * scaleX));
+            const top = Math.max(0, Math.round((Number(ggWindow.top) - Number(monitor.top || 0)) * scaleY));
+            const width = Math.min(videoWidth - left, Math.round(windowWidth * scaleX));
+            const height = Math.min(videoHeight - top, Math.round(windowHeight * scaleY));
+            if (width < 320 || height < 240) {
+                return null;
+            }
+            return { left, top, width, height };
+        } finally {
+            releaseGgBrowserRequestController("aux", requestEntry);
         }
-        return { left, top, width, height };
     }
 
-    function scheduleNextGgBrowserFrame(delayMs = GG_READER_BROWSER_FRAME_INTERVAL_MS) {
-        if (!state.ggReader.running) {
+    function scheduleNextGgBrowserFrame(
+        delayMs = GG_READER_BROWSER_FRAME_INTERVAL_MS,
+        sessionId = state.ggReader.sessionId
+    ) {
+        if (!state.ggReader.running || !isCurrentGgSession(sessionId)) {
             return;
         }
         if (state.ggReader.browserFrameTimer) {
             window.clearTimeout(state.ggReader.browserFrameTimer);
         }
-        state.ggReader.browserFrameTimer = window.setTimeout(
-            captureGgBrowserFrame,
-            Math.max(0, Number(delayMs) || 0)
-        );
+        state.ggReader.browserFrameTimer = window.setTimeout(() => {
+            captureGgBrowserFrame(sessionId);
+        }, Math.max(0, Number(delayMs) || 0));
     }
 
-    async function captureGgBrowserFrame() {
+    async function captureGgBrowserFrame(sessionId = state.ggReader.sessionId) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable || !isCurrentGgSession(sessionId)) {
+            return;
+        }
         const video = state.ggReader.browserVideo;
         const canvas = state.ggReader.browserCanvas;
         const crop = state.ggReader.browserCrop;
@@ -3750,18 +4229,19 @@ function advanceActiveSlot(fromSlot) {
         if (!state.ggReader.running || !video || !canvas || inFlightCount >= GG_READER_MAX_IN_FLIGHT_FRAMES) {
             if (state.ggReader.running && inFlightCount >= GG_READER_MAX_IN_FLIGHT_FRAMES) {
                 state.ggReader.droppedFrames += 1;
-                scheduleNextGgBrowserFrame(GG_READER_BROWSER_FRAME_INTERVAL_MS);
+                scheduleNextGgBrowserFrame(GG_READER_BROWSER_FRAME_INTERVAL_MS, sessionId);
             }
             return;
         }
         if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
-            scheduleNextGgBrowserFrame(50);
+            scheduleNextGgBrowserFrame(50, sessionId);
             return;
         }
 
         const frameStartedAt = performance.now();
         beginGgBrowserFrameRequest(frameStartedAt);
         let timeoutId = null;
+        let requestEntry = null;
         let nextFrameScheduled = false;
         try {
             const sourceWidth = crop ? crop.width : video.videoWidth;
@@ -3782,6 +4262,9 @@ function advanceActiveSlot(fromSlot) {
             }
             const encodeStartedAt = performance.now();
             const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", GG_READER_BROWSER_JPEG_QUALITY));
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
             if (!blob) {
                 throw new Error("Browser frame encoding failed");
             }
@@ -3790,15 +4273,15 @@ function advanceActiveSlot(fromSlot) {
             const sentSeq = state.ggReader.browserFrameSeq + 1;
             state.ggReader.browserFrameSeq = sentSeq;
             recordGgCaptureSent(frameStartedAt);
-            if (state.ggReader.running) {
+            if (state.ggReader.running && isCurrentGgSession(sessionId)) {
                 const nextFrameAt = frameStartedAt + GG_READER_BROWSER_FRAME_INTERVAL_MS;
                 state.ggReader.browserFrameNextAt = nextFrameAt;
-                scheduleNextGgBrowserFrame(nextFrameAt - performance.now());
+                scheduleNextGgBrowserFrame(nextFrameAt - performance.now(), sessionId);
                 nextFrameScheduled = true;
             }
 
-            const controller = new AbortController();
-            timeoutId = window.setTimeout(() => controller.abort(), 2200);
+            requestEntry = registerGgBrowserRequestController("frame", sessionId);
+            timeoutId = window.setTimeout(() => requestEntry.controller.abort(), 2200);
             const response = await fetch(`${GG_READER_API_BASE}/api/gg-reader/parse-frame?seq=${encodeURIComponent(String(sentSeq))}`, {
                 method: "POST",
                 headers: {
@@ -3806,18 +4289,28 @@ function advanceActiveSlot(fromSlot) {
                     "X-GG-Frame-Seq": String(sentSeq)
                 },
                 body: blob,
-                signal: controller.signal
+                signal: requestEntry.controller.signal
             });
             if (!response.ok) {
                 throw new Error(`GG frame parse failed: ${response.status}`);
             }
             const payload = await response.json();
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
             const responseAt = performance.now();
             state.ggReader.lastInFlightMs = responseAt - frameStartedAt;
             state.ggReader.lastResponseAt = responseAt;
             recordGgParseResponse(responseAt);
-            handleGgReaderSocketPayload(payload, { sentSeq, source: "browser-response" });
+            handleGgReaderSocketPayload(payload, {
+                sentSeq,
+                source: "browser-response",
+                sessionId
+            });
         } catch (error) {
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
             state.ggReader.lastInFlightMs = performance.now() - frameStartedAt;
             setGgReaderStatus("warning", "פריים GG לא נקרא");
             state.ggReader.errors.push(String(error && error.message ? error.message : error));
@@ -3829,11 +4322,17 @@ function advanceActiveSlot(fromSlot) {
             if (timeoutId !== null) {
                 window.clearTimeout(timeoutId);
             }
+            if (requestEntry) {
+                releaseGgBrowserRequestController("frame", requestEntry);
+            }
+            if (!isCurrentGgSession(sessionId)) {
+                return;
+            }
             endGgBrowserFrameRequest(frameStartedAt);
             if (state.ggReader.running && !nextFrameScheduled) {
                 const nextFrameAt = frameStartedAt + GG_READER_BROWSER_FRAME_INTERVAL_MS;
                 state.ggReader.browserFrameNextAt = nextFrameAt;
-                scheduleNextGgBrowserFrame(nextFrameAt - performance.now());
+                scheduleNextGgBrowserFrame(nextFrameAt - performance.now(), sessionId);
             }
         }
     }
@@ -3890,7 +4389,10 @@ function advanceActiveSlot(fromSlot) {
         recordGgRateSample("renderTimes", "renderFps", now, Infinity);
     }
 
-    function connectGgReaderSocket() {
+    function connectGgReaderSocket(sessionId = state.ggReader.sessionId) {
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            return;
+        }
         if (state.ggReader.connection) {
             state.ggReader.connection.close();
         }
@@ -3899,6 +4401,10 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.connection = socket;
 
         socket.addEventListener("open", () => {
+            if (!isCurrentGgSession(sessionId) || state.ggReader.connection !== socket) {
+                socket.close();
+                return;
+            }
             state.ggReader.running = true;
             setGgReaderStatus("running", "קורא GG...");
             showError("קורא שולחן GG מחלון ClubGG האמיתי בלבד.");
@@ -3906,9 +4412,16 @@ function advanceActiveSlot(fromSlot) {
         });
 
         socket.addEventListener("message", (event) => {
+            if (!isCurrentGgSession(sessionId) || state.ggReader.connection !== socket) {
+                return;
+            }
             try {
                 const payload = JSON.parse(event.data);
-                handleGgReaderSocketPayload(payload);
+                handleGgReaderSocketPayload(payload, {
+                    sessionId,
+                    source: "socket",
+                    socket
+                });
             } catch (error) {
                 saveGgHistoryEvent({
                     type: "warning",
@@ -3919,24 +4432,97 @@ function advanceActiveSlot(fromSlot) {
         });
 
         socket.addEventListener("close", () => {
+            if (!isCurrentGgSession(sessionId) || state.ggReader.connection !== socket) {
+                return;
+            }
             if (state.ggReader.running) {
-                state.ggReader.running = false;
-                stopGgRenderLoop();
-                setGgReaderStatus("error", "חיבור GG נסגר");
-                showError("חיבור GG נסגר. בדוק שה-backend עדיין רץ.");
+                failCurrentGgReaderSession(
+                    sessionId,
+                    socket,
+                    "חיבור GG נסגר",
+                    "חיבור GG נסגר. בדוק שה-backend עדיין רץ."
+                );
             }
         });
 
         socket.addEventListener("error", () => {
-            state.ggReader.running = false;
-            stopGgRenderLoop();
-            setGgReaderStatus("error", "שגיאת GG");
-            showError("שגיאה בחיבור WebSocket לקורא GG.");
+            if (!isCurrentGgSession(sessionId) || state.ggReader.connection !== socket) {
+                return;
+            }
+            failCurrentGgReaderSession(
+                sessionId,
+                socket,
+                "שגיאת GG",
+                "שגיאה בחיבור WebSocket לקורא GG."
+            );
         });
     }
 
+    function handleGgDroppedFramePayload(payload, options, sessionId) {
+        if (!payload.frameDropped) {
+            return false;
+        }
+        state.ggReader.droppedFrames += 1;
+        const reason = String(payload.dropReason || "unknown").trim().toLowerCase();
+        if (GG_READER_SESSION_POLICY.classifyDroppedFrame(reason) === "transient") {
+            return true;
+        }
+        updateGgReaderRuntimeMetrics(payload);
+
+        const messages = {
+            "reader-not-running": {
+                status: "קורא GG אינו פעיל",
+                user: "קורא GG בשרת נעצר. הפעל את הקריאה מחדש."
+            },
+            "capture-mode-not-browser": {
+                status: "מצב צילום GG השתנה",
+                user: "השרת אינו במצב צילום דפדפן. הקריאה הופסקה כדי למנוע שליחת פריימים מיותרת."
+            },
+            "session-stale": {
+                status: "הפעלת GG אינה תקפה",
+                user: "הפעלת GG הקודמת הסתיימה. הפעל את הקריאה מחדש."
+            }
+        };
+        const message = messages[reason] || {
+            status: "שרת GG דחה את הפריים",
+            user: `שרת GG דחה את הפריים (${reason}). הקריאה הופסקה.`
+        };
+        failCurrentGgReaderSession(
+            sessionId,
+            options.socket || state.ggReader.connection,
+            message.status,
+            message.user
+        );
+        return true;
+    }
+
+    function getGgStatusUserMessage(payload, options = {}) {
+        const message = String(payload.message || "קורא GG נעצר עקב שגיאה.");
+        const reason = String(payload.reason || payload.errorCode || "").toLowerCase();
+        const normalizedMessage = message.toLowerCase();
+        const looksLikeCaptureFailure = normalizedMessage.includes("capture")
+            || normalizedMessage.includes("לא ניתן לצלם")
+            || normalizedMessage.includes("צילום נכשל");
+        const terminalNativeFailure = options.source === "socket" && (
+            payload.fatal
+            || payload.captureFailed
+            || payload.captureFailure
+            || payload.status === "error"
+            || (reason.includes("capture") && reason.includes("fail"))
+            || looksLikeCaptureFailure
+        );
+        if (!terminalNativeFailure || message.includes("?ggBrowser=1")) {
+            return message;
+        }
+        return `${message} נסה ?ggBrowser=1 לצילום דרך הדפדפן.`;
+    }
+
     function handleGgReaderSocketPayload(payload, options = {}) {
-        if (!payload) {
+        const sessionId = options.sessionId ?? state.ggReader.sessionId;
+        if (!payload || !isCurrentGgSession(sessionId)) {
+            return;
+        }
+        if (handleGgDroppedFramePayload(payload, options, sessionId)) {
             return;
         }
         const payloadSeq = getGgPayloadFrameSeq(payload, options);
@@ -3960,26 +4546,24 @@ function advanceActiveSlot(fromSlot) {
 
         if (payload.type === "status") {
             const previousStatusText = state.ggReader.lastStatusText;
+            const userMessage = getGgStatusUserMessage(payload, options);
             if (state.ggReader.running && ["warning", "error", "waiting"].includes(String(payload.status || ""))) {
                 state.ggReader.failedReads += 1;
             }
             setGgReaderStatus(payload.status || "waiting", payload.message || "ממתין ל-GG...");
             if (payload.message && payload.status !== "waiting") {
-                showError(payload.message);
+                showError(userMessage);
             }
             if (payload.clearTable) {
                 clearGgImportedSnapshot();
             }
             if (payload.fatal) {
-                state.ggReader.running = false;
-                const connection = state.ggReader.connection;
-                state.ggReader.connection = null;
-                stopGgRenderLoop();
-                if (connection && connection.readyState <= WebSocket.OPEN) {
-                    connection.close();
-                }
-                fetch(`${GG_READER_API_BASE}/api/gg-reader/stop`, { method: "POST" }).catch(() => {});
-                renderGgReaderStatus();
+                failCurrentGgReaderSession(
+                    sessionId,
+                    options.socket || state.ggReader.connection,
+                    payload.message || "שגיאת GG",
+                    userMessage
+                );
             }
             if (payload.status !== "waiting" || previousStatusText !== payload.message) {
                 saveGgHistoryEvent({
@@ -3993,7 +4577,7 @@ function advanceActiveSlot(fromSlot) {
         if (payload.captureSource !== "browser") {
             recordGgFrameTiming(performance.now());
         }
-        storeLatestGgSnapshot(payload, { seq: payloadSeq });
+        storeLatestGgSnapshot(payload, { seq: payloadSeq, sessionId });
     }
 
     function updateGgReaderRuntimeMetrics(payload) {
@@ -4051,6 +4635,10 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function storeLatestGgSnapshot(payload, options = {}) {
+        const sessionId = options.sessionId ?? state.ggReader.sessionId;
+        if (!isCurrentGgSession(sessionId)) {
+            return false;
+        }
         if (!payload || payload.source !== "ggclub") {
             saveGgHistoryEvent({
                 type: "warning",
@@ -4067,14 +4655,6 @@ function advanceActiveSlot(fromSlot) {
             renderGgReaderStatus();
             return false;
         }
-        if (
-            state.ggReader.latestSnapshot
-            && state.ggReader.latestSnapshotSeq !== state.ggReader.lastRenderedSnapshotSeq
-            && seq > state.ggReader.latestSnapshotSeq
-        ) {
-            state.ggReader.droppedFrames += 1;
-        }
-
         payload.frameSeq = seq;
         const serverReceivedAt = Number(payload.serverReceivedAt || 0);
         if (Number.isFinite(serverReceivedAt) && serverReceivedAt > 0) {
@@ -4086,6 +4666,7 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.latestSnapshot = payload;
         state.ggReader.latestSnapshotSeq = seq;
         state.ggReader.lastSnapshotReceivedAt = performance.now();
+        scheduleGgRenderTick();
         renderGgReaderStatus();
         return true;
     }
@@ -4093,6 +4674,7 @@ function advanceActiveSlot(fromSlot) {
     function startGgRenderLoop() {
         stopGgRenderLoop();
         state.ggReader.renderTimer = window.setInterval(runGgRenderTick, GG_READER_RENDER_INTERVAL_MS);
+        scheduleGgRenderTick();
     }
 
     function stopGgRenderLoop() {
@@ -4100,6 +4682,33 @@ function advanceActiveSlot(fromSlot) {
             window.clearInterval(state.ggReader.renderTimer);
         }
         state.ggReader.renderTimer = null;
+        if (state.ggReader.renderRequestId !== null) {
+            if (state.ggReader.renderRequestType === "raf" && typeof window.cancelAnimationFrame === "function") {
+                window.cancelAnimationFrame(state.ggReader.renderRequestId);
+            } else {
+                window.clearTimeout(state.ggReader.renderRequestId);
+            }
+        }
+        state.ggReader.renderRequestId = null;
+        state.ggReader.renderRequestType = null;
+    }
+
+    function scheduleGgRenderTick() {
+        if (state.ggReader.renderRequestId !== null) {
+            return;
+        }
+        const run = () => {
+            state.ggReader.renderRequestId = null;
+            state.ggReader.renderRequestType = null;
+            runGgRenderTick();
+        };
+        if (typeof window.requestAnimationFrame === "function") {
+            state.ggReader.renderRequestType = "raf";
+            state.ggReader.renderRequestId = window.requestAnimationFrame(run);
+        } else {
+            state.ggReader.renderRequestType = "timeout";
+            state.ggReader.renderRequestId = window.setTimeout(run, 0);
+        }
     }
 
     function runGgRenderTick() {
@@ -4130,17 +4739,22 @@ function advanceActiveSlot(fromSlot) {
         if (!signature || signature === state.ggReader.lastProbabilitySnapshotSignature) {
             return;
         }
-        const now = performance.now();
-        if (now - Number(state.ggReader.lastProbabilityUpdateAt || 0) < GG_READER_PROBABILITY_THROTTLE_MS) {
+        state.ggReader.pendingProbabilitySnapshot = snapshot;
+        state.ggReader.pendingProbabilitySignature = signature;
+        if (state.ggReader.probabilityTimer !== null) {
             return;
         }
-        state.ggReader.lastProbabilityUpdateAt = now;
-        const run = () => runProbabilityUpdateMeasured(snapshot, signature);
-        if (typeof window.requestIdleCallback === "function") {
-            window.requestIdleCallback(run, { timeout: 1000 });
-        } else {
-            window.setTimeout(run, 0);
-        }
+        const now = performance.now();
+        const elapsed = now - Number(state.ggReader.lastProbabilityUpdateAt || 0);
+        const delay = Math.max(0, GG_READER_PROBABILITY_THROTTLE_MS - elapsed);
+        state.ggReader.probabilityTimer = window.setTimeout(() => {
+            state.ggReader.probabilityTimer = null;
+            const pendingSnapshot = state.ggReader.pendingProbabilitySnapshot;
+            const pendingSignature = state.ggReader.pendingProbabilitySignature;
+            state.ggReader.pendingProbabilitySnapshot = null;
+            state.ggReader.pendingProbabilitySignature = "";
+            runProbabilityUpdateMeasured(pendingSnapshot, pendingSignature);
+        }, delay);
     }
 
     function runProbabilityUpdateMeasured(snapshot, signature) {
@@ -4148,6 +4762,7 @@ function advanceActiveSlot(fromSlot) {
         if (!snapshot || signature !== buildGgProbabilitySnapshotSignature(snapshot) || signature !== latestSignature) {
             return;
         }
+        state.ggReader.lastProbabilityUpdateAt = performance.now();
         const started = performance.now();
         try {
             if (state.mode === "equity") {
@@ -4162,29 +4777,161 @@ function advanceActiveSlot(fromSlot) {
         }
     }
 
+    function getGgRunCards(run) {
+        if (Array.isArray(run)) {
+            return run;
+        }
+        if (!run || typeof run !== "object") {
+            return [];
+        }
+        for (const key of ["cards", "board", "communityCards", "runoutCards"]) {
+            if (Array.isArray(run[key])) {
+                return run[key];
+            }
+        }
+        return [];
+    }
+
+    function getGgSnapshotBoardCollections(snapshot) {
+        if (!snapshot) {
+            return [];
+        }
+        const collections = [];
+        const append = (label, cards, complete = null) => {
+            if (Array.isArray(cards)) {
+                collections.push({ label, cards, complete });
+            }
+        };
+        append("board", snapshot.board);
+        append("sharedBoard", snapshot.sharedBoard);
+        append("commonBoard", snapshot.commonBoard);
+
+        for (const field of ["runouts", "boardRuns", "boards"]) {
+            const runs = snapshot[field];
+            if (!Array.isArray(runs)) {
+                continue;
+            }
+            const looksLikeSingleBoard = runs.every((item) => (
+                item
+                && !Array.isArray(item)
+                && typeof item === "object"
+                && (item.rank || item.suit || item.hidden || Object.prototype.hasOwnProperty.call(item, "visible"))
+            ));
+            if (looksLikeSingleBoard) {
+                append(field, runs);
+                continue;
+            }
+            runs.forEach((run, index) => {
+                const runIndex = Number.isInteger(Number(run?.index)) ? Number(run.index) : index;
+                append(`${field}[${runIndex}]`, getGgRunCards(run), run?.complete ?? null);
+            });
+        }
+        return collections;
+    }
+
+    function getGgSnapshotRunouts(snapshot) {
+        if (!snapshot) {
+            return [];
+        }
+        for (const field of ["runouts", "boardRuns", "boards"]) {
+            const runs = snapshot[field];
+            if (!Array.isArray(runs) || runs.length < 2) {
+                continue;
+            }
+            const looksLikeSingleBoard = runs.every((item) => (
+                item
+                && !Array.isArray(item)
+                && typeof item === "object"
+                && (item.rank || item.suit || item.hidden || Object.prototype.hasOwnProperty.call(item, "visible"))
+            ));
+            if (!looksLikeSingleBoard) {
+                return runs;
+            }
+        }
+        return [];
+    }
+
+    function getAcceptedGgDeckCard(cardSnapshot) {
+        if (!cardSnapshot || cardSnapshot.hidden || cardSnapshot.visible === false) {
+            return null;
+        }
+        const confidence = Number(cardSnapshot.confidence ?? 1);
+        if (Number.isFinite(confidence) && confidence < GG_READER_CARD_CONFIDENCE_MIN) {
+            return null;
+        }
+        const cardId = getGgCardId(cardSnapshot);
+        return cardId ? getCardById(cardId) : null;
+    }
+
+    function getGgMultiRunContext(snapshot) {
+        const sharedSnapshots = Array.isArray(snapshot?.sharedBoard)
+            ? snapshot.sharedBoard
+            : (Array.isArray(snapshot?.commonBoard) ? snapshot.commonBoard : []);
+        const sharedCards = sharedSnapshots.map(getAcceptedGgDeckCard).filter(Boolean);
+        const rawRunouts = getGgSnapshotRunouts(snapshot);
+        if (sharedCards.length < 3 || sharedCards.length >= 5 || rawRunouts.length < 2) {
+            return null;
+        }
+
+        const sharedIds = sharedCards.map((card) => card.id);
+        const suffixLength = 5 - sharedCards.length;
+        const runouts = rawRunouts.map((rawRun, index) => {
+            const acceptedCards = getGgRunCards(rawRun).map(getAcceptedGgDeckCard).filter(Boolean);
+            const includesSharedPrefix = sharedIds.every((cardId, cardIndex) => acceptedCards[cardIndex]?.id === cardId);
+            const suffixCards = (includesSharedPrefix ? acceptedCards.slice(sharedIds.length) : acceptedCards)
+                .filter((card, cardIndex, cards) => cards.findIndex((candidate) => candidate.id === card.id) === cardIndex)
+                .slice(0, suffixLength);
+            return {
+                index: Number.isInteger(Number(rawRun?.index)) ? Number(rawRun.index) : index,
+                cards: suffixCards,
+                complete: suffixCards.length >= suffixLength
+            };
+        });
+
+        return { sharedCards, runouts };
+    }
+
+    function buildGgBoardCollectionsSignature(snapshot, cardSignature) {
+        return getGgSnapshotBoardCollections(snapshot)
+            .map(({ label, cards, complete }) => {
+                const completion = complete === null ? "" : (complete ? ":complete" : ":partial");
+                return `${label}${completion}:${cards.map(cardSignature).join(",")}`;
+            })
+            .join(";");
+    }
+
+    function getGgProbabilityCardSignature(card) {
+        if (!card) {
+            return "";
+        }
+        if (card.hidden || card.visible === false) {
+            return card.display ? `hidden:${card.display}` : "hidden";
+        }
+        const cardId = getGgCardId(card);
+        const confidence = Number(card.confidence ?? 1);
+        const accepted = !Number.isFinite(confidence) || confidence >= GG_READER_CARD_CONFIDENCE_MIN;
+        return accepted ? `visible:${cardId || "unknown"}` : `pending:${cardId || "unknown"}`;
+    }
+
     function buildGgProbabilitySnapshotSignature(snapshot) {
         if (!snapshot) {
             return "";
         }
-        const cardSignature = (card) => {
-            if (!card) {
-                return "";
-            }
-            if (card.hidden || card.visible === false) {
-                return card.display ? `hidden:${card.display}` : "hidden";
-            }
-            return getGgCardId(card);
-        };
-        const boardSignature = (Array.isArray(snapshot.board) ? snapshot.board : [])
-            .map(cardSignature)
-            .join(",");
+        const boardSignature = buildGgBoardCollectionsSignature(snapshot, getGgProbabilityCardSignature);
         const seatsSignature = (Array.isArray(snapshot.seats) ? snapshot.seats : [])
             .map((seat) => {
                 const seatIndex = Number(seat?.physicalSeatIndex);
                 const cards = (Array.isArray(seat?.holeCards) ? seat.holeCards : [])
-                    .map(cardSignature)
+                    .map(getGgProbabilityCardSignature)
                     .join(",");
-                return `${Number.isFinite(seatIndex) ? seatIndex : ""}:${seat?.active !== false ? 1 : 0}:${seat?.status || ""}:${cards}`;
+                return [
+                    Number.isFinite(seatIndex) ? seatIndex : "",
+                    seat?.active !== false ? 1 : 0,
+                    isGgSeatEligibleForEquity(seat) ? 1 : 0,
+                    seat?.status || "",
+                    seat?.action || "",
+                    cards
+                ].join(":");
             })
             .join("|");
         return `${boardSignature}#${seatsSignature}`;
@@ -4285,12 +5032,21 @@ function advanceActiveSlot(fromSlot) {
 
         const previousDefer = state.deferProbabilityUpdate;
         state.deferProbabilityUpdate = true;
+        syncGgGameVariant(normalizedSnapshot);
         setPlayersCount(tableSeatCount);
 
         clearGgInactiveUiSeats(tableSeatCount);
         state.ggReader.potOverride = sanitizeEconomyValue(Number(normalizedSnapshot.pot) || 0);
-        applyGgBoardSnapshot(board);
-        seats.forEach((seat) => applyGgSeatSnapshot(seat));
+        applyGgBoardSnapshot(board, normalizedSnapshot);
+        const seatByIndex = new Map(seats.map((seat) => [Number(seat.physicalSeatIndex), seat]));
+        for (let index = 0; index < tableSeatCount; index += 1) {
+            applyGgSeatSnapshot(seatByIndex.get(index) || {
+                physicalSeatIndex: index,
+                active: false,
+                status: "empty",
+                holeCards: []
+            });
+        }
 
         const dealerIndex = Number(normalizedSnapshot.dealerSeatIndex);
         if (Number.isInteger(dealerIndex) && dealerIndex >= 0 && dealerIndex < MAX_PLAYERS) {
@@ -4323,15 +5079,23 @@ function advanceActiveSlot(fromSlot) {
 
     function normalizeGgSnapshotForUi(snapshot) {
         const rawSeats = Array.isArray(snapshot.seats) ? snapshot.seats : [];
-        const seats = rawSeats
-            .filter((seat) => seat && Number.isInteger(Number(seat.physicalSeatIndex)))
+        const seatByIndex = new Map();
+        rawSeats.forEach((seat) => {
+            const physicalIndex = Number(seat?.physicalSeatIndex);
+            if (seat && Number.isInteger(physicalIndex) && physicalIndex >= 0 && physicalIndex < MAX_PLAYERS) {
+                seatByIndex.set(physicalIndex, seat);
+            }
+        });
+        const seats = Array.from(seatByIndex.values())
             .sort((left, right) => Number(left.physicalSeatIndex) - Number(right.physicalSeatIndex));
+
+        const declaredSeatCount = getGgDeclaredSeatCount(snapshot, seats);
 
         if (!seats.length) {
             return {
                 ...snapshot,
                 seats: [],
-                tableSeatCount: 0,
+                tableSeatCount: declaredSeatCount,
                 activePlayerCount: 0
             };
         }
@@ -4355,9 +5119,45 @@ function advanceActiveSlot(fromSlot) {
             heroSeatIndex: snapshot.heroSeatIndex === null || snapshot.heroSeatIndex === undefined
                 ? null
                 : Number(snapshot.heroSeatIndex),
-            tableSeatCount: Math.max(activePlayerCount, maxPhysicalIndex + 1),
+            tableSeatCount: Math.max(declaredSeatCount, activePlayerCount, maxPhysicalIndex + 1),
             activePlayerCount
         };
+    }
+
+    function getGgDeclaredSeatCount(snapshot, seats = []) {
+        const direct = Number(snapshot?.tableSeatCount);
+        if (Number.isInteger(direct) && direct >= MIN_PLAYERS && direct <= MAX_PLAYERS) {
+            return direct;
+        }
+        const tableType = String(snapshot?.tableType || "");
+        const tableTypeMatch = tableType.match(/([2-9])\s*max/i);
+        if (tableTypeMatch) {
+            return Number(tableTypeMatch[1]);
+        }
+        const normalizedSeats = snapshot?.normalizedState?.seats;
+        if (Array.isArray(normalizedSeats) && normalizedSeats.length >= MIN_PLAYERS) {
+            return Math.min(MAX_PLAYERS, normalizedSeats.length);
+        }
+        const maxPhysicalIndex = seats.reduce(
+            (maxIndex, seat) => Math.max(maxIndex, Number(seat?.physicalSeatIndex)),
+            -1
+        );
+        return Math.max(0, Math.min(MAX_PLAYERS, maxPhysicalIndex + 1));
+    }
+
+    function syncGgGameVariant(snapshot) {
+        const sourceText = [
+            snapshot?.gameVariant,
+            snapshot?.gameType,
+            snapshot?.window?.title,
+            snapshot?.selectedWindowTitle,
+            snapshot?.metrics?.selectedWindowTitle
+        ].filter(Boolean).join(" ");
+        if (/\b(?:PLO|OMAHA)\b/i.test(sourceText)) {
+            setGameVariant(GAME_VARIANTS.omaha.id);
+        } else if (/\b(?:NLH|TEXAS)\b/i.test(sourceText)) {
+            setGameVariant(GAME_VARIANTS.texas.id);
+        }
     }
 
     function clearGgInactiveUiSeats(activeSeatCount) {
@@ -4382,7 +5182,11 @@ function advanceActiveSlot(fromSlot) {
     }
 
     function clearGgImportedSnapshot() {
-        if (!state.ggReader.lastSnapshot && state.ggReader.potOverride === null) {
+        if (
+            !state.ggReader.lastSnapshot
+            && !state.ggReader.latestSnapshot
+            && state.ggReader.potOverride === null
+        ) {
             return;
         }
 
@@ -4396,6 +5200,13 @@ function advanceActiveSlot(fromSlot) {
         state.ggReader.pendingSnapshot = null;
         state.ggReader.potOverride = null;
         state.ggReader.lastProbabilitySnapshotSignature = "";
+        state.ggReader.pendingProbabilitySnapshot = null;
+        state.ggReader.pendingProbabilitySignature = "";
+        if (state.ggReader.probabilityTimer !== null) {
+            window.clearTimeout(state.ggReader.probabilityTimer);
+            state.ggReader.probabilityTimer = null;
+        }
+        clearGgRunoutBoards();
 
         state.slotByKey.forEach((slot) => clearSlot(slot, { suppressUpdate: true }));
         for (let index = 0; index < MAX_PLAYERS; index += 1) {
@@ -4419,11 +5230,91 @@ function advanceActiveSlot(fromSlot) {
         scheduleImmediateProbabilityUpdate();
     }
 
-    function applyGgBoardSnapshot(board) {
+    function applyGgBoardSnapshot(board, snapshot = null) {
         getSlotsByType("board").forEach((slot, index) => {
             const cardSnapshot = board[index];
             applyGgCardSnapshotToSlot(cardSnapshot, slot);
         });
+        renderGgRunoutBoards(snapshot);
+    }
+
+    function clearGgRunoutBoards() {
+        if (elements.ggRunoutBoards) {
+            elements.ggRunoutBoards.replaceChildren();
+            elements.ggRunoutBoards.hidden = true;
+        }
+        if (elements.board) {
+            elements.board.hidden = false;
+            elements.board.removeAttribute("aria-hidden");
+        }
+    }
+
+    function createGgRunoutCardElement(card, options = {}) {
+        const cardElement = document.createElement("div");
+        cardElement.className = "card-slot gg-runout-card";
+        if (options.shared) {
+            cardElement.classList.add("gg-runout-card--shared");
+        } else {
+            cardElement.classList.add("gg-runout-card--suffix");
+        }
+
+        if (!card) {
+            cardElement.classList.add("gg-runout-card--pending");
+            cardElement.setAttribute("aria-label", "קלף שטרם חולק");
+            cardElement.innerHTML = '<span class="card-placeholder">…</span><span class="card-value"><span class="rank"></span><span class="suit"></span></span>';
+            return cardElement;
+        }
+
+        cardElement.classList.add("filled");
+        cardElement.dataset.cardId = card.id;
+        cardElement.dataset.suit = card.suit.id;
+        cardElement.setAttribute("aria-label", `${card.rank.label}${card.suit.symbol}`);
+        cardElement.innerHTML = `
+            <span class="card-placeholder"></span>
+            <span class="card-value" data-suit="${card.suit.id}">
+                <span class="rank">${card.rank.label}</span>
+                <span class="suit">${card.suit.symbol}</span>
+            </span>
+        `;
+        return cardElement;
+    }
+
+    function renderGgRunoutBoards(snapshot) {
+        if (!elements.ggRunoutBoards || !elements.board) {
+            return;
+        }
+        const multiRun = getGgMultiRunContext(snapshot);
+        if (!multiRun) {
+            clearGgRunoutBoards();
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        const suffixLength = 5 - multiRun.sharedCards.length;
+        multiRun.runouts.forEach((run, index) => {
+            const row = document.createElement("div");
+            row.className = "gg-runout-board";
+            row.dataset.runoutIndex = String(run.index);
+            row.classList.toggle("gg-runout-board--complete", run.complete);
+
+            const label = document.createElement("span");
+            label.className = "gg-runout-board__label";
+            label.textContent = `ריצה ${index + 1}`;
+
+            const cards = document.createElement("div");
+            cards.className = "gg-runout-board__cards";
+            multiRun.sharedCards.forEach((card) => cards.appendChild(createGgRunoutCardElement(card, { shared: true })));
+            for (let suffixIndex = 0; suffixIndex < suffixLength; suffixIndex += 1) {
+                cards.appendChild(createGgRunoutCardElement(run.cards[suffixIndex] || null));
+            }
+            row.append(label, cards);
+            fragment.appendChild(row);
+        });
+
+        elements.ggRunoutBoards.replaceChildren(fragment);
+        elements.ggRunoutBoards.hidden = false;
+        elements.board.hidden = true;
+        elements.board.setAttribute("aria-hidden", "true");
     }
 
     function applyGgSeatSnapshot(seatSnapshot) {
@@ -4439,7 +5330,7 @@ function advanceActiveSlot(fromSlot) {
         const seatEl = state.seats[index];
         const meta = state.seatMeta[index];
         const isActive = seatSnapshot.active !== false;
-        const isFolded = seatSnapshot.status === "folded" || seatSnapshot.action === "fold";
+        const isFolded = isActive && !isGgSeatEligibleForEquity(seatSnapshot);
         if (seatEl) {
             seatEl.classList.toggle("seat--gg-empty", !isActive);
             seatEl.classList.toggle("seat--gg-hero", Boolean(seatSnapshot.isHero));
@@ -4450,19 +5341,25 @@ function advanceActiveSlot(fromSlot) {
                 ? String(seatSnapshot.name)
                 : (isActive ? `שחקן ${index + 1}` : "Take Seat");
         }
+        if (seatEl) {
+            const accessibleName = isActive
+                ? (seatSnapshot.name || `שחקן ${index + 1}`)
+                : "מושב פנוי";
+            seatEl.setAttribute("aria-label", accessibleName);
+        }
 
         const economy = ensurePlayerEconomy(index);
         if (isActive) {
             const hasStackConfidence = Object.prototype.hasOwnProperty.call(seatSnapshot, "stackConfidence");
             const stackConfidence = seatSnapshot.stackConfidence ?? seatSnapshot.confidence;
-            if (shouldApplyGgField(stackConfidence, seatSnapshot.stack)) {
+            if (shouldApplyGgField(stackConfidence, seatSnapshot.stack, GG_READER_AMOUNT_CONFIDENCE_MIN)) {
                 economy.stack = sanitizeEconomyValue(Number(seatSnapshot.stack) || 0);
             } else if (hasStackConfidence && Number(stackConfidence) === 0 && Number(seatSnapshot.stack || 0) === 0) {
                 economy.stack = 0;
             }
             const hasBetConfidence = Object.prototype.hasOwnProperty.call(seatSnapshot, "betConfidence");
             const betConfidence = seatSnapshot.betConfidence ?? seatSnapshot.confidence;
-            if (shouldApplyGgField(betConfidence, seatSnapshot.currentBet)) {
+            if (shouldApplyGgField(betConfidence, seatSnapshot.currentBet, GG_READER_AMOUNT_CONFIDENCE_MIN)) {
                 economy.pendingBet = 0;
                 economy.committedBet = sanitizeEconomyValue(Number(seatSnapshot.currentBet) || Number(seatSnapshot.committed) || 0);
             } else if (hasBetConfidence && Number(betConfidence) === 0 && Number(seatSnapshot.currentBet || 0) === 0) {
@@ -4536,13 +5433,13 @@ function advanceActiveSlot(fromSlot) {
             return;
         }
 
-        const confidence = Number(cardSnapshot.confidence ?? 1);
-        if (Number.isFinite(confidence) && confidence < GG_READER_CONFIDENCE_MIN) {
+        if (cardSnapshot.hidden || cardSnapshot.visible === false) {
+            markSlotHidden(slot, { display: cardSnapshot.display || "X", lock: true });
             return;
         }
 
-        if (cardSnapshot.hidden) {
-            markSlotHidden(slot, { display: cardSnapshot.display || "X", lock: true });
+        const confidence = Number(cardSnapshot.confidence ?? 1);
+        if (Number.isFinite(confidence) && confidence < GG_READER_CARD_CONFIDENCE_MIN) {
             return;
         }
 
@@ -4616,45 +5513,27 @@ function advanceActiveSlot(fromSlot) {
         }) || "";
     }
 
-    function shouldApplyGgField(confidence, value) {
+    function shouldApplyGgField(confidence, value, minimumConfidence = GG_READER_CONFIDENCE_MIN) {
         if (value === undefined || value === null || value === "") {
             return false;
         }
         const normalizedConfidence = Number(confidence ?? 1);
-        return !Number.isFinite(normalizedConfidence) || normalizedConfidence >= GG_READER_CONFIDENCE_MIN;
+        return !Number.isFinite(normalizedConfidence) || normalizedConfidence >= minimumConfidence;
     }
 
     function shouldApplyGgSnapshot(snapshot) {
         const confidence = Number(snapshot.confidence ?? 1);
-        if (isFastGgReaderSnapshot(snapshot) && confidence >= GG_READER_CONFIDENCE_MIN) {
-            state.ggReader.pendingSnapshot = null;
-            return true;
-        }
-        if (!Number.isFinite(confidence) || confidence >= GG_READER_CONFIDENCE_DIRECT) {
-            state.ggReader.pendingSnapshot = null;
-            return true;
-        }
-        if (confidence < GG_READER_CONFIDENCE_MIN) {
-            state.ggReader.pendingSnapshot = null;
-            return false;
-        }
-
         const signature = buildGgSnapshotSignature(snapshot);
-        if (state.ggReader.pendingSnapshot === signature) {
-            state.ggReader.pendingSnapshot = null;
-            return true;
-        }
-        state.ggReader.pendingSnapshot = signature;
-        return false;
-    }
-
-    function isFastGgReaderSnapshot(snapshot) {
-        return snapshot
-            && (
-                snapshot.reader === "fast_roi"
-                || snapshot.metrics?.reader === "fast_roi"
-                || String(snapshot.profile || snapshot.metrics?.profile || "").startsWith("clubgg_")
-            );
+        const decision = GG_READER_SESSION_POLICY.decideSnapshotApplication(
+            state.ggReader.pendingSnapshot,
+            signature,
+            snapshot.frameSeq,
+            confidence,
+            GG_READER_CONFIDENCE_MIN,
+            GG_READER_CONFIDENCE_DIRECT
+        );
+        state.ggReader.pendingSnapshot = decision.pending;
+        return decision.apply;
     }
 
     function buildGgSnapshotSignature(snapshot) {
@@ -4669,40 +5548,37 @@ function advanceActiveSlot(fromSlot) {
             seat.status,
             (Array.isArray(seat.holeCards) ? seat.holeCards : []).map((card) => card.hidden ? "X" : getGgCardId(card)).join("/")
         ].join(":")).join("|");
-        const boardPart = (Array.isArray(snapshot.board) ? snapshot.board : []).map(getGgCardId).join("/");
+        const boardPart = buildGgBoardCollectionsSignature(snapshot, (card) => (
+            card?.hidden || card?.visible === false ? "X" : getGgCardId(card)
+        ));
         return `${snapshot.street || "unknown"}|${snapshot.pot}|${snapshot.dealerSeatIndex}|${boardPart}|${seatPart}`;
     }
 
     function applyGgPositionLabels(snapshot) {
-        const activeSeats = (Array.isArray(snapshot.seats) ? snapshot.seats : [])
-            .filter((seat) => seat && seat.active !== false && Number.isInteger(Number(seat.physicalSeatIndex)))
-            .map((seat) => Number(seat.physicalSeatIndex))
-            .filter((index) => index >= 0 && index < MAX_PLAYERS)
-            .sort((a, b) => a - b);
-
-        if (!activeSeats.length) {
+        const assignments = POKER_POSITION_POLICY.buildPositionAssignments(
+            snapshot.seats,
+            snapshot.dealerSeatIndex
+        );
+        if (!assignments.length) {
             updateSeatPositionLabels();
             return;
         }
-
-        const dealerIndex = activeSeats.includes(Number(snapshot.dealerSeatIndex))
-            ? Number(snapshot.dealerSeatIndex)
-            : activeSeats[0];
-        const dealerOrderIndex = activeSeats.indexOf(dealerIndex);
-        const positions = getPositionSequence(activeSeats.length);
+        const assignmentByIndex = new Map(assignments.map((assignment) => [
+            assignment.physicalSeatIndex,
+            assignment
+        ]));
 
         state.seatMeta.forEach((meta, index) => {
             if (!meta || !meta.positionEl) {
                 return;
             }
-            const activeOrderIndex = activeSeats.indexOf(index);
-            if (activeOrderIndex < 0) {
+            const assignment = assignmentByIndex.get(index);
+            if (!assignment) {
                 meta.positionEl.textContent = "";
                 meta.label?.classList.remove("has-position");
                 return;
             }
-            const relativeIndex = (activeOrderIndex - dealerOrderIndex + activeSeats.length) % activeSeats.length;
-            const positionName = positions[relativeIndex] || "";
+            const positionName = assignment.label;
             meta.positionEl.textContent = positionName ? `(${positionName})` : "";
             meta.label?.classList.toggle("has-position", Boolean(positionName));
         });
@@ -4820,23 +5696,14 @@ function advanceActiveSlot(fromSlot) {
             const parts = [state.ggReader.lastStatusText || "GG מנותק"];
             if (state.ggReader.running) {
                 const now = performance.now();
-                const inFlightMs = state.ggReader.browserFrameInFlight && state.ggReader.browserFrameInFlightStartedAt
-                    ? now - state.ggReader.browserFrameInFlightStartedAt
-                    : state.ggReader.lastInFlightMs;
-                const lastRenderAgeMs = state.ggReader.lastRenderAt ? now - state.ggReader.lastRenderAt : null;
                 const lastSnapshotAgeMs = state.ggReader.lastSnapshotReceivedAt ? now - state.ggReader.lastSnapshotReceivedAt : null;
-                parts.push(`cap ${formatGgFps(state.ggReader.captureFps)}/${GG_READER_BROWSER_FPS}`);
-                parts.push(`parse ${formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps)}`);
-                parts.push(`render ${formatGgFps(state.ggReader.renderFps)}`);
-                parts.push(`snapAge ${formatGgMs(lastSnapshotAgeMs)}`);
-                parts.push(`renderAge ${formatGgMs(lastRenderAgeMs)}`);
-                parts.push(`flight ${state.ggReader.browserFrameInFlightCount || 0}/${GG_READER_MAX_IN_FLIGHT_FRAMES} ${formatGgMs(inFlightMs)}`);
-                parts.push(`img ${formatGgBytes(state.ggReader.lastImageBytes || state.ggReader.lastFrameBytes)}`);
-                parts.push(`drop ${state.ggReader.droppedFrames || 0}`);
-                parts.push(`stale ${state.ggReader.staleResponsesIgnored || 0}`);
-                parts.push(`apply ${formatGgMs(state.ggReader.lastApplySnapshotMs)}`);
-                parts.push(`prob ${formatGgMs(state.ggReader.lastProbabilityMs)}`);
-                parts.push(`be ${formatGgMs(state.ggReader.lastDecodeMs)}/${formatGgMs(state.ggReader.lastCropMs)}/${formatGgMs(state.ggReader.lastParseMs)}`);
+                parts.push(formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps));
+                if (Number.isFinite(lastSnapshotAgeMs) && lastSnapshotAgeMs > 1500) {
+                    parts.push(`עיכוב ${formatGgMs(lastSnapshotAgeMs)}`);
+                }
+                if (state.ggReader.droppedFrames > 0) {
+                    parts.push(`${state.ggReader.droppedFrames} פריימים דולגו`);
+                }
             }
             const activeCount = Number(state.ggReader.lastSnapshot?.activePlayerCount);
             if (Number.isInteger(activeCount) && activeCount > 0) {
@@ -4851,11 +5718,24 @@ function advanceActiveSlot(fromSlot) {
                 : "";
         }
         if (elements.ggReaderStop) {
-            elements.ggReaderStop.hidden = !state.ggReader.running;
+            elements.ggReaderStop.hidden = !RUNTIME_CAPABILITIES.localReaderAvailable
+                || !(state.ggReader.running || state.ggReader.starting);
         }
         if (elements.readGgTable) {
-            elements.readGgTable.textContent = state.ggReader.running ? "קורא GG..." : "קרא שולחן GG";
-            elements.readGgTable.classList.toggle("is-active", state.ggReader.running);
+            const hostedWithoutMock = !RUNTIME_CAPABILITIES.localReaderAvailable && !isGgMockMode();
+            elements.readGgTable.textContent = hostedWithoutMock
+                ? "קריאת GG בדסקטופ"
+                : (state.ggReader.stopping
+                ? "עוצר קריאת GG..."
+                : (state.ggReader.starting
+                    ? "מתחבר ל-GG..."
+                    : (state.ggReader.running ? "קורא GG..." : "קרא שולחן GG")));
+            elements.readGgTable.disabled = hostedWithoutMock || state.ggReader.stopping;
+            elements.readGgTable.title = hostedWithoutMock
+                ? "קריאת המסך זמינה באפליקציית שולחן העבודה"
+                : "";
+            elements.readGgTable.classList.toggle("is-active", state.ggReader.running || state.ggReader.starting);
+            elements.readGgTable.setAttribute("aria-busy", state.ggReader.starting ? "true" : "false");
         }
         renderGgReaderDebugPanel();
     }
@@ -4865,12 +5745,33 @@ function advanceActiveSlot(fromSlot) {
             return;
         }
         const snapshot = state.ggReader.lastSnapshot || state.ggReader.latestSnapshot;
-        const shouldShow = Boolean(snapshot || state.ggReader.running || state.ggReader.errors.length);
+        const hasReaderData = Boolean(snapshot || state.ggReader.running || state.ggReader.errors.length);
+        const shouldShow = Boolean(state.ggReader.isDebugOpen && hasReaderData);
         elements.ggReaderDebug.hidden = !shouldShow;
         elements.ggReaderDebug.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+        if (elements.ggReaderDebugToggle) {
+            elements.ggReaderDebugToggle.disabled = !hasReaderData;
+            elements.ggReaderDebugToggle.setAttribute("aria-expanded", shouldShow ? "true" : "false");
+            elements.ggReaderDebugToggle.classList.toggle("is-active", shouldShow);
+        }
         if (!shouldShow) {
             return;
         }
+
+        const now = performance.now();
+        const renderKey = [
+            snapshot?.frameSeq ?? snapshot?.timestamp ?? "none",
+            state.ggReader.status,
+            state.ggReader.errors.length
+        ].join(":");
+        if (
+            renderKey === state.ggReader.lastDebugRenderKey
+            && now - Number(state.ggReader.lastDebugRenderAt || 0) < 1000
+        ) {
+            return;
+        }
+        state.ggReader.lastDebugRenderKey = renderKey;
+        state.ggReader.lastDebugRenderAt = now;
 
         renderGgReaderTableInfo(snapshot);
         renderGgReaderSeatRows(snapshot);
@@ -4930,6 +5831,10 @@ function advanceActiveSlot(fromSlot) {
         const readHealth = readRate >= GG_READER_MIN_READ_FPS && latencyMs <= GG_READER_MAX_FRAME_LATENCY_MS
             ? "ok"
             : "watch";
+        const isBrowserCapture = String(snapshot?.captureSource || "").toLowerCase() === "browser";
+        const captureRate = isBrowserCapture
+            ? state.ggReader.captureFps
+            : (state.ggReader.parseFps || state.ggReader.actualFps);
 
         const items = [
             ["street", snapshot?.street || "unknown"],
@@ -4942,7 +5847,7 @@ function advanceActiveSlot(fromSlot) {
             ["board", board.length ? board.map(formatGgCardSnapshot).join(" ") : "-"],
             ["dealer", Number.isInteger(Number(snapshot?.dealerSeatIndex)) ? `seat ${Number(snapshot.dealerSeatIndex)}` : "-"],
             ["seats", tableSeatCount ? `${activeSeats.length}/${tableSeatCount}` : "-"],
-            ["capture", `${formatGgFps(state.ggReader.captureFps)}`],
+            ["capture", `${formatGgFps(captureRate)}`],
             ["read", `${formatGgFps(state.ggReader.parseFps || state.ggReader.actualFps)}`],
             ["render", `${formatGgFps(state.ggReader.renderFps)}`],
             ["read health", readHealth],
@@ -5115,6 +6020,10 @@ function advanceActiveSlot(fromSlot) {
         if (!elements.ggReaderDebugOutput) {
             return;
         }
+        if (!RUNTIME_CAPABILITIES.localReaderAvailable) {
+            elements.ggReaderDebugOutput.textContent = "כלי האבחון זמינים באפליקציית שולחן העבודה בלבד.";
+            return;
+        }
         const endpoint = kind === "field-crops" ? "field-crops" : "roi-overlay";
         elements.ggReaderDebugOutput.textContent = "loading...";
         try {
@@ -5169,6 +6078,10 @@ function advanceActiveSlot(fromSlot) {
         if (elements.ggReaderHistory) {
             elements.ggReaderHistory.hidden = !state.ggReader.isHistoryOpen;
             elements.ggReaderHistory.setAttribute("aria-hidden", state.ggReader.isHistoryOpen ? "false" : "true");
+        }
+        if (elements.ggReaderHistoryToggle) {
+            elements.ggReaderHistoryToggle.setAttribute("aria-expanded", state.ggReader.isHistoryOpen ? "true" : "false");
+            elements.ggReaderHistoryToggle.classList.toggle("is-active", state.ggReader.isHistoryOpen);
         }
         if (!elements.ggReaderHistoryList) {
             return;
@@ -5418,6 +6331,7 @@ function advanceActiveSlot(fromSlot) {
 
         const overlay = elements.deckOverlay;
         overlay.hidden = false;
+        overlay.setAttribute("aria-hidden", "false");
         overlay.classList.add("is-open");
         positionDeckOverlay(slot);
         requestAnimationFrame(() => {
@@ -5425,6 +6339,10 @@ function advanceActiveSlot(fromSlot) {
                 return;
             }
             positionDeckOverlay(slot);
+            const firstAvailableCard = elements.deck?.querySelector(".deck-card:not(:disabled)");
+            if (firstAvailableCard instanceof HTMLButtonElement) {
+                firstAvailableCard.focus();
+            }
         });
     }
 
@@ -5440,6 +6358,7 @@ function advanceActiveSlot(fromSlot) {
         overlay.style.left = "";
         overlay.style.top = "";
         overlay.hidden = true;
+        overlay.setAttribute("aria-hidden", "true");
     }
 
     function positionDeckOverlay(slot) {
@@ -5529,6 +6448,18 @@ function advanceActiveSlot(fromSlot) {
                 return;
             }
             setActiveSlot(null);
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if ((event.key !== "Escape" && event.key !== "Esc") || elements.deckOverlay.hidden) {
+                return;
+            }
+            const previouslyActiveSlot = state.activeSlot;
+            event.preventDefault();
+            setActiveSlot(null);
+            if (previouslyActiveSlot instanceof HTMLButtonElement) {
+                previouslyActiveSlot.focus();
+            }
         });
     }
 

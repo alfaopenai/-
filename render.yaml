@@ -1,0 +1,36 @@
+previews:
+  generation: "off"
+
+services:
+  - type: web
+    name: alpha-poker-web
+    runtime: static
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm run build:web
+    staticPublishPath: ./web-dist
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=(), display-capture=()"
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin
+      - path: /*
+        name: Cache-Control
+        value: "no-cache, max-age=0, must-revalidate"

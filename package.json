@@ -10,14 +10,32 @@
     "package": "electron-builder --dir",
     "dist": "electron-builder",
     "start:web": "node dev-server.js",
-    "dev": "node scripts/dev.js"
+    "build:web": "node scripts/build-web.js",
+    "dev": "node scripts/dev.js",
+    "smoke:security": "node scripts/smoke-static-security.js",
+    "smoke:packaged-backend": "node scripts/smoke-packaged-backend.js",
+    "smoke:process": "node scripts/smoke-process-lifecycle.js",
+    "smoke:reader-session": "node scripts/smoke-reader-session.js",
+    "smoke:hosted-runtime": "node scripts/smoke-hosted-runtime.js",
+    "smoke:positions": "node scripts/smoke-position-policy.js",
+    "smoke:display-media": "node scripts/smoke-display-media-policy.js",
+    "smoke:equity-reader": "node scripts/smoke-equity-reader.js"
   },
   "build": {
     "appId": "com.alpha.poker",
     "productName": "אלפא פוקר",
     "files": [
       "**/*",
-      "!node_modules/.cache"
+      "!node_modules/.cache",
+      "!backend/data/**",
+      "!backend/**/__pycache__/**",
+      "!backend/**/*.pyc",
+      "!backend/**/*.sqlite",
+      "!backend/**/*.sqlite-*",
+      "!backend/**/*.jsonl"
+    ],
+    "asarUnpack": [
+      "backend/**/*"
     ],
     "directories": {
       "buildResources": "build"

@@ -5,17 +5,25 @@
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="google" content="notranslate">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#060908">
     <title>אלפא פוקר - מחשבון הסתברויות פוקר מתקדם</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="premium.css">
 </head>
 <body translate="no" class="notranslate">
     <main class="app" translate="no" data-no-translate="true">
         <div class="app-shell" translate="no" data-no-translate="true">
             <div class="app-main">
                 <header class="top-toolbar" role="banner">
+                    <div class="app-brand" aria-label="אלפא פוקר">
+                        <img class="app-brand__mark" src="favicon.svg" alt="" width="40" height="40">
+                        <div class="app-brand__copy">
+                            <strong>אלפא פוקר</strong>
+                            <span>LIVE TABLE STUDIO</span>
+                        </div>
+                    </div>
                     <div class="top-toolbar__intro">
-                        <p class="toolbar-eyebrow">אלפא פוקר</p>
                         <div class="toolbar-status" aria-live="polite">
                             <div class="toolbar-select">
                                 <button id="player-count-label" type="button" class="toolbar-chip toolbar-chip--button" aria-haspopup="menu" aria-expanded="false" aria-controls="player-count-menu">9 שחקנים</button>
@@ -33,6 +41,7 @@
                             <button id="read-gg-table" type="button" class="toolbar-action toolbar-action--gg" data-toolbar-action="read-gg-table">קרא שולחן GG</button>
                             <button id="deal-random" type="button" class="toolbar-action" data-toolbar-action="deal-random">חלוקה אקראית</button>
                             <button id="clear-all" type="button" class="toolbar-action toolbar-action--quiet" data-toolbar-action="clear-all">נקה שולחן</button>
+                            <button id="gg-reader-debug-toggle" type="button" class="toolbar-action toolbar-action--inspector" aria-controls="gg-reader-debug" aria-expanded="false" disabled>נתוני קריאה</button>
                         </div>
                         <div id="gg-reader-status" class="gg-reader-status" data-status="idle" aria-live="polite">
                             <span id="gg-reader-status-text">GG מנותק</span>
@@ -45,7 +54,7 @@
                                 </select>
                             </label>
                             <button id="gg-reader-stop" type="button" class="gg-reader-stop" hidden>עצור</button>
-                            <button id="gg-reader-history-toggle" type="button" class="gg-reader-history-toggle">היסטוריה</button>
+                            <button id="gg-reader-history-toggle" type="button" class="gg-reader-history-toggle" aria-controls="gg-reader-history" aria-expanded="false">היסטוריה</button>
                         </div>
                     </div>
                 </header>
@@ -60,10 +69,14 @@
 
                 <section id="gg-reader-debug" class="gg-reader-debug" hidden aria-hidden="true">
                     <header class="gg-reader-debug__header">
-                        <h2>GG live state</h2>
+                        <div class="gg-reader-debug__title-group">
+                            <span class="gg-reader-debug__eyebrow">LIVE INSPECTOR</span>
+                            <h2>מצב קריאת GG</h2>
+                        </div>
                         <div class="gg-reader-debug__actions">
                             <button id="gg-reader-roi-overlay" type="button">ROI overlay</button>
                             <button id="gg-reader-field-crops" type="button">field crops</button>
+                            <button id="gg-reader-debug-close" type="button" class="gg-reader-debug__close" aria-label="סגירת נתוני הקריאה">סגור</button>
                         </div>
                     </header>
                     <div id="gg-reader-table-info" class="gg-reader-table-info" aria-live="polite"></div>
@@ -130,7 +143,12 @@
                                         <div class="board-area">
                                             <div id="table-pot" class="table-pot" aria-live="polite" aria-atomic="true">קופה: 0</div>
                                             <div id="board-cards" class="board-cards"></div>
+                                            <div id="gg-runout-boards" class="gg-runout-boards" aria-label="לוחות ריצה מרובים" hidden></div>
+                                            <div class="pot-chips" aria-hidden="true">
+                                                <img src="assets/pot-chips.png" alt="">
+                                            </div>
                                         </div>
+                                        <img class="table-watermark" src="favicon.svg" alt="" aria-hidden="true">
                                     </div>
                                 </div>
 
@@ -165,7 +183,7 @@
         </div>
     </main>
 
-    <div id="deck-overlay" class="deck-overlay" hidden role="dialog" aria-modal="true" aria-label="בחירת קלף">
+    <div id="deck-overlay" class="deck-overlay" hidden role="dialog" aria-modal="true" aria-hidden="true" aria-label="בחירת קלף">
         <div class="deck-overlay__inner">
             <header class="deck-overlay__header">
                 <span class="deck-overlay__title">בחרו קלף</span>
@@ -183,6 +201,9 @@
     <script src="solver/strategy/texasCfr.js"></script>
     <script src="solver/strategy/pycfrAdapter.js"></script>
     <script src="solver/strategy/postflopWasm.js"></script>
+    <script src="poker-position-policy.js"></script>
+    <script src="reader-session-policy.js"></script>
+    <script src="runtime-capability-policy.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

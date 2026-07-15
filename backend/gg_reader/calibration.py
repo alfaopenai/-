@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 from typing import Any
 
+from .data_paths import get_data_dir
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+DATA_DIR = get_data_dir()
 CALIBRATION_PATH = DATA_DIR / "gg_calibration.json"
 
 

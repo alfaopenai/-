@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
 from backend.gg_reader.fast_reader import FastGgReader, _FieldCache
 from backend.gg_reader.parser import parse_frame
 from backend.gg_reader.roi import crop_norm, downscale_hash
+from backend.gg_reader.table_crop import detect_clubgg_table_crop
 
 
 PREFLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_preflop.png"
@@ -28,6 +29,11 @@ COMPACT_RIVER_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_compact_river.pn
 CURRENT_COMPACT_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_clubgg_compact_live.png"
 CURRENT_TWO_TABLES_LIVE_FIXTURE = ROOT / "tests" / "fixtures" / "current_two_tables_live.png"
 CURRENT_SHOWDOWN_DIMMED_FIXTURE = ROOT / "tests" / "fixtures" / "current_showdown_dimmed_live.png"
+USER_FLOP_DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_user_flop_desktop.png"
+LIVE_TURN_FIXTURE = ROOT / "tests" / "fixtures" / "gg_table_live_turn_20260714.png"
+ALLIN_EQUITY_FLOP_FIXTURE = ROOT / "tests" / "fixtures" / "gg_allin_equity_flop.png"
+ALLIN_RUN2_TURN_FIXTURE = ROOT / "tests" / "fixtures" / "gg_allin_equity_run2_turn.png"
+ALLIN_TWO_RUNS_COMPLETE_FIXTURE = ROOT / "tests" / "fixtures" / "gg_allin_two_runs_complete.png"
 
 
 @unittest.skipIf(cv2 is None, "OpenCV is unavailable")
@@ -279,7 +285,7 @@ class FastGgReaderTest(unittest.TestCase):
         assert snapshot is not None
         self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_7max")
         self.assertEqual(snapshot.street, "river")
-        self.assertEqual(_card_codes(snapshot.board), ["AS", "6D", "3D", "4H", "QH"])
+        self.assertEqual(_card_codes(snapshot.board), ["AC", "6D", "3D", "4H", "QH"])
         self.assertAlmostEqual(snapshot.pot, 5.0, delta=0.25)
         self.assertLess(snapshot.pot, 1_000, "Bad Beat 73915.27 must not be parsed as the pot")
         self.assertEqual(snapshot.smallBlind, 1)
@@ -303,7 +309,12 @@ class FastGgReaderTest(unittest.TestCase):
             self.assertTrue(seat.active)
             self.assertAlmostEqual(seat.stack, expected_stack, delta=1.0)
             self.assertFalse((seat.name or "").lower().startswith("gg seat"))
-            self.assertEqual([card.display for card in seat.holeCards], ["X", "X"])
+        for index in {2, 3}:
+            self.assertEqual(by_index[index].status, "active")
+            self.assertEqual([card.display for card in by_index[index].holeCards], ["X", "X"])
+        for index in {1, 4, 5, 6}:
+            self.assertEqual(by_index[index].status, "folded")
+            self.assertEqual(by_index[index].holeCards, [])
         expected_names = {
             1: "J9sutied",
             2: "AW0311",
@@ -378,8 +389,17 @@ class FastGgReaderTest(unittest.TestCase):
         assert snapshot is not None
         self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_8max")
         self.assertEqual(_card_codes(snapshot.board), ["9S", "2C", "8C", "6H", "QS"])
+        self.assertEqual(snapshot.street, "showdown")
 
         by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        self.assertEqual(_card_codes(by_index[2].holeCards), ["10H", "AD"])
+        self.assertEqual(_card_codes(by_index[4].holeCards), ["QC", "JS"])
+        self.assertTrue(by_index[2].inHand)
+        self.assertTrue(by_index[4].inHand)
+        self.assertEqual(
+            {index for index, seat in by_index.items() if seat.inHand},
+            {2, 4},
+        )
         expected_stacks = {
             0: 274.1,
             1: 165.7,
@@ -394,6 +414,268 @@ class FastGgReaderTest(unittest.TestCase):
             self.assertTrue(by_index[index].active)
             self.assertAlmostEqual(by_index[index].stack, expected_stack, delta=1.0)
         self.assertLess(by_index[4].currentBet, 1.0, "winner +BB text must not be parsed as a live bet")
+
+    def test_live_all_in_reveal_and_two_runouts_stay_one_showdown(self) -> None:
+        for fixture in (
+            ALLIN_EQUITY_FLOP_FIXTURE,
+            ALLIN_RUN2_TURN_FIXTURE,
+            ALLIN_TWO_RUNS_COMPLETE_FIXTURE,
+        ):
+            if not fixture.exists():
+                raise unittest.SkipTest(f"Fixture is unavailable: {fixture}")
+
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        flop = self._load_fixture(ALLIN_EQUITY_FLOP_FIXTURE)
+        snapshot = self._parse_until(
+            reader,
+            flop,
+            lambda item: item.street == "showdown"
+            and sum(1 for seat in item.seats if len(_card_codes(seat.holeCards)) == 2) >= 2,
+            deadline_seconds=20.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        self.assertEqual(_card_codes(by_index[6].holeCards), ["JD", "9D"])
+        self.assertEqual(_card_codes(by_index[2].holeCards), ["AH", "JH"])
+        self.assertTrue(by_index[6].isAllIn)
+        self.assertEqual({index for index, seat in by_index.items() if seat.inHand}, {2, 6})
+
+        partial = self._load_fixture(ALLIN_RUN2_TURN_FIXTURE)
+        snapshot = self._parse_until(
+            reader,
+            partial,
+            lambda item: len(item.runouts) == 2 and len(item.runouts[0]) == 2,
+            deadline_seconds=20.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(_card_codes(snapshot.sharedBoard), ["JC", "9S", "3H"])
+        self.assertEqual(_card_codes(snapshot.runouts[0]), ["4C", "KC"])
+        self.assertEqual(_card_codes(snapshot.runouts[1]), ["QS"])
+        self.assertEqual(snapshot.street, "showdown")
+        self.assertFalse(snapshot.metrics.get("stabilizer", {}).get("handReset"))
+
+        complete = self._load_fixture(ALLIN_TWO_RUNS_COMPLETE_FIXTURE)
+        snapshot = self._parse_until(
+            reader,
+            complete,
+            lambda item: len(item.runouts) == 2 and len(item.runouts[1]) == 2,
+            deadline_seconds=20.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(_card_codes(snapshot.runouts[0]), ["4C", "KC"])
+        self.assertEqual(_card_codes(snapshot.runouts[1]), ["QS", "AD"])
+        self.assertEqual(_card_codes(snapshot.board), ["JC", "9S", "3H", "4C", "KC"])
+        self.assertEqual(snapshot.street, "showdown")
+
+    def test_live_turn_reads_exact_board_players_and_stacks(self) -> None:
+        frame = self._load_fixture(LIVE_TURN_FIXTURE)
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        # Seed values representative of the previous frame. The visible Take
+        # Seat and WIN overlays must clear these caches before they can leak
+        # into the returned live state.
+        reader._fields["seat-4-name"] = _FieldCache(
+            value="stale-player",
+            confidence=0.95,
+            raw="stale-player",
+            known=True,
+        )
+        reader._fields["seat-4-bet"] = _FieldCache(
+            value=7.0,
+            confidence=0.95,
+            raw="7BB",
+            known=True,
+        )
+        reader._fields["seat-4-action"] = _FieldCache(
+            value="bet",
+            confidence=0.95,
+            raw="Bet",
+            known=True,
+        )
+        reader._fields["seat-6-bet"] = _FieldCache(
+            value=1.0,
+            confidence=0.95,
+            raw="1BB",
+            known=True,
+        )
+        reader._fields["seat-6-action"] = _FieldCache(
+            value="bet",
+            confidence=0.95,
+            raw="Bet",
+            known=True,
+        )
+        expected_names = {
+            2: "king25a",
+            3: "Rami bakhar",
+            5: "itzik77733",
+            6: "NoobMaster69",
+            7: "natke",
+        }
+        expected_stacks = {
+            2: 94.3,
+            3: 164.4,
+            5: 87.3,
+            6: 230.8,
+            7: 126.3,
+        }
+
+        def exact_live_turn(item) -> bool:
+            by_index = {seat.physicalSeatIndex: seat for seat in item.seats}
+            return bool(
+                _card_codes(item.board) == ["10C", "KH", "6C", "7H"]
+                and abs(item.pot - 7.0) <= 0.15
+                and item.activePlayerCount == 5
+                and all(not by_index[index].active for index in {0, 1, 4})
+                and all(by_index[index].name == name for index, name in expected_names.items())
+                and all(abs(by_index[index].stack - stack) <= 0.15 for index, stack in expected_stacks.items())
+            )
+
+        snapshot = self._parse_until(
+            reader,
+            frame,
+            exact_live_turn,
+            deadline_seconds=30.0,
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertTrue(exact_live_turn(snapshot), snapshot.model_dump())
+        self.assertEqual(snapshot.metrics.get("profile"), "clubgg_compact_8max")
+        self.assertEqual(snapshot.street, "turn")
+        self.assertEqual(_card_codes(snapshot.board), ["10C", "KH", "6C", "7H"])
+        self.assertAlmostEqual(snapshot.pot, 7.0, delta=0.15)
+        self.assertEqual(snapshot.activePlayerCount, 5)
+
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        for index, expected_name in expected_names.items():
+            self.assertTrue(by_index[index].active)
+            self.assertEqual(by_index[index].name, expected_name)
+            self.assertAlmostEqual(by_index[index].stack, expected_stacks[index], delta=0.15)
+        for index in {0, 1, 4}:
+            self.assertFalse(by_index[index].active)
+
+        self.assertEqual(by_index[6].status, "active")
+        self.assertEqual(len(by_index[6].holeCards), 2)
+        self.assertTrue(all(card.hidden for card in by_index[6].holeCards))
+        for index in {2, 3, 5, 7}:
+            self.assertTrue(by_index[index].active)
+            self.assertEqual(by_index[index].status, "folded")
+            self.assertEqual(by_index[index].holeCards, [])
+
+        seat_debug = {
+            int(item["index"]): item
+            for item in (snapshot.metrics.get("seatDebug") or [])
+        }
+        self.assertTrue(seat_debug[6]["visualHoleCards"])
+        for index in {2, 3, 5, 7}:
+            self.assertFalse(seat_debug[index]["visualHoleCards"])
+        self.assertEqual(snapshot.metrics.get("winnerOverlaySeats"), [6])
+        self.assertEqual(set(snapshot.metrics.get("terminalFoldedSeats") or []), {2, 3, 5, 7})
+
+        stable_snapshots = []
+        for _index in range(96):
+            current = reader.parse(frame)
+            if current is not None:
+                stable_snapshots.append(current)
+            time.sleep(0.02)
+        self.assertGreaterEqual(len(stable_snapshots), 80)
+        for current in stable_snapshots[-80:]:
+            stable_by_index = {seat.physicalSeatIndex: seat for seat in current.seats}
+            self.assertEqual(current.activePlayerCount, 5)
+            self.assertFalse(stable_by_index[4].active)
+            self.assertEqual(stable_by_index[4].status, "empty")
+            self.assertEqual(stable_by_index[4].name, "")
+            self.assertEqual(stable_by_index[4].currentBet, 0.0)
+            self.assertEqual(stable_by_index[6].currentBet, 0.0)
+            self.assertEqual(stable_by_index[6].action, "none")
+            self.assertEqual(stable_by_index[6].status, "active")
+            self.assertEqual(len(stable_by_index[6].holeCards), 2)
+            for index in {2, 3, 5, 7}:
+                self.assertEqual(stable_by_index[index].status, "folded")
+                self.assertEqual(stable_by_index[index].holeCards, [])
+            self.assertTrue(all(seat.currentBet == 0.0 for seat in current.seats))
+
+        board_debug = snapshot.metrics.get("boardCardDebug") or []
+        self.assertEqual(
+            [(item.get("rank"), item.get("suit"), bool(item.get("detected"))) for item in board_debug[:4]],
+            [("10", "C", True), ("K", "H", True), ("6", "C", True), ("7", "H", True)],
+        )
+
+    def test_user_desktop_flop_reads_exactly_and_reaches_fast_steady_state(self) -> None:
+        desktop = self._load_fixture(USER_FLOP_DESKTOP_FIXTURE)
+        crop = detect_clubgg_table_crop(desktop)
+        self.assertEqual(
+            crop.crop_rect,
+            {"left": 117, "top": 61, "width": 1063, "height": 789},
+            crop.diagnostics,
+        )
+        self.assertEqual(crop.source, "image-detected-table")
+
+        reader = FastGgReader()
+        self.addCleanup(reader.close)
+        expected_names = {
+            0: "Cyberster",
+            3: "yarkat1965",
+            4: "HolyRiver88",
+            5: "itzik77733",
+            6: "NoobMaster69",
+            7: "natke",
+        }
+        started_at = time.perf_counter()
+
+        def exact_user_hand(item) -> bool:
+            by_index = {seat.physicalSeatIndex: seat for seat in item.seats}
+            return bool(
+                item.metrics.get("profile") == "clubgg_compact_8max"
+                and _card_codes(item.board) == ["6S", "AS", "9D"]
+                and abs(item.pot - 11.5) <= 0.15
+                and item.smallBlind == 1
+                and item.bigBlind == 2
+                and item.dealerSeatIndex == 5
+                and item.activePlayerCount == 6
+                and {index: by_index[index].name for index in expected_names} == expected_names
+                and by_index[3].action == "call"
+                and by_index[6].currentBet == 0
+            )
+
+        snapshot = self._parse_until(reader, crop.cropped_frame, exact_user_hand, deadline_seconds=30.0)
+        convergence_seconds = time.perf_counter() - started_at
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertTrue(exact_user_hand(snapshot), snapshot.model_dump())
+        self.assertLess(convergence_seconds, 30.0)
+
+        by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
+        expected_stacks = {0: 30.9, 3: 38.0, 4: 101.2, 5: 94.5, 6: 198.1, 7: 126.8}
+        for index, expected_stack in expected_stacks.items():
+            self.assertAlmostEqual(by_index[index].stack, expected_stack, delta=0.15)
+        self.assertAlmostEqual(by_index[3].currentBet, 1.0, delta=0.05)
+        # The 9.5 BB badge is the central pot subtotal from the prior street,
+        # not a live bet owned by the folded bottom seat.
+        self.assertEqual(by_index[4].currentBet, 0.0)
+        self.assertAlmostEqual(by_index[5].currentBet, 1.0, delta=0.05)
+        self.assertEqual(by_index[6].currentBet, 0.0, "left-side badge must not become a phantom bet")
+        self.assertEqual(by_index[5].position, "BTN")
+
+        drain_deadline = time.perf_counter() + 5.0
+        while reader.get_metrics().get("ocrPending") and time.perf_counter() < drain_deadline:
+            reader.parse(crop.cropped_frame)
+            time.sleep(0.02)
+        self.assertEqual(reader.get_metrics().get("ocrPending"), 0)
+
+        timings_ms: list[float] = []
+        for _index in range(120):
+            frame_started_at = time.perf_counter()
+            reader.parse(crop.cropped_frame)
+            timings_ms.append((time.perf_counter() - frame_started_at) * 1000)
+        ordered = sorted(timings_ms)
+        average_ms = sum(timings_ms) / len(timings_ms)
+        p95_ms = ordered[int(0.95 * (len(ordered) - 1))]
+        self.assertLess(average_ms, 100.0, f"avg={average_ms:.2f}ms convergence={convergence_seconds:.2f}s")
+        self.assertLess(p95_ms, 180.0, f"p95={p95_ms:.2f}ms avg={average_ms:.2f}ms")
 
     def _parse_until(self, reader: FastGgReader, frame: np.ndarray, predicate, *, deadline_seconds: float = 4.0) -> object:
         snapshot = None

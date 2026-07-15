@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -13,9 +14,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.gg_reader.models import GgCard, GgSeat, GgTableSnapshot
-from backend.gg_reader.ocr import normalize_amount
+from backend.gg_reader.fast_amount import read_amount_fast
+from backend.gg_reader.fast_reader import _read_amount_source
+from backend.gg_reader.ocr import normalize_amount, read_table_title
 from backend.gg_reader.parser import parse_frame
 from backend.gg_reader.profile_matcher import choose_and_fit_profile
+from backend.gg_reader.roi import crop_norm
 from backend.gg_reader.table_crop import detect_clubgg_table_crop, validate_real_clubgg_crop
 from backend.gg_reader.table_state import TableStateStabilizer
 from backend.main import build_normalized_state, infer_actions
@@ -24,6 +28,19 @@ try:
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None
+
+
+class BackendImportLifecycleTest(unittest.TestCase):
+    def test_backend_import_exits_without_ocr_worker_hang(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-c", "import backend.main; print('backend-import-ok')"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        self.assertIn("backend-import-ok", completed.stdout)
 
 
 class AmountNormalizationTest(unittest.TestCase):
@@ -212,12 +229,41 @@ class TableStateStabilizerTest(unittest.TestCase):
 
 @unittest.skipIf(cv2 is None, "OpenCV is unavailable")
 class DebugFrameCropProfileTest(unittest.TestCase):
-    def test_crop_detection_from_latest_debug_frame(self) -> None:
-        frame = _load_optional_image(ROOT / "backend" / "data" / "debug_last_frame.png")
+    def test_sparse_live_8max_geometry_does_not_fall_back_to_7max(self) -> None:
+        frame = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_live_8max_sparse_seats.png")
+        profile = choose_and_fit_profile(frame)
+
+        self.assertEqual(profile.name, "clubgg_compact_8max")
+        self.assertGreaterEqual(float((profile.diagnostics or {}).get("stackAlignmentScore") or 0.0), 0.80)
+
+        seats = {seat.index: seat for seat in profile.seats}
+        expected_stacks = {2: 157.2, 5: 89.7, 6: 216.4}
+        for seat_index, expected in expected_stacks.items():
+            value, confidence, _raw = read_amount_fast(crop_norm(frame, seats[seat_index].stack))
+            self.assertAlmostEqual(value, expected, delta=0.05)
+            self.assertGreaterEqual(confidence, 0.85)
+
+        # RapidOCR sees the decimal in 157.2BB as a colon on this exact crop.
+        # The background fallback must retain the complete tight-OCR value,
+        # not replace it with the trailing 2BB.
+        value, confidence, _raw, source = _read_amount_source(crop_norm(frame, seats[2].stack))
+        self.assertAlmostEqual(value, 157.2, delta=0.05)
+        self.assertGreaterEqual(confidence, 0.80)
+        self.assertNotEqual(source, "rapidocr_recognizer")
+
+        pot, _confidence, _raw = read_amount_fast(crop_norm(frame, profile.pot))
+        self.assertAlmostEqual(pot, 2.5, delta=0.05)
+        title, title_confidence, _reason = read_table_title(crop_norm(frame, profile.title_blinds))
+        self.assertIn("2/4", title)
+        self.assertGreaterEqual(title_confidence, 0.80)
+
+    def test_crop_detection_from_fixed_user_desktop_fixture(self) -> None:
+        frame = _load_optional_image(ROOT / "tests" / "fixtures" / "gg_table_user_flop_desktop.png")
         crop = detect_clubgg_table_crop(frame)
-        self.assertGreaterEqual(crop.confidence, 0.20)
-        self.assertGreaterEqual(crop.cropped_frame.shape[1], 320)
-        self.assertGreaterEqual(crop.cropped_frame.shape[0], 240)
+        self.assertTrue(crop.diagnostics.get("isRealClubGg"), crop.diagnostics)
+        self.assertEqual(crop.source, "image-detected-table")
+        self.assertEqual(crop.crop_rect, {"left": 117, "top": 61, "width": 1063, "height": 789})
+        self.assertEqual(crop.cropped_frame.shape[:2], (789, 1063))
 
     def test_profile_fitting_alignment_on_latest_cropped_frame(self) -> None:
         frame = _load_optional_image(ROOT / "backend" / "data" / "debug_last_cropped_frame.png")

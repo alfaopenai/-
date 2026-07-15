@@ -12,14 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .gg_reader.calibration import load_calibration, save_calibration
 from .gg_reader.capture import ScreenCapture, list_gg_windows, list_monitors, resolve_monitor_index
+from .gg_reader.data_paths import get_data_dir
 from .gg_reader.fast_reader import FastGgReader
 from .gg_reader.history_store import append_event, read_hands, read_history, record_snapshot
 from .gg_reader.models import GgReaderStartRequest, GgReaderStatus, GgTableSnapshot
-from .gg_reader.parser import load_mock_snapshot, parse_frame
+from .gg_reader.parser import load_mock_snapshot, parse_frame, reset_parser_cache
 from .gg_reader.table_crop import detect_clubgg_table_crop
 
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = get_data_dir()
 DEBUG_FRAME_PATH = DATA_DIR / "debug_last_frame.png"
 DEBUG_CROPPED_FRAME_PATH = DATA_DIR / "debug_last_cropped_frame.png"
 DEBUG_ROI_OVERLAY_PATH = DATA_DIR / "debug_roi_overlay.png"
@@ -66,10 +67,25 @@ _CALIBRATION_CACHE_TTL_SECONDS = 2.0
 _cached_windows: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _cached_monitors: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _cached_calibration: tuple[float, dict[str, Any] | None] = (0.0, None)
+_reader_pipeline_task: asyncio.Task[Any] | None = None
+_reader_session_generation = 0
+_last_browser_frame_seq: int | None = None
+_native_subscriber_counter = 0
+_native_capture_owner: int | None = None
+_native_subscribers: dict[int, asyncio.Queue[tuple[int, dict[str, Any]]]] = {}
+_native_latest_payload: tuple[int, dict[str, Any]] | None = None
 
 
-POSITION_SEQUENCE = ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"]
-HEADS_UP_POSITIONS = ["SB", "BB"]
+POSITIONS_BY_PLAYER_COUNT = {
+    2: ["SB", "BB"],
+    3: ["BTN", "SB", "BB"],
+    4: ["BTN", "SB", "BB", "CO"],
+    5: ["BTN", "SB", "BB", "UTG", "CO"],
+    6: ["BTN", "SB", "BB", "UTG", "HJ", "CO"],
+    7: ["BTN", "SB", "BB", "UTG", "MP", "HJ", "CO"],
+    8: ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "HJ", "CO"],
+    9: ["BTN", "SB", "BB", "UTG", "UTG+1", "MP", "LJ", "HJ", "CO"],
+}
 STREET_ORDER = {"unknown": -1, "preflop": 0, "flop": 1, "turn": 2, "river": 3, "showdown": 4}
 READ_RATE_MARGIN = 1.15
 
@@ -89,9 +105,11 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
     detected_pot = round(float(snapshot.pot or 0.0), 4)
     warnings: list[str] = []
     if calculated_pot is not None and detected_pot > 0:
-        mismatch = abs(detected_pot - calculated_pot)
-        if mismatch > max(0.5, detected_pot * 0.25):
-            warnings.append(f"detected pot {detected_pot:g} BB differs from visible bets {calculated_pot:g} BB")
+        # The total pot legitimately exceeds the chips still visible on later
+        # streets. Only the impossible inverse is a useful warning.
+        shortfall = calculated_pot - detected_pot
+        if shortfall > max(0.5, calculated_pot * 0.20):
+            warnings.append(f"detected pot {detected_pot:g} BB is below visible bets {calculated_pot:g} BB")
     warnings.extend(str(item) for item in payload_metrics.get("cropWarnings") or [] if item)
 
     board_cards = [_card_code(card) for card in snapshot.board if _card_code(card)]
@@ -111,11 +129,15 @@ def build_normalized_state(snapshot: GgTableSnapshot, metrics: dict[str, Any] | 
             "is_dealer": bool(seat.isDealer or int(seat.physicalSeatIndex) == int(snapshot.dealerSeatIndex)),
             "status": seat.status,
             "position": seat.position,
+            "action": seat.action,
+            "action_amount_bb": round(float(seat.actionAmount or 0.0), 4) if float(seat.actionAmount or 0.0) > 0 else None,
+            "action_source": seat.actionSource or "none",
             "last_updated_at": int(snapshot.timestamp),
             "confidence": {
                 "name": round(float(seat.nameConfidence or 0.0), 4),
                 "stack": round(float(seat.stackConfidence or 0.0), 4),
                 "bet": round(float(seat.betConfidence or 0.0), 4),
+                "action": round(float(seat.actionConfidence or 0.0), 4),
                 "cards": round(_cards_confidence(seat.holeCards), 4),
                 "seat": round(float(seat.confidence or 0.0), 4),
             },
@@ -244,6 +266,9 @@ def enrich_snapshot(snapshot: GgTableSnapshot) -> tuple[GgTableSnapshot, list[di
 def is_new_hand(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -> bool:
     if previous is None:
         return True
+    stabilizer_metrics = snapshot.metrics.get("stabilizer") if isinstance(snapshot.metrics, dict) else None
+    if isinstance(stabilizer_metrics, dict) and bool(stabilizer_metrics.get("handReset")):
+        return True
     previous_street = STREET_ORDER.get(previous.street, -1)
     next_street = STREET_ORDER.get(snapshot.street, -1)
     previous_board_count = sum(1 for card in previous.board if card.visible and not card.hidden)
@@ -252,11 +277,6 @@ def is_new_hand(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -> 
         return True
     if previous_board_count > 0 and next_board_count == 0 and snapshot.street == "preflop":
         return True
-    if next_board_count == 0 and previous_board_count == 0 and previous.dealerSeatIndex != snapshot.dealerSeatIndex:
-        previous_bets = sum(float(seat.currentBet or 0) for seat in previous.seats if seat.active)
-        next_bets = sum(float(seat.currentBet or 0) for seat in snapshot.seats if seat.active)
-        if previous_bets == 0 and next_bets == 0:
-            return True
     return False
 
 
@@ -268,7 +288,7 @@ def assign_positions(snapshot: GgTableSnapshot, active_indexes: list[int]) -> No
         snapshot.dealerSeatIndex = active_indexes[0]
 
     dealer_order_index = active_indexes.index(snapshot.dealerSeatIndex)
-    positions = HEADS_UP_POSITIONS if len(active_indexes) == 2 else POSITION_SEQUENCE
+    positions = POSITIONS_BY_PLAYER_COUNT.get(len(active_indexes), POSITIONS_BY_PLAYER_COUNT[9])
     seat_by_index = {seat.physicalSeatIndex: seat for seat in snapshot.seats}
 
     for physical_index in range(9):
@@ -289,13 +309,15 @@ def assign_positions(snapshot: GgTableSnapshot, active_indexes: list[int]) -> No
 
 
 def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -> None:
-    previous_seats = {seat.physicalSeatIndex: seat for seat in previous.seats} if previous else {}
+    same_hand = bool(
+        previous
+        and (not previous.handId or not snapshot.handId or previous.handId == snapshot.handId)
+    )
+    same_street = bool(same_hand and previous and previous.street == snapshot.street)
+    previous_seats = {seat.physicalSeatIndex: seat for seat in previous.seats} if same_hand and previous else {}
     previous_max_bet = max(
         [round(float(seat.currentBet or 0), 2) for seat in previous.seats if seat.active] or [0.0]
-    ) if previous else 0.0
-    current_max_bet = max(
-        [round(float(seat.currentBet or 0), 2) for seat in snapshot.seats if seat.active] or [0.0]
-    )
+    ) if same_street and previous else 0.0
     now_ms = int(snapshot.timestamp or time.time() * 1000)
 
     for seat in snapshot.seats:
@@ -304,33 +326,77 @@ def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -
             seat.actionAmount = 0
             seat.actionSource = "empty"
             seat.status = "empty"
+            seat.inHand = False
+            seat.isAllIn = False
             continue
 
         before = previous_seats.get(seat.physicalSeatIndex)
         current_bet = round(float(seat.currentBet or 0), 2)
-        before_bet = round(float(before.currentBet or 0), 2) if before else 0.0
+        before_bet = round(float(before.currentBet or 0), 2) if before and same_street else 0.0
         had_cards = bool(before and before.holeCards)
         has_cards = bool(seat.holeCards)
+        has_visible_cards = bool(
+            len(seat.holeCards) >= 2
+            and all(card.visible and not card.hidden and card.rank and card.suit for card in seat.holeCards[:2])
+        )
         explicit_action = seat.action if seat.action in {"check", "call", "bet", "raise", "fold", "all-in", "waiting"} else "none"
+        action_source = str(seat.actionSource or "")
+        provisional_visible_bet = explicit_action == "bet" and action_source in {"visible_bet", "held", "none", ""}
 
-        if explicit_action not in {"none"} and float(seat.actionConfidence or 0.0) >= 0.45:
+        # A chip amount alone only tells us that money is present; it cannot
+        # distinguish a bet, call, or raise. Preserve actual action labels and
+        # state-derived folds/all-ins, then classify visible chips by delta.
+        if has_visible_cards:
+            # Face-up cards at showdown are definitive in-hand evidence.  They
+            # must recover from a transient cards-disappeared fold during the
+            # reveal animation and from red equity glyphs mistaken for Fold.
+            seat.status = "active"
+            seat.inHand = True
+            seat.isAllIn = bool(seat.isAllIn or (before and before.isAllIn))
+            if explicit_action == "fold" or (before and before.status == "folded"):
+                seat.action = "all-in" if seat.isAllIn else "none"
+                seat.actionAmount = float(seat.currentBet or 0.0)
+                seat.actionConfidence = max(float(seat.actionConfidence or 0.0), 0.88)
+                seat.actionSource = "exposed_cards"
+            continue
+
+        if (
+            explicit_action != "none"
+            and not provisional_visible_bet
+            and float(seat.actionConfidence or 0.0) >= 0.45
+        ):
             if not seat.actionSource:
                 seat.actionSource = "label_ocr" if explicit_action != "bet" else "visible_bet"
             if explicit_action == "fold":
                 seat.holeCards = []
                 seat.status = "folded"
+                seat.inHand = False
                 seat.actionAmount = 0
                 seat.actionSource = seat.actionSource or "label_ocr"
             elif explicit_action in {"call", "bet", "raise", "all-in"}:
                 seat.actionAmount = current_bet or float(seat.actionAmount or 0)
+                if explicit_action == "all-in":
+                    seat.isAllIn = True
+                    seat.inHand = True
             continue
 
-        if before and before.active and had_cards and not has_cards:
+        if before and before.active and before.status == "folded" and same_hand:
+            seat.action = "fold"
+            seat.actionAmount = 0
+            seat.actionConfidence = max(float(seat.actionConfidence or 0), 0.80)
+            seat.actionSource = before.actionSource or "held"
+            seat.status = "folded"
+            seat.inHand = False
+            seat.holeCards = []
+            continue
+
+        if same_hand and before and before.active and had_cards and not has_cards:
             seat.action = "fold"
             seat.actionAmount = 0
             seat.actionConfidence = max(float(seat.actionConfidence or 0), 0.90)
             seat.actionSource = "cards_disappeared"
             seat.status = "folded"
+            seat.inHand = False
             continue
 
         if float(seat.stack or 0.0) <= 0.05 and (current_bet > 0 or float(seat.committed or 0) > 0):
@@ -338,6 +404,8 @@ def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -
             seat.actionAmount = max(current_bet, float(seat.committed or 0))
             seat.actionConfidence = max(float(seat.actionConfidence or 0), 0.82)
             seat.actionSource = "stack_zero"
+            seat.isAllIn = True
+            seat.inHand = True
             continue
 
         if current_bet > before_bet + 0.01:
@@ -354,35 +422,32 @@ def infer_actions(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None) -
             seat.actionConfidence = max(float(seat.betConfidence or 0), 0.80)
             continue
 
-        if current_bet > 0 and current_bet >= current_max_bet - 0.01 and previous_max_bet > 0 and before_bet < current_bet:
-            seat.action = "call"
-            seat.actionAmount = current_bet
-            seat.actionConfidence = max(float(seat.betConfidence or 0), 0.72)
-            seat.actionSource = "bet_delta"
-            continue
-
-        if current_bet > 0:
-            if seat.action not in {"bet", "raise", "call", "all-in"}:
-                seat.action = "bet"
-            seat.actionAmount = current_bet
-            seat.actionSource = seat.actionSource or "visible_bet"
-            continue
-
-        if before and before.action in {"check", "fold", "call", "bet", "raise", "all-in"}:
+        if (
+            before
+            and before.action in {"check", "fold", "call", "bet", "raise", "all-in"}
+            and str(before.actionSource or "") not in {"", "none", "held", "visible_bet"}
+        ):
             age_ms = max(0, now_ms - int(previous.timestamp or now_ms))
             if age_ms <= 2000:
                 seat.action = before.action
                 seat.actionAmount = float(before.actionAmount or 0)
                 seat.actionConfidence = min(float(before.actionConfidence or 0.0), 0.55)
-                seat.actionSource = before.actionSource or "held"
+                seat.actionSource = "held"
                 if before.status == "folded":
                     seat.status = "folded"
                 continue
 
-        if seat.action not in {"check", "fold", "waiting"}:
-            seat.action = "none"
-            seat.actionSource = "none"
+        if current_bet > 0 and before is None:
+            seat.action = "bet"
+            seat.actionAmount = current_bet
+            seat.actionConfidence = max(float(seat.betConfidence or 0), 0.55)
+            seat.actionSource = "visible_bet"
+            continue
+
+        seat.action = "none"
+        seat.actionSource = "none"
         seat.actionAmount = 0
+        seat.actionConfidence = 0.0
 
 
 def target_reader_interval_seconds(fps: float) -> float:
@@ -390,11 +455,137 @@ def target_reader_interval_seconds(fps: float) -> float:
     return max(0.05, 1 / (requested_fps * READ_RATE_MARGIN))
 
 
+def _offer_native_payload(
+    queue: asyncio.Queue[tuple[int, dict[str, Any]]],
+    payload: tuple[int, dict[str, Any]],
+) -> None:
+    """Keep only the newest observation for a websocket subscriber."""
+
+    while not queue.empty():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+    queue.put_nowait(payload)
+
+
+def _register_native_subscriber() -> tuple[int, asyncio.Queue[tuple[int, dict[str, Any]]]]:
+    global _native_subscriber_counter, _native_capture_owner
+
+    _native_subscriber_counter += 1
+    subscriber_id = _native_subscriber_counter
+    queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue(maxsize=1)
+    _native_subscribers[subscriber_id] = queue
+    if _native_capture_owner is None:
+        _native_capture_owner = subscriber_id
+    if (
+        _native_latest_payload is not None
+        and _native_latest_payload[0] == _reader_session_generation
+        and reader_state.running
+    ):
+        _offer_native_payload(queue, _native_latest_payload)
+    return subscriber_id, queue
+
+
+def _unregister_native_subscriber(subscriber_id: int) -> None:
+    global _native_capture_owner
+
+    _native_subscribers.pop(subscriber_id, None)
+    if _native_capture_owner == subscriber_id:
+        # Dict insertion order gives deterministic ownership and, importantly,
+        # ownership changes only after the old owner's capture task has exited.
+        _native_capture_owner = next(iter(_native_subscribers), None)
+
+
+def _is_native_capture_owner(subscriber_id: int) -> bool:
+    return _native_capture_owner == subscriber_id
+
+
+def _clear_native_delivery_state() -> None:
+    global _native_latest_payload
+
+    _native_latest_payload = None
+    for queue in tuple(_native_subscribers.values()):
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+
+def _publish_native_payload(generation: int, data: dict[str, Any]) -> bool:
+    global _native_latest_payload
+
+    if not _reader_session_is_current(generation) or reader_config.captureMode == "browser":
+        return False
+    payload = (generation, data)
+    _native_latest_payload = payload
+    for queue in tuple(_native_subscribers.values()):
+        _offer_native_payload(queue, payload)
+    return True
+
+
+async def _receive_native_payload(
+    queue: asyncio.Queue[tuple[int, dict[str, Any]]],
+    *,
+    timeout: float,
+) -> dict[str, Any] | None:
+    try:
+        generation, data = await asyncio.wait_for(queue.get(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+    if (
+        not _reader_session_is_current(generation)
+        or reader_config.captureMode == "browser"
+    ):
+        return None
+    return data
+
+
+def _invalidate_reader_session() -> int:
+    global _reader_session_generation, _last_browser_frame_seq
+
+    _reader_session_generation += 1
+    _last_browser_frame_seq = None
+    _clear_native_delivery_state()
+    return _reader_session_generation
+
+
+def _reader_session_is_current(generation: int) -> bool:
+    return generation == _reader_session_generation and bool(reader_state.running)
+
+
+def _browser_session_is_current(generation: int) -> bool:
+    return _reader_session_is_current(generation) and reader_config.captureMode == "browser"
+
+
+def _claim_browser_frame_sequence(seq: int | None, generation: int) -> str | None:
+    global _last_browser_frame_seq
+
+    if not _browser_session_is_current(generation):
+        return "session-stale"
+    if seq is None:
+        return None
+    normalized_seq = int(seq)
+    if _last_browser_frame_seq is not None and normalized_seq <= _last_browser_frame_seq:
+        return "duplicate-seq" if normalized_seq == _last_browser_frame_seq else "out-of-order-seq"
+    _last_browser_frame_seq = normalized_seq
+    return None
+
+
 @app.post("/api/gg-reader/start")
 async def start_reader(request: GgReaderStartRequest) -> GgReaderStatus:
-    global reader_config, reader_state
+    global reader_config, reader_state, current_hand_id, last_snapshot
+    generation = _invalidate_reader_session()
+    reader_state.running = False
+    reader_state.message = "starting"
     resolved_index, monitor_message = resolve_monitor_index(request.monitorIndex)
+    await _reset_reader_runtime()
+    if generation != _reader_session_generation:
+        return reader_state
     reader_config = request.model_copy(update={"monitorIndex": resolved_index})
+    current_hand_id = None
+    last_snapshot = None
     message = monitor_message or "running"
     if request.captureMode == "browser":
         message = "browser capture ready"
@@ -416,8 +607,12 @@ async def start_reader(request: GgReaderStartRequest) -> GgReaderStatus:
 
 @app.post("/api/gg-reader/stop")
 async def stop_reader() -> GgReaderStatus:
+    generation = _invalidate_reader_session()
     reader_state.running = False
     reader_state.message = "stopped"
+    await _reset_reader_runtime()
+    if generation != _reader_session_generation:
+        return reader_state
     append_event({"time": int(time.time() * 1000), "type": "reader_stopped", "message": "GG reader stopped"})
     return reader_state
 
@@ -504,12 +699,24 @@ def crop_browser_frame_to_gg_window(frame: Any) -> Any:
 
 
 def refine_gg_table_crop(frame: Any, metrics: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
-    crop_result = detect_clubgg_table_crop(frame, {
-        **metrics,
+    # A browser upload is not necessarily the current monitor at native size:
+    # getDisplayMedia may send a resized screen, an individual window, or a
+    # screenshot supplied by another machine. In those cases the locally
+    # selected HWND metadata must not validate unrelated pixels. Geometry may
+    # still guide a confirmed full-monitor crop, but arbitrary-frame fallbacks
+    # are intentionally validated from their visual ClubGG anchors alone.
+    pixels_only = bool(metrics.get("ignoreSelectedWindowForCropValidation"))
+    crop_metadata: dict[str, Any] = {
         "source": metrics.get("cropSource"),
-        "title": metrics.get("selectedWindowTitle"),
-        **(metrics.get("selectedWindow") if isinstance(metrics.get("selectedWindow"), dict) else {}),
-    })
+        "captureSource": metrics.get("captureSource"),
+    }
+    if not pixels_only:
+        crop_metadata.update({
+            **metrics,
+            "title": metrics.get("selectedWindowTitle"),
+            **(metrics.get("selectedWindow") if isinstance(metrics.get("selectedWindow"), dict) else {}),
+        })
+    crop_result = detect_clubgg_table_crop(frame, crop_metadata)
     refined_metrics = dict(metrics)
     base_rect = metrics.get("cropRect") or {"left": 0, "top": 0, "width": frame.shape[1], "height": frame.shape[0]}
     local_rect = crop_result.crop_rect
@@ -519,7 +726,12 @@ def refine_gg_table_crop(frame: Any, metrics: dict[str, Any]) -> tuple[Any, dict
         "width": int(local_rect.get("width") or 0),
         "height": int(local_rect.get("height") or 0),
     }
+    incoming_warnings = list(metrics.get("cropWarnings") or [])
     refined_metrics.update(crop_result.metrics())
+    refined_metrics["cropWarnings"] = list(dict.fromkeys([
+        *incoming_warnings,
+        *list(refined_metrics.get("cropWarnings") or []),
+    ]))
     refined_metrics["cropSource"] = (
         str(metrics.get("cropSource") or "browser")
         if crop_result.source in {"window-client", "browser-window-direct"}
@@ -528,7 +740,22 @@ def refine_gg_table_crop(frame: Any, metrics: dict[str, Any]) -> tuple[Any, dict
     refined_metrics["cropRect"] = combined_rect
     refined_metrics["inputFrameWidth"] = int(metrics.get("inputFrameWidth") or frame.shape[1])
     refined_metrics["inputFrameHeight"] = int(metrics.get("inputFrameHeight") or frame.shape[0])
+    refined_metrics.pop("ignoreSelectedWindowForCropValidation", None)
     return crop_result.cropped_frame, refined_metrics
+
+
+def _refine_arbitrary_browser_frame(
+    frame: Any,
+    metrics: dict[str, Any],
+    *,
+    warning: str,
+) -> tuple[Any, dict[str, Any]]:
+    fallback_metrics = dict(metrics)
+    fallback_metrics["cropSource"] = "browser-arbitrary-frame"
+    fallback_metrics["browserFrameGeometryFallback"] = True
+    fallback_metrics["ignoreSelectedWindowForCropValidation"] = True
+    fallback_metrics["cropWarnings"] = [warning]
+    return refine_gg_table_crop(frame, fallback_metrics)
 
 
 def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[str, Any]]:
@@ -561,23 +788,21 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     window_width = int(window.get("width") or 0)
     window_height = int(window.get("height") or 0)
     if window_width <= 0 or window_height <= 0:
-        metrics["cropSource"] = "browser-invalid-window"
-        return refine_gg_table_crop(frame, metrics)
+        return _refine_arbitrary_browser_frame(frame, metrics, warning="browser-invalid-window")
 
     # If the browser shared only the GG window, keep the frame as-is.
     if frame_width <= window_width * 1.35 and frame_height <= window_height * 1.35:
         metrics["cropSource"] = "browser-window-direct"
+        metrics["ignoreSelectedWindowForCropValidation"] = True
         return refine_gg_table_crop(frame, metrics)
 
     monitors = get_cached_monitors()
     if not _browser_frame_looks_like_full_monitor(frame_width, frame_height, monitors):
-        metrics["cropSource"] = "browser-frame-not-full-monitor"
-        metrics["isRealClubGg"] = False
-        metrics["realClubGgScore"] = 0.0
-        metrics["rejectedReason"] = "browser-frame-not-full-monitor"
-        metrics["rejectedBrowserChrome"] = True
-        metrics["cropWarnings"] = ["browser-frame-not-full-monitor"]
-        return frame, metrics
+        return _refine_arbitrary_browser_frame(
+            frame,
+            metrics,
+            warning="browser-frame-not-full-monitor",
+        )
 
     monitor = next(
         (
@@ -588,8 +813,7 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
         monitors[0] if monitors else None,
     )
     if not monitor:
-        metrics["cropSource"] = "browser-monitor-unavailable"
-        return refine_gg_table_crop(frame, metrics)
+        return _refine_arbitrary_browser_frame(frame, metrics, warning="browser-monitor-unavailable")
 
     scale_x = frame_width / max(1, int(monitor["width"]))
     scale_y = frame_height / max(1, int(monitor["height"]))
@@ -603,12 +827,11 @@ def crop_browser_frame_to_gg_window_with_metrics(frame: Any) -> tuple[Any, dict[
     right = max(left, min(frame_width, right))
     bottom = max(top, min(frame_height, bottom))
     if right - left < 320 or bottom - top < 240:
-        metrics["cropSource"] = "browser-crop-too-small"
-        metrics["isRealClubGg"] = False
-        metrics["realClubGgScore"] = 0.0
-        metrics["rejectedReason"] = "browser-window-rect-outside-frame"
-        metrics["cropWarnings"] = ["browser-window-rect-outside-frame"]
-        return frame, metrics
+        return _refine_arbitrary_browser_frame(
+            frame,
+            metrics,
+            warning="browser-window-rect-outside-frame",
+        )
     cropped = frame[top:bottom, left:right]
     metrics["croppedFrameWidth"] = int(right - left)
     metrics["croppedFrameHeight"] = int(bottom - top)
@@ -678,6 +901,7 @@ def _extract_crop_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "rejectedReason",
         "selectedCropCandidate",
         "cropCandidates",
+        "browserFrameGeometryFallback",
     }
     return {key: value for key, value in metrics.items() if key in keys}
 
@@ -712,12 +936,149 @@ def _ignore_background_task_error(task: asyncio.Task[Any]) -> None:
         pass
 
 
+def _reader_pipeline_busy() -> bool:
+    return _reader_pipeline_task is not None and not _reader_pipeline_task.done()
+
+
+def _start_reader_pipeline(awaitable: Any) -> asyncio.Task[Any]:
+    global _reader_pipeline_task
+    if _reader_pipeline_busy():
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise RuntimeError("GG reader pipeline is already busy")
+    task = asyncio.create_task(awaitable)
+    _reader_pipeline_task = task
+    task.add_done_callback(_reader_pipeline_finished)
+    return task
+
+
+def _reader_pipeline_finished(task: asyncio.Task[Any]) -> None:
+    global _reader_pipeline_task
+    if _reader_pipeline_task is task:
+        _reader_pipeline_task = None
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def _wait_for_reader_pipeline() -> None:
+    task = _reader_pipeline_task
+    if task is None:
+        return
+    try:
+        await asyncio.shield(task)
+    except Exception:
+        pass
+
+
+async def _reset_reader_runtime() -> None:
+    async def reset_pipeline() -> None:
+        await _to_thread_until_complete(FAST_GG_READER.reset)
+        await _to_thread_until_complete(reset_parser_cache)
+
+    while True:
+        await _wait_for_reader_pipeline()
+        try:
+            task = _start_reader_pipeline(reset_pipeline())
+        except RuntimeError:
+            continue
+        await asyncio.shield(task)
+        return
+
+
+async def _to_thread_until_complete(function: Any, *args: Any) -> Any:
+    """Keep ownership until the real worker exits, even if its waiter is cancelled."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(worker)
+        except Exception:
+            pass
+        raise
+
+
+async def _process_browser_pipeline(body: bytes) -> dict[str, Any]:
+    decode_started_at = time.perf_counter()
+    frame = await _to_thread_until_complete(decode_browser_frame, body)
+    decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
+    crop_started_at = time.perf_counter()
+    frame, crop_metrics = await _to_thread_until_complete(crop_browser_frame_to_gg_window_with_metrics, frame)
+    crop_ms = round((time.perf_counter() - crop_started_at) * 1000, 2)
+    schedule_cropped_debug_frame_save(frame)
+    parse_started_at = time.perf_counter()
+    if not bool(crop_metrics.get("isRealClubGg")):
+        snapshot = None
+        backend_parse_ms = 0.0
+    else:
+        snapshot = await _to_thread_until_complete(
+            parse_frame,
+            frame,
+            get_cached_calibration(),
+            FAST_GG_READER,
+            {**crop_metrics, "source": crop_metrics.get("cropSource")},
+        )
+        backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
+    return {
+        "snapshot": snapshot,
+        "cropMetrics": crop_metrics,
+        "decodeMs": decode_ms,
+        "cropMs": crop_ms,
+        "parseMs": backend_parse_ms,
+    }
+
+
+async def _capture_reader_pipeline(capture: ScreenCapture, calibration: dict[str, Any]) -> GgTableSnapshot | None:
+    frame = await _to_thread_until_complete(capture.grab)
+    window_metadata = {
+        **(capture.last_window or {}),
+        "source": capture.last_source,
+        "captureSource": capture.last_source,
+        "captureWarning": capture.last_capture_warning,
+        "captureDiagnostics": dict(capture.last_capture_diagnostics),
+    }
+    snapshot = await _to_thread_until_complete(
+        parse_frame,
+        frame,
+        calibration,
+        FAST_GG_READER,
+        window_metadata,
+    )
+    if snapshot is not None:
+        snapshot.metrics["captureSource"] = capture.last_source
+        snapshot.metrics["captureDiagnostics"] = dict(capture.last_capture_diagnostics)
+        if capture.last_capture_warning:
+            snapshot.metrics["captureWarning"] = capture.last_capture_warning
+    return snapshot
+
+
 @app.post("/api/gg-reader/parse-frame")
 async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[str, Any]:
     loop_started_at = time.perf_counter()
     server_received_at = int(time.time() * 1000)
+    generation = _reader_session_generation
+    if not _browser_session_is_current(generation):
+        reason = "reader-not-running" if not reader_state.running else "capture-mode-not-browser"
+        return _dropped_browser_frame_response(
+            seq=seq,
+            server_received_at=server_received_at,
+            frame_bytes=0,
+            reason=reason,
+        )
+
     body = await request.body()
     frame_bytes = len(body)
+    if not _browser_session_is_current(generation):
+        return _dropped_browser_frame_response(
+            seq=seq,
+            server_received_at=server_received_at,
+            frame_bytes=frame_bytes,
+            reason="session-stale",
+        )
     if not body:
         return {
             "type": "status",
@@ -731,28 +1092,44 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
             "frameBytes": frame_bytes,
         }
 
+    sequence_rejection = _claim_browser_frame_sequence(seq, generation)
+    if sequence_rejection is not None:
+        if _browser_session_is_current(generation):
+            reader_state.framesDropped += 1
+        return _dropped_browser_frame_response(
+            seq=seq,
+            server_received_at=server_received_at,
+            frame_bytes=frame_bytes,
+            reason=sequence_rejection,
+        )
+
+    # FastGgReader is stateful and internally serialized. Letting every HTTP
+    # request wait on its lock creates an ever-growing queue of obsolete
+    # frames. Drop while busy and return the latest stable state instead.
+    if _reader_pipeline_busy():
+        reader_state.framesDropped += 1
+        return _dropped_browser_frame_response(
+            seq=seq,
+            server_received_at=server_received_at,
+            frame_bytes=frame_bytes,
+            reason="reader-busy",
+        )
     try:
-        decode_started_at = time.perf_counter()
-        frame = await asyncio.to_thread(decode_browser_frame, body)
-        decode_ms = round((time.perf_counter() - decode_started_at) * 1000, 2)
-        crop_started_at = time.perf_counter()
-        frame, crop_metrics = await asyncio.to_thread(crop_browser_frame_to_gg_window_with_metrics, frame)
-        crop_ms = round((time.perf_counter() - crop_started_at) * 1000, 2)
-        schedule_cropped_debug_frame_save(frame)
-        parse_started_at = time.perf_counter()
-        if not bool(crop_metrics.get("isRealClubGg")):
-            snapshot = None
-            backend_parse_ms = 0.0
-        else:
-            snapshot = await asyncio.to_thread(
-                parse_frame,
-                frame,
-                get_cached_calibration(),
-                FAST_GG_READER,
-                {**crop_metrics, "source": crop_metrics.get("cropSource")},
-            )
-            backend_parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
+        pipeline_task = _start_reader_pipeline(_process_browser_pipeline(body))
+        pipeline_result = await asyncio.shield(pipeline_task)
+        snapshot = pipeline_result["snapshot"]
+        crop_metrics = pipeline_result["cropMetrics"]
+        decode_ms = float(pipeline_result["decodeMs"])
+        crop_ms = float(pipeline_result["cropMs"])
+        backend_parse_ms = float(pipeline_result["parseMs"])
     except Exception as exc:
+        if not _browser_session_is_current(generation):
+            return _dropped_browser_frame_response(
+                seq=seq,
+                server_received_at=server_received_at,
+                frame_bytes=frame_bytes,
+                reason="session-stale",
+            )
         return {
             "type": "status",
             "status": "warning",
@@ -764,6 +1141,14 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
             "serverReceivedAt": server_received_at,
             "frameBytes": frame_bytes,
         }
+
+    if not _browser_session_is_current(generation):
+        return _dropped_browser_frame_response(
+            seq=seq,
+            server_received_at=server_received_at,
+            frame_bytes=frame_bytes,
+            reason="session-stale",
+        )
 
     frame_ms = round((time.perf_counter() - loop_started_at) * 1000, 2)
     last_crop_metrics.clear()
@@ -796,6 +1181,7 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
             "decodeMs": decode_ms,
             "cropMs": crop_ms,
             "parseMs": backend_parse_ms,
+            "observationAccepted": True,
             **metrics,
         }
 
@@ -814,7 +1200,32 @@ async def parse_browser_frame(request: Request, seq: int | None = None) -> dict[
     data.update(metrics)
     data["normalizedState"] = build_normalized_state(snapshot, metrics)
     data["events"] = events
+    data["observationAccepted"] = True
     return data
+
+
+def _dropped_browser_frame_response(
+    *,
+    seq: int | None,
+    server_received_at: int,
+    frame_bytes: int,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "type": "status",
+        "status": "stale" if reason in {"session-stale", "duplicate-seq", "out-of-order-seq"} else "dropped",
+        "message": "GG frame was not accepted",
+        "clearTable": False,
+        "confidence": 0,
+        "captureSource": "browser",
+        "frameSeq": seq,
+        "serverReceivedAt": server_received_at,
+        "frameBytes": frame_bytes,
+        "frameDropped": True,
+        "dropReason": reason,
+        "observationAccepted": False,
+        "events": [],
+    }
 
 
 @app.get("/api/gg-reader/history")
@@ -881,6 +1292,8 @@ def save_debug_frame(monitor_index: int, capture_mode: str = "auto") -> dict[str
         "croppedHeight": int(cropped_frame.shape[0]),
         "monitorIndex": resolved_index,
         "captureSource": capture_source,
+        "captureWarning": capture.last_capture_warning,
+        "captureDiagnostics": dict(capture.last_capture_diagnostics),
         "window": captured_window,
         **crop_metrics,
     }
@@ -929,6 +1342,7 @@ async def get_debug_metrics() -> dict[str, Any]:
         **last_crop_metrics,
         "running": reader_state.running,
         "framesRead": reader_state.framesRead,
+        "framesDropped": reader_state.framesDropped,
         "lastFrameMs": reader_state.lastFrameMs,
         "captureSource": reader_state.captureSource,
         "lastSnapshotAt": reader_state.lastSnapshotAt,
@@ -1032,41 +1446,58 @@ async def get_debug_last_snapshot() -> dict[str, Any]:
 @app.websocket("/ws/gg-reader")
 async def gg_reader_socket(websocket: WebSocket) -> None:
     await websocket.accept()
-    capture = ScreenCapture(
-        monitor_index=reader_config.monitorIndex,
-        debug=reader_config.debug,
-        capture_mode=reader_config.captureMode,
-    )
-    calibration = get_cached_calibration()
+    subscriber_id, delivery_queue = _register_native_subscriber()
+    capture: ScreenCapture | None = None
+    capture_generation: int | None = None
+    calibration: dict[str, Any] = {}
+    owned_pipeline_task: asyncio.Task[Any] | None = None
     try:
         while True:
             loop_started_at = time.perf_counter()
-            if reader_state.running:
+            if not reader_state.running or reader_config.captureMode == "browser":
+                await asyncio.sleep(0.1)
+                continue
+
+            generation = _reader_session_generation
+            target_interval = target_reader_interval_seconds(reader_config.fps)
+            if _is_native_capture_owner(subscriber_id):
                 if reader_config.profile == "mock":
                     snapshot = load_mock_snapshot()
                     snapshot, events = enrich_snapshot(snapshot)
                     reader_state.lastSnapshotAt = snapshot.timestamp
                     data = snapshot.model_dump()
                     data["events"] = events
-                    await websocket.send_json(data)
+                    _publish_native_payload(generation, data)
                 else:
-                    try:
-                        frame = await asyncio.to_thread(capture.grab)
-                        window_metadata = {
-                            **(capture.last_window or {}),
-                            "source": capture.last_source,
-                            "captureSource": capture.last_source,
-                        }
-                        snapshot = await asyncio.to_thread(
-                            parse_frame,
-                            frame,
-                            calibration,
-                            FAST_GG_READER,
-                            window_metadata,
+                    if capture_generation != generation:
+                        if capture is not None:
+                            capture.close()
+                        capture = ScreenCapture(
+                            monitor_index=reader_config.monitorIndex,
+                            debug=reader_config.debug,
+                            capture_mode=reader_config.captureMode,
                         )
+                        capture_generation = generation
+                        calibration = get_cached_calibration()
+
+                    if _reader_pipeline_busy():
+                        elapsed = time.perf_counter() - loop_started_at
+                        await asyncio.sleep(max(0.01, target_interval - elapsed))
+                        continue
+                    try:
+                        assert capture is not None
+                        owned_pipeline_task = _start_reader_pipeline(
+                            _capture_reader_pipeline(capture, calibration)
+                        )
+                        snapshot = await asyncio.shield(owned_pipeline_task)
+                        owned_pipeline_task = None
+                        if not _reader_session_is_current(generation):
+                            continue
                     except Exception as exc:
+                        if not _reader_session_is_current(generation):
+                            continue
                         server_received_at = int(time.time() * 1000)
-                        await websocket.send_json({
+                        _publish_native_payload(generation, {
                             "type": "status",
                             "status": "warning",
                             "message": f"לא ניתן לצלם את Monitor {reader_config.monitorIndex}: {exc}",
@@ -1075,14 +1506,10 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             "confidence": 0,
                             "serverReceivedAt": server_received_at,
                         })
-                        target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
-                        elapsed = time.perf_counter() - loop_started_at
-                        await asyncio.sleep(max(0.0, target_interval - elapsed))
-                        continue
                     else:
                         if snapshot is None:
                             server_received_at = int(time.time() * 1000)
-                            await websocket.send_json({
+                            _publish_native_payload(generation, {
                                 "type": "status",
                                 "status": "waiting",
                                 "message": "מחובר, ממתין לזיהוי שולחן GG",
@@ -1092,10 +1519,6 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                                 "serverReceivedAt": server_received_at,
                                 **last_crop_metrics,
                             })
-                            target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
-                            elapsed = time.perf_counter() - loop_started_at
-                            await asyncio.sleep(max(0.0, target_interval - elapsed))
-                            continue
                         else:
                             snapshot, events = enrich_snapshot(snapshot)
                             crop_metrics = _extract_crop_metrics(snapshot.metrics)
@@ -1117,12 +1540,24 @@ async def gg_reader_socket(websocket: WebSocket) -> None:
                             reader_state.framesRead += 1
                             reader_state.lastFrameMs = data["frameMs"]
                             reader_state.captureSource = capture.last_source
-                            await websocket.send_json(data)
-            target_interval = target_reader_interval_seconds(reader_config.fps) if reader_state.running else 0.1
+                            _publish_native_payload(generation, data)
+
+            data = await _receive_native_payload(delivery_queue, timeout=max(0.05, target_interval))
+            if data is not None and _reader_session_is_current(generation):
+                await websocket.send_json(data)
             elapsed = time.perf_counter() - loop_started_at
-            await asyncio.sleep(max(0.0, target_interval - elapsed))
+            if _is_native_capture_owner(subscriber_id):
+                await asyncio.sleep(max(0.0, target_interval - elapsed))
     except WebSocketDisconnect:
-        capture.close()
         return
     finally:
-        capture.close()
+        if owned_pipeline_task is not None and not owned_pipeline_task.done():
+            try:
+                await asyncio.shield(owned_pipeline_task)
+            except (asyncio.CancelledError, Exception):
+                pass
+        # Release ownership only after the stateful capture pipeline has fully
+        # exited, so the elected successor can never overlap it.
+        _unregister_native_subscriber(subscriber_id)
+        if capture is not None:
+            capture.close()

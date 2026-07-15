@@ -2,25 +2,54 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Iterator
 
+from .data_paths import get_data_dir
 from .models import GgTableSnapshot
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = get_data_dir()
 HISTORY_PATH = DATA_DIR / "gg_history.jsonl"
 DB_PATH = DATA_DIR / "gg_history.sqlite"
+_DB_INIT_LOCK = Lock()
+_INITIALIZED_DATABASES: set[str] = set()
 
 
 def _connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    _init_db(connection)
-    return connection
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(DB_PATH, timeout=5.0)
+        connection.row_factory = sqlite3.Row
+        database_key = str(DB_PATH.resolve())
+        with _DB_INIT_LOCK:
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA wal_autocheckpoint=500")
+            if database_key not in _INITIALIZED_DATABASES:
+                _init_db(connection)
+                _INITIALIZED_DATABASES.add(database_key)
+        return connection
+    except BaseException:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        raise
+
+
+@contextmanager
+def _managed_connection() -> Iterator[sqlite3.Connection]:
+    connection = _connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def _init_db(connection: sqlite3.Connection) -> None:
@@ -58,6 +87,7 @@ def _init_db(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_gg_snapshots_hand_time ON gg_snapshots(hand_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_gg_events_hand_time ON gg_events(hand_id, time);
+        CREATE INDEX IF NOT EXISTS idx_gg_hands_updated_at ON gg_hands(updated_at DESC);
         """
     )
     connection.commit()
@@ -76,24 +106,30 @@ def append_event(event: dict[str, Any]) -> None:
 
         normalized["time"] = int(time.time() * 1000)
     _append_jsonl(normalized)
-    with _connect() as connection:
+    with _managed_connection() as connection:
         _insert_event(connection, normalized)
         connection.commit()
 
 
 def record_snapshot(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None = None) -> list[dict[str, Any]]:
-    snapshot_data = snapshot.model_dump(mode="json")
-    snapshot_json = json.dumps(snapshot_data, ensure_ascii=False, separators=(",", ":"))
     hand_id = snapshot.handId or f"hand-{snapshot.timestamp}"
     events = build_snapshot_events(snapshot, previous)
+    same_hand = bool(previous and snapshot.handId and previous.handId == snapshot.handId)
+    if same_hand and not events and _snapshot_fingerprint(previous) == _snapshot_fingerprint(snapshot):
+        return []
 
-    with _connect() as connection:
+    snapshot_data = _history_snapshot_data(snapshot)
+    snapshot_data["handId"] = hand_id
+    snapshot_json = json.dumps(snapshot_data, ensure_ascii=False, separators=(",", ":"))
+
+    with _managed_connection() as connection:
         connection.execute(
             """
             INSERT INTO gg_hands(hand_id, started_at, updated_at, table_type, first_snapshot_json, latest_snapshot_json)
             VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(hand_id) DO UPDATE SET
                 updated_at=excluded.updated_at,
+                table_type=excluded.table_type,
                 latest_snapshot_json=excluded.latest_snapshot_json
             """,
             (
@@ -128,7 +164,7 @@ def record_snapshot(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None 
 
 
 def build_snapshot_events(snapshot: GgTableSnapshot, previous: GgTableSnapshot | None = None) -> list[dict[str, Any]]:
-    hand_id = snapshot.handId
+    hand_id = snapshot.handId or f"hand-{snapshot.timestamp}"
     now = snapshot.timestamp
     events: list[dict[str, Any]] = []
 
@@ -141,8 +177,10 @@ def build_snapshot_events(snapshot: GgTableSnapshot, previous: GgTableSnapshot |
             "data": data or {},
         })
 
-    if previous is None or previous.handId != snapshot.handId:
-        add("hand_started", "יד חדשה נקלטה מ-GG", snapshot.model_dump(mode="json"))
+    if previous is None or previous.handId != hand_id:
+        hand_data = _history_snapshot_data(snapshot)
+        hand_data["handId"] = hand_id
+        add("hand_started", "יד חדשה נקלטה מ-GG", hand_data)
         return events
 
     if previous.street != snapshot.street:
@@ -190,7 +228,7 @@ def build_snapshot_events(snapshot: GgTableSnapshot, previous: GgTableSnapshot |
 
 
 def read_history(limit: int = 50) -> list[dict[str, Any]]:
-    with _connect() as connection:
+    with _managed_connection() as connection:
         rows = connection.execute(
             """
             SELECT hand_id, time, type, message, data_json
@@ -198,7 +236,7 @@ def read_history(limit: int = 50) -> list[dict[str, Any]]:
             ORDER BY id DESC
             LIMIT ?
             """,
-            (max(1, int(limit)),),
+            (max(1, min(int(limit), 500)),),
         ).fetchall()
     return [
         {
@@ -213,7 +251,7 @@ def read_history(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def read_hands(limit: int = 25) -> list[dict[str, Any]]:
-    with _connect() as connection:
+    with _managed_connection() as connection:
         rows = connection.execute(
             """
             SELECT hand_id, started_at, updated_at, table_type, latest_snapshot_json
@@ -221,7 +259,7 @@ def read_hands(limit: int = 25) -> list[dict[str, Any]]:
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (max(1, int(limit)),),
+            (max(1, min(int(limit), 100)),),
         ).fetchall()
     return [
         {
@@ -273,3 +311,63 @@ def _action_label(action: str) -> str:
         "all-in": "אול אין",
         "waiting": "ממתין",
     }.get(action, action)
+
+
+def _snapshot_fingerprint(snapshot: GgTableSnapshot) -> tuple[Any, ...]:
+    board = tuple(_card_id(card) for card in snapshot.board if _card_id(card))
+    seats = tuple(
+        (
+            int(seat.physicalSeatIndex),
+            bool(seat.active),
+            str(seat.name or ""),
+            round(float(seat.stack or 0.0), 4),
+            round(float(seat.currentBet or 0.0), 4),
+            str(seat.position or ""),
+            str(seat.action or "none"),
+            round(float(seat.actionAmount or 0.0), 4),
+            str(seat.status or "unknown"),
+            tuple(_card_id(card) or ("X" if getattr(card, "hidden", False) else "") for card in seat.holeCards),
+        )
+        for seat in sorted(snapshot.seats, key=lambda item: int(item.physicalSeatIndex))
+    )
+    return (
+        str(snapshot.handId or ""),
+        str(snapshot.tableType or ""),
+        round(float(snapshot.smallBlind or 0.0), 4),
+        round(float(snapshot.bigBlind or 0.0), 4),
+        str(snapshot.street),
+        round(float(snapshot.pot or 0.0), 4),
+        int(snapshot.dealerSeatIndex),
+        int(snapshot.activePlayerCount),
+        board,
+        seats,
+    )
+
+
+def _history_snapshot_data(snapshot: GgTableSnapshot) -> dict[str, Any]:
+    data = snapshot.model_dump(mode="json", exclude={"metrics"})
+    metrics = snapshot.metrics if isinstance(snapshot.metrics, dict) else {}
+    compact_metrics = {
+        key: metrics[key]
+        for key in (
+            "reader",
+            "profile",
+            "profileFitScore",
+            "parseMs",
+            "actualReaderFps",
+            "confidence",
+            "cropSource",
+            "cropConfidence",
+            "isRealClubGg",
+        )
+        if key in metrics
+    }
+    stabilizer = metrics.get("stabilizer")
+    if isinstance(stabilizer, dict):
+        compact_metrics["stabilizer"] = {
+            key: stabilizer[key]
+            for key in ("handReset", "streetTransition", "heldByCadence")
+            if key in stabilizer
+        }
+    data["metrics"] = compact_metrics
+    return data

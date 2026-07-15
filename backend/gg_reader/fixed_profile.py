@@ -111,7 +111,10 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
             cards=((0.735, 0.675, 0.055, 0.115), (0.790, 0.675, 0.055, 0.115)),
             active=(0.720, 0.665, 0.165, 0.215),
             dealer=(0.720, 0.710, 0.055, 0.065),
-            action=(0.640, 0.585, 0.155, 0.095),
+            # ClubGG renders the yellow action pill immediately above this
+            # player's name panel (the user's capture shows "Call" here), not
+            # beside the central bet chips.
+            action=(0.750, 0.735, 0.100, 0.055),
         ),
         FixedSeatProfile(
             index=4,
@@ -165,7 +168,7 @@ CLUBGG_FIXED_8MAX = FixedGgProfile(
 CLUBGG_COMPACT_8MAX = FixedGgProfile(
     name="clubgg_compact_8max",
     table_type="8max",
-    title_blinds=(0.002, 0.000, 0.220, 0.050),
+    title_blinds=(0.045, 0.000, 0.250, 0.052),
     pot=(0.435, 0.355, 0.155, 0.060),
     board=(
         (0.310, 0.418, 0.075, 0.145),
@@ -202,7 +205,9 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             label="right",
             name=(0.855, 0.542, 0.140, 0.040),
             stack=(0.865, 0.578, 0.130, 0.050),
-            bet=(0.785, 0.505, 0.080, 0.080),
+            # Tight numeric strip below the right-side chips. The previous ROI
+            # clipped the leading "10" in 108.3BB and included chip artwork.
+            bet=(0.755, 0.545, 0.100, 0.055),
             cards=((0.865, 0.445, 0.052, 0.110), (0.918, 0.445, 0.052, 0.110)),
             active=(0.850, 0.435, 0.150, 0.205),
             dealer=(0.805, 0.455, 0.055, 0.065),
@@ -217,18 +222,21 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             cards=((0.735, 0.675, 0.055, 0.115), (0.790, 0.675, 0.055, 0.115)),
             active=(0.720, 0.665, 0.165, 0.215),
             dealer=(0.700, 0.708, 0.055, 0.065),
-            action=(0.640, 0.585, 0.155, 0.095),
+            action=(0.750, 0.735, 0.100, 0.055),
         ),
         FixedSeatProfile(
             index=4,
             label="bottom",
             name=(0.430, 0.865, 0.170, 0.045),
             stack=(0.432, 0.907, 0.160, 0.052),
-            bet=(0.455, 0.635, 0.100, 0.070),
+            # The bottom player's wager is rendered below the central pot
+            # chips. The old broad ROI mostly covered the pot subtotal and
+            # missed the actual blind/bet label near y~=0.68.
+            bet=(0.455, 0.650, 0.100, 0.070),
             cards=((0.438, 0.735, 0.057, 0.118), (0.493, 0.735, 0.057, 0.118)),
             active=(0.420, 0.720, 0.185, 0.265),
             dealer=(0.410, 0.805, 0.060, 0.070),
-            action=(0.435, 0.615, 0.150, 0.100),
+            action=(0.410, 0.540, 0.180, 0.110),
         ),
         FixedSeatProfile(
             index=5,
@@ -238,7 +246,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             bet=(0.240, 0.610, 0.100, 0.070),
             cards=((0.160, 0.675, 0.057, 0.115), (0.215, 0.675, 0.057, 0.115)),
             active=(0.150, 0.665, 0.190, 0.210),
-            dealer=(0.245, 0.705, 0.060, 0.070),
+            dealer=(0.263, 0.650, 0.065, 0.085),
             action=(0.215, 0.585, 0.155, 0.095),
         ),
         FixedSeatProfile(
@@ -246,7 +254,9 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
             label="left",
             name=(0.035, 0.542, 0.150, 0.040),
             stack=(0.045, 0.580, 0.150, 0.052),
-            bet=(0.140, 0.500, 0.100, 0.070),
+            # The left wager label sits below/right of the chip stack. A tight
+            # strip reads 4BB directly instead of interpreting chip pips as 168.
+            bet=(0.155, 0.525, 0.070, 0.055),
             cards=((0.035, 0.445, 0.055, 0.110), (0.088, 0.445, 0.055, 0.110)),
             active=(0.030, 0.435, 0.165, 0.205),
             dealer=(0.150, 0.505, 0.060, 0.070),
@@ -274,7 +284,7 @@ CLUBGG_COMPACT_8MAX = FixedGgProfile(
 CLUBGG_COMPACT_7MAX = FixedGgProfile(
     name="clubgg_compact_7max",
     table_type="7max",
-    title_blinds=(0.000, 0.000, 0.330, 0.052),
+    title_blinds=(0.045, 0.000, 0.250, 0.052),
     pot=(0.445, 0.338, 0.145, 0.060),
     board=(
         (0.310, 0.418, 0.075, 0.145),
@@ -372,7 +382,7 @@ CLUBGG_COMPACT_7MAX = FixedGgProfile(
 CLUBGG_COMPACT_6MAX = FixedGgProfile(
     name="clubgg_compact_6max",
     table_type="6max",
-    title_blinds=(0.000, 0.000, 0.330, 0.052),
+    title_blinds=(0.045, 0.000, 0.250, 0.052),
     pot=CLUBGG_COMPACT_7MAX.pot,
     board=CLUBGG_COMPACT_7MAX.board,
     seats=tuple(seat for seat in CLUBGG_COMPACT_7MAX.seats if seat.index != 0),
@@ -402,9 +412,12 @@ def get_fixed_profile(
         height, width = frame_shape[:2]
         # Browser/window captures of the compact ClubGG table arrive as the
         # table window itself, or as a small cropped window from a desktop share.
-        if 420 <= width <= 1000 and 300 <= height <= 800:
+        if 400 <= width <= 1600 and 280 <= height <= 1200:
             aspect = width / max(1, height)
-            if aspect < 1.48:
-                return CLUBGG_COMPACT_7MAX
-            return CLUBGG_COMPACT_8MAX
+            if 1.25 <= aspect <= 1.48:
+                # 6/7/8-max compact clients share the same outer aspect; the
+                # visual fitter selects seat geometry.  8-max is the neutral
+                # preferred base and avoids biasing a larger scaled client
+                # toward the unrelated legacy fixed profile.
+                return CLUBGG_COMPACT_8MAX
     return CLUBGG_FIXED_8MAX

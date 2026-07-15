@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+from threading import Lock
+import time
 from typing import Any
 
 import numpy as np
@@ -27,6 +29,11 @@ BAD_SOURCE_TITLE_TOKENS = (
     "edge",
     "firefox",
 )
+
+
+_CROP_CACHE_LOCK = Lock()
+_CROP_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_CROP_CACHE_TTL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,21 @@ def detect_clubgg_table_crop(
 
     frame_height, frame_width = frame.shape[:2]
     full_rect = {"left": 0, "top": 0, "width": int(frame_width), "height": int(frame_height)}
+
+    cached = _cached_crop_result(frame, window_metadata)
+    if cached is not None:
+        return cached
+
+    # Prefer the real ClubGG window boundary over felt expansion.  Windows 11
+    # blue wallpaper falls inside the old broad HSV range and caused the user
+    # screenshot to be cropped at x=21 instead of the actual x=117 title bar.
+    # ClubGG's black title edge and 850:631 client ratio are much stronger,
+    # cheaper anchors and yield an identity-aligned ROI surface.
+    titlebar_crop = _dark_titlebar_table_crop(frame, window_metadata)
+    if titlebar_crop is not None:
+        _remember_crop_result(frame, window_metadata, titlebar_crop)
+        return titlebar_crop
+
     direct_confidence, direct_diag = validate_table_crop(frame)
     direct_real = validate_real_clubgg_crop(frame, window_metadata)
     warnings: list[str] = []
@@ -218,6 +240,264 @@ def _trust_direct_window_capture(window_metadata: dict[str, Any] | None) -> bool
         or "clubgg" in title
         or re.search(r"\b(?:nlh|plo)\b", title)
     )
+
+
+def _crop_cache_key(frame: np.ndarray, window_metadata: dict[str, Any] | None) -> tuple[Any, ...]:
+    height, width = frame.shape[:2]
+    metadata = dict(window_metadata or {})
+    return (
+        int(height),
+        int(width),
+        str(metadata.get("hwnd") or ""),
+        str(metadata.get("title") or metadata.get("selectedWindowTitle") or "").lower(),
+        str(metadata.get("processName") or "").lower(),
+        str(metadata.get("source") or metadata.get("captureSource") or "").lower(),
+    )
+
+
+def _cached_crop_result(
+    frame: np.ndarray,
+    window_metadata: dict[str, Any] | None,
+) -> TableCropResult | None:
+    key = _crop_cache_key(frame, window_metadata)
+    now = time.monotonic()
+    with _CROP_CACHE_LOCK:
+        entry = _CROP_CACHE.get(key)
+        if entry is None or now - float(entry.get("storedAt") or 0.0) > _CROP_CACHE_TTL_SECONDS:
+            if entry is not None:
+                _CROP_CACHE.pop(key, None)
+            return None
+        rect = dict(entry.get("rect") or {})
+    left = int(rect.get("left") or 0)
+    top = int(rect.get("top") or 0)
+    width = int(rect.get("width") or 0)
+    height = int(rect.get("height") or 0)
+    if width < 320 or height < 240 or left < 0 or top < 0 or left + width > frame.shape[1] or top + height > frame.shape[0]:
+        return None
+    crop = frame[top:top + height, left:left + width]
+    if not _cheap_cached_crop_is_valid(crop):
+        with _CROP_CACHE_LOCK:
+            _CROP_CACHE.pop(key, None)
+        return None
+    diagnostics = dict(entry.get("diagnostics") or {})
+    diagnostics["cropCacheHit"] = True
+    return TableCropResult(
+        crop,
+        rect,
+        dict(entry["innerRect"]) if entry.get("innerRect") else None,
+        str(entry.get("source") or "window-client"),
+        float(entry.get("confidence") or 0.0),
+        diagnostics=diagnostics,
+        warnings=list(entry.get("warnings") or []),
+    )
+
+
+def _remember_crop_result(
+    frame: np.ndarray,
+    window_metadata: dict[str, Any] | None,
+    result: TableCropResult,
+) -> None:
+    if not bool(result.diagnostics.get("isRealClubGg")):
+        return
+    key = _crop_cache_key(frame, window_metadata)
+    entry = {
+        "storedAt": time.monotonic(),
+        "rect": dict(result.crop_rect),
+        "innerRect": dict(result.inner_table_rect) if result.inner_table_rect else None,
+        "source": result.source,
+        "confidence": float(result.confidence),
+        "diagnostics": dict(result.diagnostics),
+        "warnings": list(result.warnings),
+    }
+    with _CROP_CACHE_LOCK:
+        _CROP_CACHE[key] = entry
+        if len(_CROP_CACHE) > 8:
+            oldest = min(_CROP_CACHE, key=lambda item: float(_CROP_CACHE[item].get("storedAt") or 0.0))
+            _CROP_CACHE.pop(oldest, None)
+
+
+def _cheap_cached_crop_is_valid(frame: np.ndarray) -> bool:
+    try:
+        import cv2
+    except Exception:
+        return False
+    if frame.size == 0 or frame.ndim < 3:
+        return False
+    height, width = frame.shape[:2]
+    aspect = width / max(1, height)
+    if not 1.25 <= aspect <= 1.48:
+        return False
+    step = max(1, min(height, width) // 160)
+    sample = frame[::step, ::step, :3]
+    gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    title_height = max(2, int(round(sample.shape[0] * 0.055)))
+    title_dark = float((gray[:title_height] < 58).mean())
+    center = sample[
+        int(sample.shape[0] * 0.20): int(sample.shape[0] * 0.78),
+        int(sample.shape[1] * 0.08): int(sample.shape[1] * 0.92),
+    ]
+    if center.size == 0:
+        return False
+    hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+    green = cv2.inRange(hsv, np.array([38, 32, 26]), np.array([90, 255, 245]))
+    green_ratio = float((green > 0).mean())
+    return bool(title_dark >= 0.42 and green_ratio >= 0.16)
+
+
+def _dark_titlebar_table_crop(
+    frame: np.ndarray,
+    window_metadata: dict[str, Any] | None,
+) -> TableCropResult | None:
+    try:
+        import cv2
+    except Exception:
+        return None
+    if frame.size == 0 or frame.ndim < 3:
+        return None
+    height, width = frame.shape[:2]
+    gray = cv2.cvtColor(frame[:, :, :3], cv2.COLOR_BGR2GRAY)
+    dark = gray < 32
+    # This fast path is for a dominant ClubGG window inside an otherwise
+    # padded desktop capture. On side-by-side/multi-table desktops, short dark
+    # runs may begin after title text and look like a canonical mini-client;
+    # let the felt/anchor candidate scorer compare all tables instead.
+    min_width = max(320, int(round(width * 0.30)))
+    max_y = max(1, int(round(height * 0.58)))
+    candidates: list[tuple[float, int, int, int, int]] = []
+    seen: set[tuple[int, int, int]] = set()
+    for y in range(max_y):
+        row = dark[y]
+        transitions = np.diff(np.pad(row.astype(np.int8), (1, 1)))
+        starts = np.flatnonzero(transitions == 1)
+        ends = np.flatnonzero(transitions == -1)
+        for left, right in zip(starts, ends):
+            run_width = int(right - left)
+            if run_width < min_width:
+                continue
+            if y > 0 and float(dark[y - 1, left:right].mean()) >= 0.55:
+                continue
+            next_bottom = min(height, y + 3)
+            if float(dark[y:next_bottom, left:right].mean()) < 0.72:
+                continue
+            candidate_height = int(round(run_width * (631.0 / 850.0)))
+            if candidate_height < 240 or y + candidate_height > height + 4:
+                continue
+            bottom = min(height, y + candidate_height)
+            key = (int(left // 4), int(y // 4), int(run_width // 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            crop = frame[y:bottom, left:right]
+            quick_score = _quick_titlebar_candidate_score(crop)
+            if quick_score > 0:
+                candidates.append((quick_score, int(left), int(y), int(right), int(bottom)))
+    if not candidates:
+        return None
+
+    candidate_debug: list[dict[str, Any]] = []
+    for quick_score, left, top, right, bottom in sorted(candidates, reverse=True)[:3]:
+        crop = frame[top:bottom, left:right]
+        validation = validate_real_clubgg_crop(crop, window_metadata)
+        debug = {
+            "variant": "dark-titlebar",
+            "left": left,
+            "top": top,
+            "width": right - left,
+            "height": bottom - top,
+            "quickScore": round(float(quick_score), 4),
+            "accepted": bool(validation.is_real_clubgg),
+            "realClubGgScore": round(float(validation.score), 4),
+            "anchors": list(validation.anchors_found),
+            "rejectReason": validation.rejected_reason,
+            "isRealClubGg": bool(validation.is_real_clubgg),
+        }
+        candidate_debug.append(debug)
+        if not validation.is_real_clubgg:
+            continue
+        # Keep diagnostics useful when a desktop contains more than one table,
+        # without paying for full validation of candidates after the first
+        # accepted ClubGG client.  Put the selected real candidate first (the
+        # UI/tests consume that ordering) and retain cheap geometry records for
+        # the remaining title bars.
+        for remaining_score, remaining_left, remaining_top, remaining_right, remaining_bottom in sorted(candidates, reverse=True)[len(candidate_debug):3]:
+            candidate_debug.append({
+                "variant": "dark-titlebar",
+                "left": int(remaining_left),
+                "top": int(remaining_top),
+                "width": int(remaining_right - remaining_left),
+                "height": int(remaining_bottom - remaining_top),
+                "quickScore": round(float(remaining_score), 4),
+                "accepted": False,
+                "isRealClubGg": False,
+                "validationSkipped": True,
+            })
+        candidate_debug = [debug, *[item for item in candidate_debug if item is not debug]]
+        generic_confidence, generic_diag = validate_table_crop(crop)
+        covers_frame = (
+            left <= 2 and top <= 2 and right >= width - 2 and bottom >= height - 3
+        )
+        if len(candidate_debug) < 2 and not covers_frame:
+            # The enclosing desktop/screen is itself a considered fallback
+            # candidate even when only one client has a canonical dark title
+            # bar. Preserve that fact in diagnostics so multi-window captures
+            # explain both the selected client and the rejected outer frame.
+            candidate_debug.append({
+                "variant": "surrounding-frame",
+                "left": 0,
+                "top": 0,
+                "width": int(width),
+                "height": int(height),
+                "accepted": False,
+                "isRealClubGg": False,
+                "validationSkipped": True,
+            })
+        source = "window-client" if covers_frame else "image-detected-table"
+        if covers_frame and window_metadata and window_metadata.get("source"):
+            source = str(window_metadata["source"])
+        rect = {"left": left, "top": top, "width": right - left, "height": bottom - top}
+        diagnostics = {
+            **generic_diag,
+            **validation.as_diagnostics(),
+            "selectedCropCandidate": dict(debug),
+            "cropCandidates": candidate_debug,
+            "darkTitlebarDetected": True,
+        }
+        return TableCropResult(
+            crop,
+            rect,
+            None,
+            source,
+            min(1.0, max(generic_confidence, validation.score)),
+            diagnostics=diagnostics,
+        )
+    return None
+
+
+def _quick_titlebar_candidate_score(frame: np.ndarray) -> float:
+    try:
+        import cv2
+    except Exception:
+        return 0.0
+    if frame.size == 0 or frame.ndim < 3:
+        return 0.0
+    step = max(1, min(frame.shape[:2]) // 180)
+    sample = frame[::step, ::step, :3]
+    hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    center = hsv[
+        int(hsv.shape[0] * 0.20): int(hsv.shape[0] * 0.78),
+        int(hsv.shape[1] * 0.08): int(hsv.shape[1] * 0.92),
+    ]
+    if center.size == 0:
+        return 0.0
+    green = cv2.inRange(center, np.array([38, 32, 26]), np.array([90, 255, 245]))
+    green_ratio = float((green > 0).mean())
+    title_dark = float((gray[: max(2, int(gray.shape[0] * 0.055))] < 58).mean())
+    top_left = sample[: max(1, int(sample.shape[0] * 0.18)), : max(1, int(sample.shape[1] * 0.36))]
+    orange = _orange_signal(top_left)
+    if green_ratio < 0.14 or title_dark < 0.38:
+        return 0.0
+    return green_ratio * 0.62 + title_dark * 0.22 + min(1.0, orange * 12.0) * 0.16
 
 
 def _should_prefer_detected_crop(

@@ -21,6 +21,8 @@ backend/data/**/*.sqlite-*
 !backend/data/.gitkeep
 .venv/
 .playwright-mcp/
+.playwright-cli/
+/web-dist/
 
 # Environment files
 .env

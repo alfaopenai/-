@@ -23,16 +23,39 @@ STACK_OCR_REFRESH_SECONDS = 2.0
 NAME_OCR_REFRESH_SECONDS = 4.0
 BET_OCR_REFRESH_SECONDS = 0.7
 ACTION_OCR_REFRESH_SECONDS = 2.0
-_OCR_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="gg-reader-ocr")
+ACTION_CACHE_HOLD_SECONDS = 2.8
 _OCR_LOCK = Lock()
+_OCR_EXECUTOR_LOCK = Lock()
+_OCR_EXECUTOR: ThreadPoolExecutor | None = None
 _OCR_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def _warm_ocr() -> None:
-    read_amount(np.zeros((28, 90, 3), dtype=np.uint8))
+def _get_ocr_executor() -> ThreadPoolExecutor:
+    """Create the legacy fallback pool only when a fallback read is needed.
+
+    Importing the parser used to launch a Tesseract warm-up on a non-daemon
+    worker. Even test processes that never parsed an image then waited for that
+    subprocess during interpreter shutdown. The primary FastGgReader warms only
+    its in-process paths, so this legacy pool must remain completely lazy.
+    """
+    global _OCR_EXECUTOR
+    if _OCR_EXECUTOR is not None:
+        return _OCR_EXECUTOR
+    with _OCR_EXECUTOR_LOCK:
+        if _OCR_EXECUTOR is None:
+            _OCR_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="gg-reader-ocr")
+        return _OCR_EXECUTOR
 
 
-_OCR_EXECUTOR.submit(_warm_ocr)
+def reset_parser_cache() -> None:
+    with _OCR_LOCK:
+        for entry in _OCR_CACHE.values():
+            future = entry.get("future")
+            if isinstance(future, Future):
+                future.cancel()
+        _OCR_CACHE.clear()
+
+
 def load_mock_snapshot() -> GgTableSnapshot:
     data: dict[str, Any] = json.loads(MOCK_SNAPSHOT_PATH.read_text(encoding="utf-8"))
     data["timestamp"] = int(time.time() * 1000)
@@ -244,7 +267,7 @@ def read_amount_cached(
 
         if entry.get("future") is None and now - float(entry.get("requested_at") or 0) >= interval:
             crop = crop_normalized(frame, roi).copy()
-            entry["future"] = _OCR_EXECUTOR.submit(read_amount, crop)
+            entry["future"] = _get_ocr_executor().submit(read_amount, crop)
             entry["requested_at"] = now
 
         return float(entry.get("value") or 0.0), float(entry.get("confidence") or 0.0), str(entry.get("raw") or "")
@@ -279,7 +302,7 @@ def read_name_cached(
 
         if entry.get("future") is None and now - float(entry.get("requested_at") or 0) >= interval:
             crop = crop_normalized(frame, roi).copy()
-            entry["future"] = _OCR_EXECUTOR.submit(read_name, crop)
+            entry["future"] = _get_ocr_executor().submit(read_name, crop)
             entry["requested_at"] = now
 
         return str(entry.get("value") or ""), float(entry.get("confidence") or 0.0)
@@ -298,6 +321,7 @@ def read_action_cached(
             "value": "none",
             "confidence": 0.0,
             "requested_at": 0.0,
+            "accepted_at": 0.0,
             "future": None,
         })
         future: Future[tuple[str, float]] | None = entry.get("future")
@@ -310,13 +334,18 @@ def read_action_cached(
             if action != "none" and confidence >= 0.20:
                 entry["value"] = action
                 entry["confidence"] = confidence
+                entry["accepted_at"] = now
             entry["future"] = None
 
         if entry.get("future") is None and now - float(entry.get("requested_at") or 0) >= interval:
             crop = crop_normalized(frame, roi).copy()
-            entry["future"] = _OCR_EXECUTOR.submit(read_name, crop)
+            entry["future"] = _get_ocr_executor().submit(read_name, crop)
             entry["requested_at"] = now
 
+        accepted_at = float(entry.get("accepted_at") or 0.0)
+        if entry.get("value") not in {None, "none"} and now - accepted_at > ACTION_CACHE_HOLD_SECONDS:
+            entry["value"] = "none"
+            entry["confidence"] = 0.0
         return str(entry.get("value") or "none"), float(entry.get("confidence") or 0.0)
 
 
